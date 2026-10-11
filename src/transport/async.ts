@@ -29,6 +29,9 @@ import { formatOwnerId } from './owner-id.js';
 import { TaskWaiters } from './task-waiters.js';
 import { TaskEventStreams } from './task-events.js';
 import type { TaskStreamEvent } from './task-events.js';
+import { adoptSucceededOutcome, buildRunCallOptions } from './run-call-options.js';
+import type { RunSessionStore } from './run-call-options.js';
+import { applySuspendedOutcome, applyTerminalOutcome, readClaimed } from './run-outcome.js';
 
 // 三个监督件（2026-09-29 抽出）的实现与类型现在各自在文件里 —— 审批（approval-supervisor.ts）、
 // 事件投递（signal-supervisor.ts）、恢复扫描（resume-scanner.ts）。下面 **re-export** 它们的
@@ -206,10 +209,7 @@ export interface AsyncRunnerOptions {
    * 不配它而任务带了 `sessionId` ⇒ submit 当场抛 `TaskInputError`（响亮失败，
    * 不静默降级成「没有会话」）。
    */
-  sessionStore?: {
-    load(sessionId: string): MessageParam[] | Promise<MessageParam[]>;
-    append(sessionId: string, messages: MessageParam[]): void | Promise<void>;
-  };
+  sessionStore?: RunSessionStore;
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
   /**
@@ -1125,20 +1125,12 @@ export class AsyncRunner {
     // 顶层容错：异步 store（网络客户端）任何一处 reject 都不得逃逸成
     // unhandled rejection（Node ≥15 默认终止进程）——任务标记失败尽力落库。
     try {
-      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）：
-      // 同键已有 succeeded 记录 → 采纳其结果，不重复执行；queued/running 不采纳 ——
-      // 重复执行本就是 at-least-once 允许的行为。同步 store 下 submit 已完成去重，
-      // 这里查到的一般是 rec 自身（taskId 相同，直接放行）。
-      // 注意（load-bearing）：该去重依赖 store.save 先写记录、后写 idem 索引的顺序
-      // （见 redisStore 头注释）——索引指向自身时上面的 taskId 相等判断放行。
+      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）。三条判据（存在既有记录 /
+      // 不是自己 / 状态是 succeeded）与那条 load-bearing 的顺序依赖（`store.save` 先写记录、
+      // 后写 idem 索引）都搬进了 `adoptSucceededOutcome` 的注释里 —— 一字未改。
       if (rec.idempotencyKey) {
         const existing = await this.store.byIdempotency(rec.idempotencyKey);
-        if (existing && existing.taskId !== rec.taskId && existing.status === 'succeeded') {
-          rec.status = 'succeeded';
-          rec.runId = existing.runId;
-          rec.result = existing.result;
-          rec.error = existing.error;
-          rec.finishedAt = Date.now();
+        if (adoptSucceededOutcome(rec, existing)) {
           // 采纳既有结果：落库失败也不该把一次已知成功的任务翻成 failed
           await this.#safeSave(rec, 'outcome');
           return;
@@ -1157,22 +1149,12 @@ export class AsyncRunner {
       await this.#slots.acquire();
       this.#waiting.delete(rec.taskId); // 拿到槽位 = 离开排队段（此后归 concurrency 管）
       try {
-        // 认领前**重读一遍**再判（异步 store 交出的是副本：拿 submit 时那个对象判不出
-        // 「排队期间被取消了没有」）——与 `#wakeDueInner` 的「进闸后重读」同因。
-        // 不判的后果：cancel 只把状态改了，任务**照跑**（记录说 cancelled、副作用真发生 ——
-        // 最坏的一种谎）。
+        // 认领前**重读一遍**再判 —— 为什么要重读、以及「读失败不改变既有行为」那条边界，
+        // 都搬进了 `run-outcome.ts` 的 `readClaimed`（具名件才能被直接单测）。
         // ⚠️ 判据**只挡终态**，别写成 `!== 'queued'`：恢复那几条路（approve / 到期唤醒 /
         // 崩溃重投）都**先**把状态置成 `running` 再派发 —— 那样写会把它们全挡死，
         // 症状是「恢复了但任务没跑」（本实现第一版就是这么错的，transport 套件当场挂住）。
-        // ⚠️ 读失败**不改变既有行为**：这道闸只负责「明知已终态就别跑」，不负责把
-        // store 读取故障升级成「任务起不来」（停机窗口里 store 已 close 是既有场景，
-        // 那条路径的行为由 scheduler 的用例钉着）。
-        let claimed: TaskRecord | undefined;
-        try {
-          claimed = (await this.store.get(rec.taskId)) ?? rec;
-        } catch {
-          claimed = undefined;
-        }
+        const claimed = await readClaimed(this.store, rec);
         if (claimed && isTerminalTask(claimed)) {
           // 与 store 对齐再返回：外层 finally 会拿 `rec` 落一次 outcome，
           // 不同步的话会用**陈旧副本**把取消覆盖回 queued（任务从此既不起跑也不终态）。
@@ -1221,48 +1203,16 @@ export class AsyncRunner {
             (e) => this.#streams.push(rec.taskId, e),
             rec.spec.options?.onTraceEvent,
           );
-          const callOpts: RunInvocationOptions & {
-            session?: { store: NonNullable<AsyncRunnerOptions['sessionStore']>; id: string };
-          } = {
-            ...(rec.spec.options ?? {}),
-            // HITL 恢复段**不注入 session**（2026-09-20，spec §10 当日条）：恢复段的
-            // rec.spec.messages 是挂起段落库的 suspendedMessages —— 已含 loadSession
-            // 拼入的完整会话历史，再注入会让 run 层把 store 历史**再 prepend 一遍**
-            // （历史翻倍、token 复利）；且成功后 appendSession 会把整段扩展历史
-            // （含未决 tool_use 的 assistant）写进会话 —— 违反「只存对话轮次」不变量，
-            // 留下孤立 tool_use + 连续两条 assistant，下一轮该会话直接撞 API 400。
-            // 恢复段的会话回写由本类在成功后补写（见 #appendResumedSession）。
-            ...(!isResume &&
-            rec.spec.options?.sessionId !== undefined &&
-            this.sessionStore !== undefined
-              ? { session: { store: this.sessionStore, id: rec.spec.options.sessionId } }
-              : {}),
-            // 显式 undefined ≠ 不传（exactOptionalPropertyTypes）：无幂等键时不落这个键
-            ...(rec.idempotencyKey !== undefined ? { idempotencyKey: rec.idempotencyKey } : {}),
-            ...(rec.spec.options?.client !== undefined
-              ? { client: rec.spec.options.client }
-              : this.client !== undefined
-                ? { client: this.client }
-                : {}),
-            // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
-            ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
-            // 事件投入口（2026-09-28 ⑥）：挂起期间投递的事件随记录进引擎，由它在
-            // 未决 tool_use 解决之后注入消息流（为什么不能由宿主直接追加进
-            // spec.messages 的末尾：见 signalTask 与 engine/loop.ts 的注入点纪律）
-            ...(rec.pendingEvents !== undefined && rec.pendingEvents.length > 0
-              ? { events: rec.pendingEvents }
-              : {}),
-            // 恢复段的 trace 是一棵**新树**，经 traceContext link 挂到上一段 runId
-            // （spec §9.2 的入站关联机制）——「挂起段 → 恢复段 → …」在观测后端连成一条链。
-            // 判定依据：本段是续跑段（isResume）且已有上一段 runId；首次执行两者皆无。
-            ...(isResume && rec.runId !== undefined
-              ? { traceContext: { traceId: rec.runId } }
-              : {}),
-            rethrow: false, // 硬失败也以 failed 记录落库
+          // 装配交给引擎的选项（三条口径：续跑段不注入 session / 无值不落键 /
+          // 续跑段的 trace 挂到上一段 runId）—— 逐条理由在 `run-call-options.ts` 里
+          const callOpts = buildRunCallOptions({
+            rec,
+            isResume,
+            sessionStore: this.sessionStore,
+            client: this.client,
             signal: combined,
-            // 记账事件 → 本任务的流（见上面 bridgeTraceEvents 的注释）
-            ...(bridgeTraceEvents !== undefined ? { onTraceEvent: bridgeTraceEvents } : {}),
-          };
+            bridgeTraceEvents,
+          });
           try {
             const out = await this.#raceTimeout(
               this.app.run(rec.spec.messages, callOpts),
@@ -1273,69 +1223,38 @@ export class AsyncRunner {
             rec.result = out.result;
             rec.error = out.result.error;
             if (out.result.stopReason === 'suspended' && out.result.suspendedMessages) {
-              // HITL 挂起：扩展后的消息历史（末尾是含未决 tool_use 的 assistant 消息）
-              // 与待决清单、挂起时刻一起落库 —— approve / 惰性超时 / 重启后都靠它们。
+              // HITL 挂起：记录怎么改、事件簿记按 `eventsDelivered` 分档、以及「用户输入快照
+              // 必须在 `rec.spec` 被覆盖**之前**取」那条顺序事实 —— 全在 `run-outcome.ts`。
               // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
               // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
-              rec.status = 'suspended';
-              // 「本轮用户输入」快照必须在 overwrite **之前**取 —— 此刻 rec.spec.messages
-              // 还是原始输入；恢复段成功后由 #appendResumedSession 拿它 + finalText 补写会话。
-              // 只在首个挂起段快照（!isResume）：恢复段再挂起时 spec.messages 已是
-              // 扩展历史（含会话前缀），拿它当「用户输入」就错了 —— 原快照仍在，不能丢。
-              if (
-                !isResume &&
-                rec.spec.options?.sessionId !== undefined &&
-                this.sessionStore !== undefined
-              ) {
-                this.sessionInputs.set(rec.taskId, rec.spec.messages);
-              }
-              rec.spec = { ...rec.spec, messages: out.result.suspendedMessages };
-              rec.pendingApprovals = out.result.pendingApprovals;
-              rec.suspendedSince = Date.now();
-              // 挂起原因（2026-09-28 ①）：从结果形状里取，**不写死** ——
-              // 写死成 'approval' 会让将来新增的挂起原因在落库这一步被悄悄改写成审批。
-              rec.suspendedReason = out.result.suspendedReason;
-              // 目标时刻（时间挂起才有）—— 同上，从结果形状里取，不按原因反推
-              rec.wakeAt = out.result.wakeAt;
-              // 挂起读数（纪律①）：与落库**同一个分支**登记，不另起一处判断
+              const snapshot = applySuspendedOutcome(
+                rec,
+                out.result,
+                out.result.suspendedMessages,
+                {
+                  isResume,
+                  hasSessionStore: this.sessionStore !== undefined,
+                  now: Date.now(),
+                },
+              );
+              // 顺序承重：快照先落地，`markSuspended` 再登记（后者读 status / suspendedReason /
+              // wakeAt —— 三样都刚被上一行写好；挂起读数纪律①：与落库同一个分支登记）
+              if (snapshot !== undefined) this.sessionInputs.set(rec.taskId, snapshot);
               this.#approvals.markSuspended(rec);
-              // 事件簿记（2026-09-28 ⑥ 复审收口）：**注入过**就清 —— 事件已在挂起历史里
-              // （suspendedMessages 含注入的 user 消息），簿记留着会让下次续跑**重复注入**
-              // （真探针实证过：模型看到同一事件两次）。没注入（续跑入口的再挂起出口在
-              // 注入点之前返回）则必须留住 —— 清掉就是丢事件。判据是结果上的
-              // `eventsDelivered` 位，不是「是不是挂起」这个粗粒度。
-              if (out.result.eventsDelivered) rec.pendingEvents = undefined;
             } else {
               // 取消：机制与 `runTimeoutMs` 一字不差（同一条 abort signal），**意图**不同 ——
-              // 状态按意图落（超时 = failed、人取消 = cancelled）。意图从 `#cancels` 取，
-              // 不从 signal 反推：同一条 signal 有三个来源（调用方 / 超时 / 取消）。
+              // 意图从 `#cancels` 取，不从 signal 反推：同一条 signal 有三个来源
+              // （调用方 / 超时 / 取消）。记录的改法与「事件簿记在终态无条件清」那条（以及它
+              // 与挂起分支刻意不同的理由）都在 `run-outcome.ts` 的 `applyTerminalOutcome` 里。
               const cancelled = this.#cancels.has(rec.taskId);
-              rec.status = cancelled ? 'cancelled' : out.run.status;
-              // 取消必须带**结构化原因**（「取消不是失败，但原因要可查」）：宿主自定义的
-              // AppCallable 若不认 signal，它照旧返回一个正常结果 ⇒ `result.error` 是空的，
-              // 那时记录里也得说清「这条是被取消的」（与超时那条的账一类）。
-              if (cancelled && rec.error === undefined) rec.error = abortedError();
-              // 终态后清掉挂起痕迹（决定保留：审批记录是审计的一部分，随任务走）
-              rec.pendingApprovals = undefined;
-              rec.suspendedSince = undefined;
-              rec.suspendedReason = undefined;
-              rec.wakeAt = undefined;
-              // 事件簿记（2026-09-28 ⑥）：**终态没有第二次机会** —— 这条记录不会再被续跑，
-              // 事件留着也没有注入点，清掉。
-              // ⚠️ 判据与挂起分支**刻意不同**（复审第二轮把这里的注释改成真话，原先写的是
-              // 「跑通到非挂起出口 ⇒ 引擎已把它们注入消息流」—— 那句在注入点**之前**就被
-              // 中止/失败的出口上不成立）：挂起分支按 `eventsDelivered` 判（注入过才清、
-              // 没注入要留 —— 下次续跑补上），这里无条件清。
-              // 于是「恢复段在注入之前就 abort（取消 / runTimeoutMs）或整段失败」的那些终态，
-              // 其事件**不会**进历史 —— 既成事实，不假装「已注入」；发件方从记录的终态与
-              // error 看得到这条 run 的下场（要重试就重新提交一次：事件不跨终态重放）。
-              rec.pendingEvents = undefined;
+              const settled = applyTerminalOutcome(rec, out, { cancelled, isResume });
               // 离开挂起态（读数纪律②）：两处恢复路径负责「还没跑到终态」的那一半，
-              // 这一支负责「跑到了终态」的那一半（兜底：恢复失败也会落到这里）
+              // 这一支负责「跑到了终态」的那一半（兜底：恢复失败也会落到这里）。
+              // ⚠️ 顺序承重：先改记录（上一行按 `run.status` 落状态），再除名。
               this.#approvals.unmarkSuspended(rec.taskId);
-              // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
-              // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
-              if (isResume && out.run.status === 'succeeded') {
+              if (settled) {
+                // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
+                // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
                 await this.#appendResumedSession(rec, out.result.finalText);
               }
             }

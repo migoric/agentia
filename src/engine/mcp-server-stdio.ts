@@ -14,6 +14,40 @@ import { frameLimitText, MAX_FRAME_CHARS } from '../core/line-framing.js';
  * 连接器、连接器反向 import 桥的共享 helper，靠 ESM 的函数提升与调用时机侥幸无恙）——
  * 这里刻意做成注入式：无环是**构造性**的，不靠运气。
  */
+/**
+ * 派发一行（2026-10-11 自 `onData` 里提到模块级：它是纯件 —— 只依赖这一行、`core` 与
+ * 「还开着吗」这一个读数，留在闭包里 `startStdioTransport` 有 **88 行 / 占文件 85%**
+ * 〔**修前**读数，文件 104 行〕。⚠️ **别把「修后多少」写在这里** —— 那是个会腐烂的比例，
+ * 能现算：把 `tests/architecture/method-size.test.ts` 的上限临时改成 0 跑一次就是全表）。
+ *
+ * 两个刻意的处置（搬迁时一字未改）：
+ * ① **坏 JSON 由协议侧定义形状**回 `-32700` —— 传输层不该知道 JSON-RPC 的错误码
+ *    （见 `McpCore.rpcError`）；
+ * ② 分派自身抛错**吞掉**：`callTool` 内部已兜住工具错，真漏出来的也不许把 server 带崩。
+ */
+function dispatchLine(line: string, core: McpCore, isClosed: () => boolean): void {
+  let msg: unknown;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    process.stdout.write(`${JSON.stringify(core.rpcError(null, -32700, '行不是合法 JSON'))}\n`);
+    return;
+  }
+  const ac = new AbortController();
+  const signal = core.trackCall(ac);
+  void core
+    .dispatch(msg, signal)
+    .then((resp) => {
+      if (resp !== null && !isClosed()) {
+        process.stdout.write(`${JSON.stringify(resp)}\n`);
+      }
+    })
+    .catch(() => {
+      /* 分派自身不该抛（callTool 内部已兜住）；真抛了也不许把 server 带崩 */
+    })
+    .finally(() => core.untrackCall(ac));
+}
+
 export function startStdioTransport(core: McpCore): McpServer {
   // stdout 的 error **必须吞**：宿主先关读端、stdin 仍开着时，下一次应答写入就是异步
   // `write EPIPE` —— 未捕获会把 server 打成栈回溯 + exit 1（2026-09-27 ⑩），而它只是
@@ -64,27 +98,7 @@ export function startStdioTransport(core: McpCore): McpServer {
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       if (line.trim() === '') continue;
-      let msg: unknown;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        // 坏报文由**协议侧**定义形状：传输层不该知道 JSON-RPC 的错误码（见 McpCore.rpcError）
-        process.stdout.write(`${JSON.stringify(core.rpcError(null, -32700, '行不是合法 JSON'))}\n`);
-        continue;
-      }
-      const ac = new AbortController();
-      const signal = core.trackCall(ac);
-      void core
-        .dispatch(msg, signal)
-        .then((resp) => {
-          if (resp !== null && !closed) {
-            process.stdout.write(`${JSON.stringify(resp)}\n`);
-          }
-        })
-        .catch(() => {
-          /* 分派自身不该抛（callTool 内部已兜住）；真抛了也不许把 server 带崩 */
-        })
-        .finally(() => core.untrackCall(ac));
+      dispatchLine(line, core, () => closed);
     }
   };
   process.stdin.setEncoding('utf8');
