@@ -5,6 +5,372 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.2] - 2026-10-11
+
+> 本版主题（窗口 `0.10.1 → 0.10.2`）：**对外那一面各做实一格 —— 一个人能不能找到它、
+> 能不能 5 分钟跑起来**；对内把框架最深的两块体积债还清。三块 —— ① **交付面**：脚手架生成的
+> 新工程默认入口就是**可上线的 HTTP 服务**（`npm start` 直接起服务，不再是需要自己接线的批处理
+> 样例）；② **分发面**：官网全站**英文版**（`/en`，五页逐节对译 + 英文 404 + 语言自动检测与手动
+> 切换）—— 对外检索面第一次有英文落点；③ **内部债**：两轮**纯结构**重构（方法级体量闸与三处巨型体
+> 外移；`#executeInner` 的结果记账外移 + 补 14 条直接单测），顺带把 c8 分支覆盖率棘轮从 88 收到 89。
+> **无破坏性变更**：脚手架是**生成物**，已生成的工程有自己的 `package.json` / `src/`，不会被本版动到
+> ⇒ 既有使用者**不需要任何动作**；`@migor/agentia` 的公共 API 与 `exports` **逐字未变**（本版唯一
+> 碰 `src/index.ts` 的是版本常量那一行）。
+
+### 官网 · 全站英文版（`/en`）+ 语言自动检测与手动切换（2026-10-08 ①）
+
+- **是什么**：站点从中文单语扩成中 / 英两版 —— `index / docs / api / playground / tradeoffs`
+  五页**逐节对译** + 英文 404，挂在 `/en/*`（中文仍在根路径，是默认入口）。此前整站只有中文
+  （`fragments/` 下没有 `en/`、也没有 `/en` 路由）⇒ 对外检索面**没有英文落点**，而这正是本仓
+  「瓶颈在产品面 / 分发面」那句话里最直接的一格。
+- **语言怎么定**：`<head>` 最前的一段 `is:inline` 脚本，三条判据 —— ① 先读
+  `localStorage['agentia-lang']`（用户**显式**切过）；② 否则看 `navigator.languages` 里有没有
+  中文；③ 拿不到语言信息就**不跳**（宁可停在默认的中文版，也不猜）。⚠️ 自动跳转**只读不写**
+  localStorage —— 写了就等于把「自动」记成「用户选择」，用户之后手动点回中文会被**立刻弹走**；
+  只有 Nav 的切换控件才写。手动切换在导航右侧（`中 / EN`），指向**同页**的另一种语言。
+- **URL 形态**：`build.format: 'file'` 下英文首页的产物是**扁平的 `en.html`** ⇒ 首页地址是
+  `/en`（无尾斜杠）；`public/_worker.js` 加一条 `/en/` → `/en` 的 308 收敛（访客看到
+  `/en/docs` 会顺手猜 `/en/`）。站点地址一律干净形态（`.html` 会被 Cloudflare Pages 308）。
+- **SEO / agent 面**：两版各自 canonical 指自身，`hreflang` 三处互指（`x-default` 指中文版）；
+  `sitemap.xml.ts` 增 5 条 `/en/*`；`llms.txt.ts` 加「Documentation (English)」节；
+  `scripts/check-website-agent-readiness.mjs` 与 `scripts/build-md-variants.mjs` 的页面枚举改成
+  **递归** —— 不改则英文页**全部在产物守卫射程外**，且拿不到 `.md` 变体（GEO 档 C/D 直接退化）。
+- **英文 docs 页不摆第二份「已知边界」表**：那张表是构建期从**中文** `docs/usage-guide.md` §7
+  抠的，英文页手写第二份必然漂移 ⇒ 改成「一句说明 + 指回单源」；`llms-full.txt` 保持中文单源不动。
+- **客户端脚本文案**（首屏 trace 自播 / 回放面板 / BYOK 真实模式）是**运行期**插进 DOM 的，
+  构建期无从替换 ⇒ 新增 `packages/website/src/scripts/lang.js` 的 `pt(zh, en)` 接缝，中英**贴在一起写**
+  （不抽两份平行数组 —— 那会漂移，而且没有任何东西看得出来）；语言取 `<html lang>`
+  （服务端已经定下的事实），**不读 `localStorage`**（否则「服务端渲了英文页、脚本文案出中文」
+  这种错配就有了可能）。
+- **守卫 `tests/docs/website-i18n.test.ts`**：页面集合一一对应 / 中英 fragment 的 `id` 集合逐页
+  相等 + 剧本骨架（span id / 事件类型 / 顺序 / `usage`）逐例相等 / 英文面 0 CJK（fragment **与
+  真跑客户端脚本**）/ `<html lang>` 映射与三处 `hreflang` / 检测脚本**只读不写** localStorage /
+  五条 `/en` 路由已登记进 sitemap + llms.txt + `_worker.js`。**反向验证过 19 条**（各恰好点名
+  那条，复原后 `sha256` 逐字节一致）—— 其中第一版有一条**假守卫**（裸正则被文件头注释里的
+  `lang='en'` 满足），是变异验证当场抓出来的。
+- ⚠️ 两处如实标注的**射程**：① 该守卫**不看 `dist/`** —— `npm test` 在 `verify-all` 里早于官网
+  构建（步 6 vs 步 8）；产物侧仍由步 8 的 `scripts/check-website-agent-readiness.mjs` 守。
+  ② 「英文面 0 CJK」走**行为断言**（子进程喂假 DOM + 假 `fetch` 真跑，见
+  `tests/fixtures/website-i18n-harness.mjs`）而非源码扫描：本仓 `typescript` 是 7.x（tsgo），
+  主入口已不再导出经典 parser API，而手写扫描器会被 `playground.js` 里**带反引号 / 引号的正则**
+  （`/^\s*```/`、`/[&<>"']/g`）带偏（实测 24 处假命中）⇒ 它能抓「新增一段没包 `pt()` 的中文」，
+  抓不到「**永远跑不到的死分支**」里漏包。
+- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
+  既有使用者不需要任何动作。
+
+### 官网 · 手机版重点特性卡的 `Core` 徽章压住标题（2026-10-08 ②）
+
+- **病例**：390px 手机截图 —— 英文首页「Built for production」那张重点卡的 `Core` 徽章叠在
+  标题 `Observable: trace as a first-class citizen` 的首行上（暗色小字下像两个字叠印）。
+- **根因**：`.feature-flag` 是 `position: absolute; top: 16px; right: 18px`。桌面端这张卡
+  `grid-column: span 2` 跨两列、标题一侧有富余，撞不上；**单列窄屏下标题换行**，首行末端
+  直接钻进徽章底下。中英共用同一套 CSS ⇒ 不是「英文站专有」，标题一长就复现。
+- **修法**：在**已有的单列断点**（`@media (max-width: 560px)`，即那条把 `.feature--key` 的
+  `grid-column` 收回 `auto` 的地方）把徽章放回正常流：`position: static` +
+  `display: inline-block` + `margin-bottom`。⚠️ **只写 `position: static` 不够** ——
+  `<span>` 默认 `display: inline`，内联元素的 `padding` / `border` 不参与行高计算，
+  徽章框照样会叠到下一行去。
+- **守卫**：`tests/docs/website-css.test.ts` 增两条 —— ①「单列断点里 `.feature-flag` 必须
+  收回正常流（且不是内联）」；②「该断点须覆盖手机宽度（≥480px）」。**反向验证过 4 条**
+  （删掉整条规则 / `static`→`absolute` / 去掉 `display` / 断点 `560→360`），各点名对应断言，
+  复原后 `sha256` 逐字节一致。⚠️ 断言前**先剥注释**：本仓踩过「守卫被同文件注释满足」的假绿。
+- 顺手把 `docs/guards.md` §1 里 `website-css.test.ts` 那行补准：**2026-09-30 加的
+  「折叠菜单 CTA 边框」守卫一直没登记**（那行仍写着「反向验证过 3 条」）。本次给它补做
+  4 条变异验证，该行一并更新。同样**不涉及包**（改的是 `packages/website` 的样式与网站守卫）。
+
+### 官网 · 部署后的 agent 打分不再在半传播状态下跑；`/en/` 的 308 补缓存头（2026-10-08 ③）
+
+- **修掉一条腐烂的判据（真缺陷，非本次引入）**：`ci.yml` 的 `deploy-website` 在打分前要「等新
+  版本真上线」，而那条判据是「`robots.txt` 里出现 `Sitemap: ` 行」—— 注释写着「它是本轮新增的
+  产物，只有新版才可能有」。**那一行自 PR #119 起每一版都有** ⇒ 条件恒为真、从不等待。实测当场
+  中了：第 1 次探测就报「已在线上」，而 AFDocs 读到的是**上一版的 sitemap**，据此刷出两条 **假
+  FAIL**（`llms-txt-links-resolve` 报「2 条坏链」、`llms-txt-coverage` 报「5 links not in
+  sitemap」—— 而 11 条链接逐条复测全是 200）。
+  ⇒ 判据换成「**本次运行的提交**」：站点侧由 `packages/website/src/pages/robots.txt.ts` 在构建期
+  写下 `# build: <GITHUB_SHA>`（本地构建**不写** —— 「这一行在不在」本身就是「这份产物是不是 CI
+  构建的」的判据，不给它编假缺省值），CI 侧轮询等线上出现**同一个 SHA**。等不到不再静默：轮询
+  超时留 `::warning::`，而构建产物里没有该行则 `::error::` 并**跳过打分**。
+  ⚠️ **教训（写进 `ci.yml` 与 `robots.txt.ts` 的注释）**：判据不能是「某个只有新版才有的字面量」
+  —— 它会随版本变旧、然后恒真；只能是「本次运行自己的身份」。
+- **`/en/` 的 308 补上缓存头**：`public/_worker.js` 原先用 `Response.redirect()`，它只给一个
+  `location`、**不带任何 cache 头**（Pages 自己那条尾斜杠 308 同样不带）—— 而这条规则由我们接手
+  的理由**正是响应头**（否则没有任何地方能补）。改成显式 `new Response(...)` 并带上与站内其余响应
+  同一档的 `public, max-age=0, must-revalidate`。行为用例增 3 条（`/en/` ⇒ 308 + 目标 + **缓存头**
+  + 不劳烦 `ASSETS`；带 `Accept: text/markdown` 仍 308；`/en` 本体不拦），**反向验证 2 条**
+  各点名对应断言。
+  ⚠️ 两处更正：① 那条注释原先写着「Pages 对 `/en/` 只会回 404」，**是错的**（实测 Pages 会把
+  `/docs/`、`/en/docs/` 这类「产物里存在 `x.html`」的目录形态自己 308 到干净形态）；② 上一轮我曾把
+  那次 `cache-header-hygiene` FAIL 的账算在**这条 308** 头上 —— **也不是它**（AFDocs 会跟随重定向，
+  逐端点复测静态资源 / `.md` / llms / sitemap 全合格）。那次的真因就是上面那条**腐烂的判据**。
+  补这个头是显式的**卫生**，不是那次红的解药。
+- **守卫加固（并更正一处误判）**：`tests/docs/website-i18n.test.ts` 里「检测脚本用了
+  `location.replace`」这条断言原先直接匹配脚本原文 —— 一条**写着同样字面量的注释**就能把它喂绿。
+  现在先剥**整行注释**再断言，并给剥壳器加了自证断言。⚠️ 上一轮我把风险说成「靠那段 HTML 注释
+  用了全角括号才没爆」—— **不对**：那段注释在 `<script>` 块**之外**、根本不在被断言的字符串里；
+  真实（也较窄）的风险是**脚本块内**的注释。同一守卫里另一条「`_worker.js` 的 `/en/` 规范化必须是
+  308」原先钉死了整条 `Response.redirect(...)` 表达式 ⇒ 上面那次**行为等价**的改写把它打红了；已改成
+  只核**登记**（分支在场 + 是 308），行为交给真跑用例 —— **钉实现的字面量会把「等价改写」判成回归**。
+- **新增元守卫**：`tests/scripts/verify-all-wiring.test.ts` 增一条 —— 把「等新版上线」判据的
+  **两端契约**钉住（`ci.yml` 侧必须按本次提交比；生产侧**真跑** `robots.txt.ts`，按打桩的
+  `GITHUB_SHA` 核**渲染出来的产物**，并钉住「没给 SHA 时不输出这一行」）。写这条守卫时**我自己先
+  写出两条假守卫**（判据侧匹配整个 job body ⇒ 被同一 job 里另一处同样的串满足；生产侧核源码文本
+  ⇒ 被文件自己的注释满足），都是变异验证当场抓到的，已收紧。
+- 同样**不涉及包**（改的是 `.github/workflows/ci.yml`、`packages/website` 与 `tests/`）。
+
+### 官网 · 语言跳转从客户端 JS 搬到服务端 302（2026-10-09 ①）
+
+- **病例（真 FAIL，非判据抖动）**：AFDocs（`agentdocsspec.com` 的 0.20.0 打分器）的
+  `redirect-behavior` **逐页**判 `js-redirect` 而 FAIL —— 这是 CI 上唯一一条**真** FAIL
+  （`cache-header-hygiene` 那条是部署半传播的连带假红，早前已排除）。根因：语言自动检测是
+  `Base.astro` 里一段 `is:inline` 脚本（`location.replace`），而它**留在每一页 HTML 里**
+  （英文页也有，只是运行期不触发）；AFDocs 判的是「这份 HTML 里有没有 JS 跳转」，不区分它会不会真跑。
+- **搬到服务端**：`packages/website/public/_worker.js`（Pages **advanced mode** worker，源码 ==
+  线上行为）按 `Accept-Language` 对**中文页面路径**回 **302** 到 `/en` 等价路径，并带
+  **`Vary: Accept-Language`**（少了它 CDN 会把中文那份 200 回给英文访客 —— 跳转直接失效）。
+  客户端那段脚本连同 `localStorage['agentia-lang']` 一起下线。⚠️ 设计稿
+  `docs/plans/2026-10-08-website-i18n.md` §7 那条「静态托管没有服务端、JS 是唯一手段」当场被推翻
+  （它没把 `_worker.js` 算进去），已在原处划掉并补 §9。
+- **显式选择优先于自动检测（防循环的那把锁）**：`Nav.astro` 的中 / EN 切换控件改写成
+  **`hl=zh` / `hl=en` cookie**（`path=/`、一年有效）；`/` 见到 `hl=zh` 就**不跳** —— 没有它，
+  英文浏览器点「中」落回 `/` 后会被自动检测再次弹回 `/en`，用户**出不来**。
+- **四条刻意边界**（写进 `_worker.js` 注释 + 设计稿 §9.3）：① 只从中文路径跳到 `/en`、**不反向**
+  （`/en` 是本体、永不拦；代价如实标注：中文偏好访客循外链落到 `/en` 时**不会**被送回 `/`，
+  旧 JS 会 —— 有意收窄）；② **只在非 markdown 请求上做**（带 `Accept: text/markdown` 的 agent
+  要它请求的那个 URL 的 `.md`）；③ 只处理 `GET` / `HEAD`；④ 302 **不给长 `max-age`**
+  （与站内其余响应同档 `public, max-age=0, must-revalidate`）。
+- **守卫**：新增 `tests/docs/website-lang-negotiation.test.ts`（**真跑** `_worker.js`，喂假
+  `env.ASSETS`）11 条 —— 用户点名的五条（`hl=zh` 不跳 / 无 cookie + `Accept-Language: en` ⇒
+  302 到 `/en` / `zh-CN` 不跳 / `/en` 本体不被拦 / **手动切回中文后不再被弹回**）外加 `Vary` +
+  缓存头、深层页 query 保留、`POST` 与 markdown 不跳、`/en/` 308 与内容协商**不回归**。
+  `tests/docs/website-i18n.test.ts` 两条改写（客户端跳转**已下线**：断言打在**两层剥壳**后的源码上；
+  Nav 改核 **`hl` cookie**、且只认真实 `onclick` 处理器里的写入 —— Nav 注释里就写着 `localStorage`）。
+  **反向验证过 8 条**（各恰好点名那条，复原后 `sha256` 逐字节一致）：整段停用 ⇒ **4 条** /
+  忽略 cookie ⇒ **2 条** / `Vary` 换成 `Accept`、去掉 `/en` 排除、去掉「非 markdown」闸、
+  去掉方法闸 ⇒ **各 1 条**（服务端）；Nav 退回 `localStorage`、Base 加回客户端脚本 ⇒ **各 1 条**。
+- **验收读数（本地真跑，8 页 curated 样本）**：`redirect-behavior` 由 **FAIL（js-redirect，逐页）
+  翻成 PASS**（「No redirects detected across 8 pages」），`URL Stability and Redirects` 100/100；
+  同一份产物在**退回旧实现**时该检查重新 FAIL —— 红→绿两向都实测过。
+- ⚠️ **一处自己踩到的坑（顺手记下）**：第一版把「已下线」的说明写在 `<head>` 的 **HTML 注释**里，
+  而 Astro 会把它**渲进每一页**（`location.replace` 字面量又回到了产物 HTML 里 —— 正是这条检查
+  在看的字面量）；已把说明移进**构建期才执行的 frontmatter** 注释，`<head>` 只留一句不含该字面量的短注。
+- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
+  既有使用者不需要任何动作。
+
+### 深度评审收口：框架记账 / patrol 软链边界 / soak 假红假绿 / i18n 守卫记录面（2026-10-09 ②）
+
+> 对 0.9.5 → 0.10.1 全窗口 + 在制品做了三轮深度评审（框架内核 / CLI / exports / soak /
+> terminal-bench / patrol / 官网 i18n / CI），本节是发现的修复批次。每处修法都带变异验证
+> （改坏 → 点名断言红 → 复原核 diff）。
+
+- **`createOpenAIClient` 接 DeepSeek 缓存计量**（`src/integrations/openai.ts`）：DeepSeek 的
+  `prompt_cache_hit_tokens` 此前被整个丢弃且 cache 恒记 0 —— agent loop 前缀缓存命中率常达
+  80–95%，成本读数系统性高估数倍。现映射进 `cache_read_input_tokens`，且因 DeepSeek 口径
+  `prompt_tokens` **已含**命中部分（与 Anthropic 相反），`input_tokens` 拆出未命中部分防双计；
+  无这两个字段的端点行为逐字不变。决策依据见 spec §10 2026-10-09 ①。
+  **对包的对外面**：DeepSeek 端点的记账口径变准（原先恒 0）—— 修正而非破坏；其余无公共 API 变更。
+- **patrol 示例的边界校验补上 realpath**（`examples/patrol/src/workspace.ts`）：原实现只有词法判定，
+  根内指向外部的符号链接可读出界（数据外泄给模型）、`quarantine_path` 可把界外真文件移进隔离区
+  （审批人只见 benign 相对路径）；头注却声称「软链逃逸一律抛错」。现为词法 + 真身两道校验，
+  walk 不跟随软链，注释/README 与实现对齐。
+- **terminal-bench 适配器五处**：基础设施错误（限流/5xx/超时/连接/上下文超长）不再落进能力分母
+  （新增 exit 4 桶）；bash 哨兵锚定整行（`set -x` 不再污染）；`harbor_agent.py` 版本从真值派生
+  （不再硬编码）；任务转换不再静默丢 `docker-compose.yaml`（单服务提取 ENV/WORKDIR/ENTRYPOINT，
+  做不到的响亮告警）与原版 `run-tests.sh`（保留原文 + 尾部接 reward 落盘，测试依赖安装不再丢失）；
+  容器内静态 node 包补 SHASUMS256 校验。
+- **soak 验证工具**：`e2e-soak-suspend` 看门狗余量从真实预算逐轮派生（旧写死 +30s 在长档必假红）、
+  approve 臂补「人工批落地 ≥1」闸（微档不再空转恒绿）、续跑段 link 校验从「存在」升级为
+  「指向上一段」；`e2e-soak-app` 头注改为如实表述（假端点只回 echo，subagent/skill 链路本档未压到）。
+- **官网 i18n 守卫补记录面**（`tests/fixtures/website-i18n-harness.mjs`）：`placeholder`/`value`/
+  `title`/`aria-label`/`setAttribute` 通道此前不被记录 —— 英文页漏包 `pt()` 直接显示中文也全绿；
+  假 fetch 剧本补 429 与网络错误分支。`_worker.js` 的 `/en/` → 308 补上 query/hash 保留。
+  ⚠️ 本批另有两条**在 rebase 时被 ①（服务端 302）吸收**：客户端检测脚本已删除 ⇒
+  「404 页跳过跳转」与「只读 localStorage 断言加强」两条随之失效（对象不存在了）；
+  404 形态的残留（坏路径被 302 到 `/en/<坏路径>` 再 404）记为已知边界，见 PR #222 描述。
+- 契约注释两条（不改行为）：`MemorySnapshot.rev` 声明「水合成功时不得为 undefined」；
+  `TaskStore.get` 声明「必须返回副本而非内部活引用」（transport 的「先落库再派发」纪律依赖它）。
+
+### 脚手架 README：「`npm start` 部署/Docker 用这条」的误导表述（2026-10-09 ③）
+
+- **病例**：`agentia create` 生成的 README 写「`npm start` ……（部署/Docker 用这条）」，但脚手架的
+  `main.ts` 是**一次性批处理入口**（`app.run` → 打印 → 退出：无端口、无 `/healthz`、无 drain）——
+  那句话会读成「脚手架能直接上线」。全仓此前没有一处明说「脚手架给的是 CLI 形态，服务看
+  `examples/deploy/`」。
+- **修法**：模板 README 的「构建与生产运行」节把 `npm start` 如实标为 Job 形态（适合 cron / CI /
+  容器一次性任务），并给出服务化的三个指引：`createHttpHandler` + `AsyncRunner` 的配方在
+  `examples/deploy/`、上线清单在 `docs/deployment.md`、API 见项目内 `AGENTS.md` 的「触发与宿主」节。
+- 只改文案，不改生成逻辑与脚本。CLI 套件 210/210 绿。
+
+### 脚手架默认入口 = 可上线的 HTTP 服务（`npm start`）（2026-10-09 ④）
+
+- **病例**：`agentia create` 生成的项目只有 **Job 形态**（`npm start` = 跑一次就退出的
+  `main.ts`），而框架的交付承诺是「build 产物可以直接上线当服务」—— 上一版
+  （2026-10-09 ③）只把 README 那句误导文案改诚实了，服务化仍要用户自己去
+  `examples/deploy/` 抄配方再接线。
+- **形态（对齐 NestJS 口径）**：`npm run build && npm start` 起来的就是**一个在监听的 HTTP
+  服务**。为此把两个入口调了个个儿 —— **`src/main.ts` = 服务**（NestJS 的 `main.ts` 就是那个
+  在 `listen` 的入口），原来的薄入口挪成 **`src/batch.ts`**（`npm run start:batch -- "你的问题"`）。
+  脚本表：`start` / `start:prod`（**同物**，显式生产名）/ `start:batch`；**不再有 `start:server`**
+  —— 它的角色被 `start` 吸收，留一个同物的旧名只会让人以为服务还有另一种起法。
+  决策记录（含「换骨 vs 换皮」「SQLite vs FileTaskStore」两个取舍）见
+  `docs/plans/2026-10-09-scaffold-default-service.md` 与 `docs/spec.md` §10 2026-10-09 ②。
+- **服务面**：`src/main.ts` 复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产共享
+  同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上 `createHttpHandler` +
+  `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`（含 SSE）、异步
+  `POST /tasks`、**崩溃续跑**（`resumePending`）、**优雅停机**（SIGTERM/SIGINT →
+  `drain({ timeoutMs: 15_000 })` → `server.close`，二次信号直接退出）。配套：模板
+  `package.json` / `.gitignore` / README 三节重写、`create` 的后续步骤文案、
+  `docs/usage-guide.md` §2.1 文件分工表两行。
+- **鉴权取舍**：可选，不强制 —— 设了 `AGENTIA_TOKEN` 就启用 Bearer 校验（`/healthz`
+  除外）；**不设则启动时打一条响亮警告**（「HTTP 面无任何鉴权，仅应监听回环/内网」）。
+  与 `examples/deploy` 同档：框架「鉴权只是缝」（策略是宿主/反代的事），patrol 那种
+  强制模式对第一天的新工程太重。
+- **两处顺手修掉的静默**（评审实报，都不是新功能）：① `AGENTIA_DB` 的缺省从 **cwd 相对**
+  改成按本文件位置落**工程根** —— 服务形态常换工作目录启动（systemd / 容器 `-w`），
+  cwd 相对会让同一个工程用上两个库，而 `resumePending()` 静默找不到上一个进程的任务
+  （表面看像「任务丢了」）；② `PORT=`（空串）此前经 `Number('')` ⇒ `0` ⇒ **静默随机端口**，
+  现在显式当缺省，非整数 / 越界则响亮报错（⚠️ **不能**改成 `|| 3000` —— 那会把冒烟测试
+  依赖的 `PORT=0` 一起吃掉）。另把 `PORT` / `AGENTIA_DB` / `AGENTIA_TOKEN` 补进 `.env.example`
+  的变量清单。
+- **Node ≥ 22.5 边界如实标注**：`SqliteTaskStore` 用 `node:sqlite`，更低版本**起服务时**
+  构造期抛可读报错（框架对它延迟加载）。默认入口变成服务之后，这条从「只有 `start:server`
+  需要」变成「**脚手架默认路径就需要**」—— README、`docs/usage-guide.md` 与上线清单
+  `docs/deployment.md` §1 三处都写明，并给出 `FileTaskStore` 这条 Node 18 的退路（同一套
+  API，代价是单写者前提）。框架**库**的 `engines: >=18` 与 `import-floor` job **不变**
+  —— 抬起来的是脚手架默认路径的下限，不是包的下限。
+- **只影响新建工程**：脚手架是**生成物**（`agentia create` 的那一刻写出去），
+  已生成的工程有自己的 `package.json` / `src/`，不会被这一版动到 ⇒ **既有使用者不需要任何动作**
+  （不构成破坏性变更）。
+- **交付面同步（补做）**：这次翻转改的是「哪个文件是默认入口」，而**散文面当时没跟着改** ——
+  官网中英两版 docs 页、仓库根 `README.md` 与 `packages/cli/README.md`（**随 npm 发布**）
+  都还写着翻转前的说法，而 `tsc`、单测与八步门禁**全绿**：它们扫源码与产物，不看散文。
+  已补齐，并加了 `tests/docs/scaffold-entry-contract.test.ts`（四层判据 + 三条防真空下限，
+  12 条变异验证）。⚠️ **射程如实写在该文件头**：目录树里「一行只写一个文件」的列举、以及
+  散文把两个入口名折到相邻两行的写法**不在射程内** —— 硬判会误红，而误报的门禁会被关掉。
+  ⚠️ 这次漂移此前**零守卫**：`check-website-agent-readiness.mjs` 只核 `llms-full.txt` 与单源
+  `docs/usage-guide.md` 逐字节相等，**官网 fragments 整片不在它的射程内**。
+- **同一类病的第二例（顺手修掉）**：2026-09-22 把装配拆成 `src/app.ts` 时，官网两版 api 参考
+  仍把读 `.env` 说成由默认入口 `src/main.ts` 首行做（它实际在 `src/app.ts`）—— 比本次翻转还早，
+  停了半个月。已一并改掉，并给上面那条守卫补了第 ④ 层判据（同一行不得把读 `.env` 的 API
+  挂在默认入口上、却不提装配模块）。⚠️ 这次也**零守卫**：`templates.test.mjs` 的同一条
+  不变量只守模板源码，守不到散文面。
+- **验证**：`templates.test.mjs` 的服务面形状断言改钉 `main.ts`（从 `./app.js` 取工厂、不许
+  旁路 `createApp`、AsyncRunner + createHttpHandler + SqliteTaskStore + resumePending +
+  `drain({` + SIGTERM、缺省无 token 必须有警告文案），原 `main.ts` 那两条**平移**到 `batch.ts`
+  （薄入口 + `result.error` 非零退出）；`scripts/e2e-cli.ts` 一步真起 `node dist/main.js`
+  （PORT=0、临时 DB、假 Anthropic 端点）—— `/healthz` 200、无 token `POST /run` 401、
+  带 token 真跑一轮 200、SIGTERM 干净退出，另一条从**两个 cwd** 真跑 `dist/batch.js`。
+  零 `src/` 框架改动。
+
+### 重构（纯结构，零行为变化）· 方法级体量闸 + 三处巨型体外移（2026-10-11 ①）
+
+来源：一轮框架深度评审的 §8 建议 ①②③。**零语义变更**（下游行为一字未改）⇒ 按
+`CONTRIBUTING.md:59` 的判据**不写 `docs/spec.md` §10**；决策留档在
+`docs/plans/2026-10-11-method-size-guard-and-debt.md`。
+
+- **新增方法级体量闸 `tests/architecture/method-size.test.ts`**（`src/**` 单个可调用体 ≤
+  **240** 行）+ 自带扫描器 `tests/architecture/lib/callable-spans.ts`。文件级已有闸
+  （`source-size`，单文件「含代码行」≤ 750），但**方法级没有** —— 而文件级闸的盲区正好是
+  最大那一档的生长方式：一个工厂把周边全吞进自己的花括号，**文件总行数几乎不变**。
+  ⚠️ **判据是行数、不是比例** —— 评审报告建议的「比例」判据经**实测后否掉**：抽件在减分子的
+  同时也减分母（`mcp-http.ts` 抽走 74 行后仍在 78%），比例的下限被文件的脚手架行数顶住，
+  要当时就咬只能落在离阈值 1~4pt 处 ⇒ 常态化误报（违 `guards.md` §3 纪律①）。
+  扫描器**刻意不是 AST**：`typescript` 7.0.2 是 tsgo、**已无经典 compiler API**（实测
+  `import * as ts` 只剩 `{default, version, versionMajorMinor}`）⇒ 走文本，并与结构体检技能
+  的独立尺对拍（13 行读数**逐字相等**）。
+- **三笔债按新闸的射程外移**（判据：这段代码能不能**局部问答**，能才搬）：
+  - `integrations/mcp-http.ts` 的 `createStreamableHttpMcpConnector` **265 → 191 行**
+    （文件 316 → 245）—— 两个连接器**各自抄了一份**的协议面（JSON-RPC 结果提取 / HTTP 错误
+    包装 / `tools` 清单校验 / `isError` 拒绝 / 会话自愈判定，共 7 个）收进既有的
+    `mcp-protocol.ts`（158 → 294）。同一条错误文案曾存在两份，**改一处漏一处没有用例看得见**。
+  - `integrations/mcp-stdio.ts` 的 `createStdioMcpConnector` **252 → 213 行** —— 子进程退出
+    观察面（`trackChildExit`）与收尾（`reapChild`）提出去；stdout 分帧派发提出 `dispatchLine`。
+  - `engine/mcp-server-http.ts` 的 `startHttpTransport` **192 → 145 行** —— 五个纯件
+    （`sendJson` / `readBody` / `jsonRpcIdOf` / `startListening` / `closeOwnServer`）提到
+    **同文件模块级**；`mcp-server-stdio.ts` 同款提出 `dispatchLine`（那个体本来就在 240 以下，
+    属顺手对齐，不是欠债）。
+  - `transport/async.ts` 的 `#executeInner` **257 → 217 行**（文件 1460 → 1419）—— 42 行 run
+    选项装配 + 幂等去重的终态采纳搬到**新文件** `transport/run-call-options.ts`。⚠️ 搬迁
+    **逐字**：那些 `...(cond ? {k: v} : {})` 的形状是承重的（本仓开着
+    `exactOptionalPropertyTypes`，「没这个键」与「键是 undefined」下游语义不同）。
+- ⚠️ **反直觉读数，写明免得下次误判**：外移让这七个文件的**总行数上升**（2569 → 2801，
+  **+232**）。原因不是多写了代码，而是**注释是证据载体** —— 搬走的每一块都带着自己的
+  「为什么外移」。这个方向**没有守卫会被触发**（`source-size` 是单文件闸，没有全仓总量闸）。
+- ⚠️ **本轮自己踩到并修掉的两个「守卫骗人」**：① 第一版自证样本把花括号放在**单独一行**，
+  而收尾判据**对整体深度平移是免疫的** ⇒ **摘掉遮蔽照样绿**（假守卫）—— 已换成「花括号与体的
+  开括号**同一行**」的真病灶形态。② 外移时漏掉**第三个写者**：基线 `markExited` 挂在
+  `error` / `exit` / `close` **三个**监听器上，只搬两个 ⇒ 表现为「关不掉」或「多等一个宽限期」，
+  **用例全绿、`tsc` 全绿、67 个 MCP 用例全过**。这正是 `guards.md` 附 B.3 第 1 条问的东西，
+  它是**被机械对拍（字面量 `'exit'` 计数 1→2）带出来的线索**，已补回并保持 1:1 映射。
+- **验证**：变异电池六条（4 条扫描器口径 + 棘轮 + 真空护栏）**咬住 6 / 漏网 0 / 还原异常 0**，
+  每条都是精确字面替换（命中数 ≠ 1 即中断）、备份先于一切变异、还原后 `sha256` 逐字节回到基线；
+  其中最强的一条是**把 `mcp-http.ts` 用 `git show HEAD` 退回拆分前** ⇒ 断言原文点名
+  `mcp-http.ts:52 createStreamableHttpMcpConnector = 265 行（占文件 84%，该文件可调用体 1 个）`
+  —— 即**本闸本来就能在拆分前咬住那笔债**。另按附 B.3 第 2 条做**字符串字面量机械对拍**
+  （163 种 / 300 处 → 164 种 / 302 处，5 处丢失逐条核过，只有三条 MCP 错误文案 2→1，
+  而那是本次的**目的**）。`guards.md` §1.1 补登记行（含两条已知偏离：**比例盲区** 与
+  「多行调用传对象字面量实参 `foo({` 会被判成一个体」——全量实测 538 个体里 4 个、最大 9 行）。
+
+### 重构（纯结构，零行为变化）· ③ 做全：`#executeInner` 的结果记账外移 + 直接单测（2026-10-11 ②）
+
+- **先更正上一份评审的口径**：它把 ③ 写成「`async.ts` 的 **drain 协调**（`#executeInner` 257 行含
+  **4 个嵌套 `try`**）」—— **两半都不准**。① drain 的**等待闸**早已抽成 `src/transport/drain-gate.ts`
+  （**在飞计数刻意不搬**：它同时是 `/healthz` 的 `inFlight` 口径、由任务生命周期加减）；
+  ② 现测是 **6 个 `try {`**（`catch` 只有 3 个，另 3 个是 `finally`；缩进 profile 4/6/8/8/10/8）
+  ⇒ **最深四级 `try` 嵌套**，不是 4 个。**根因是 `AGENTS.md` 自相矛盾**：`transport/`
+  导览一处写「只剩 drain 协调未抽」，几行之后就是 `drain-gate.ts` 的说明。⇒ 本轮**就地更正那句话**
+  并留下后果说明（正是它让人把已完成的抽件报成未偿的债）。
+- **做了什么**：抽 `src/transport/run-outcome.ts`（同族的第五件，前四件是 slot-pool →
+  approval-policy → drain-gate → run-call-options）——`readClaimed`（认领前重读；**读失败不升级成
+  「任务起不来」**，这条分支此前只能透过 runner 行为间接观察）+ `applySuspendedOutcome` /
+  `applyTerminalOutcome`（挂起与终态两支的**记录映射**）。逐字搬迁，判据与注释一并搬走。
+- **纯的边界**：实例副作用以**返回值**交回调用点。其中「用户输入快照必须在 `rec.spec` 被覆盖
+  **之前**取」是**承重的顺序事实** —— 取错时刻是**静默的错**（会话历史翻倍、token 复利），
+  所以它必须是一条类型上看得见的返回值，而不是藏在函数体里的回调。
+- **读数**：`#executeInner` **217 → 176 行**；其中的 `try` **6 → 5**、`catch` **3 → 2**
+  （`readClaimed` 摘掉一个 `try`+`catch`）。⚠️ **最深 `try` 嵌套没变，仍是四级** —— 去掉的那个与
+  run 段**平级**，不在 4→6→8→10 那条最深链上。⇒ 本轮降的是**体量与 `try` 个数**，不是嵌套深度；
+  `async.ts` **1419 → 1379 行**。⚠️ **剩下的 5 个各有不同语义**（最外层挡「异步 store 任何一处
+  reject 逃逸成 unhandled rejection」/ 认领终态闸 / run 段错误映射（`cancelIntent` 必须声明在
+  `try` **外**才能被 catch 看见）/ 收尾摘监听器 / 落库失败也要释放槽位）⇒ **抽平它们只会改变语义
+  或把 `try` 搬个地方**。所以本轮的判据是「**能抽的抽干净 + 把剩下的为什么不能抽写下来**」，
+  不是「把 `try` 数降到 1」。另**如实记一条**：本轮抽件**没有降低嵌套深度**（4 级 → 4 级），
+  降的是**体量与 `try`/`catch` 个数**；「抽走了一个 `try`」≠「嵌套浅了一层」。
+- **新增单测 `tests/transport/run-outcome.test.ts`**（14 个 `it`）：快照的三条判据**各缺一条都拿不到
+  快照**、`eventsDelivered` **两档都断**（只断一档的话「无条件清」也能绿）、终态 5 个挂起痕迹字段
+  + 返回值 3 组合（`isResume × run.status`，且非取消那支**用 `failed` 试**——只用 `succeeded`
+  的话两种写法都绿）、「取消但已有 error ⇒ 不覆盖」、以及**异步 store**（`get` 返回 Promise）那一支。
+  fixture **逐字段给值**、不用 `{} as AgentRunResult` —— 本件真正读的就是那几个字段，空对象 cast
+  会让「字段名写错」在 `tsc` 下全绿、运行时读成 `undefined`（本仓第 5 条踩过的原样形态）。
+  transport 套件 **353 → 367** 全绿（零行为变化的行为侧判据）。
+- **变异电池 16 条**（`.workbuddy/probes/2026-10-11-run-outcome-mutation-battery.py`）：咬住 **16** /
+  漏网 **0**。⚠️ 被改的文件是**本轮新增、尚未入库**的（`git status` 里是 `??`）⇒ 脚本按本仓第 15 条
+  **第四形态**写：备份先于一切变异、**开跑就把恢复点打印出来**、装 SIGTERM/SIGINT 处理器先还原再退
+  （`try/finally` 挡不住 SIGTERM：默认处置是立即终止、不展开栈）。
+- **覆盖率棘轮：分支阈值 88 → 89**。阈值按 `docs/guards.md` 附 B.2 那条推 —— **阈值 = 水位 − ~3pt**。
+  **改前基线**（在 `HEAD`（`303c870`）上开独立 `git worktree` 跑，里面只有改前那 353 条用例）：
+  `All files` 行 98.57 / **分支 92.82** / 函数 98.44，其中 `transport/async.ts` 分支 **94.91**；
+  **改后现测**（367 条用例）：行 98.58 / **分支 92.85** / 函数 98.45，`transport/async.ts` 分支
+  **95.08**，新件 `run-outcome.ts` **100/100/100/100**（那 14 条单测确实把它的分支走遍了）。
+  ⇒ 88 的余量 4.85pt 超出「~3pt」的必要范围，收口到 **89（余量 3.85pt）**；⚠️ **收 90 只剩 2.85pt
+  （低于 3pt）故不取** —— 阈值离水位太远会放掉一整个模块的测试，太近会把正常抖动当退化报。
+  **行 / 函数刻意不动** —— 行 95 的余量 3.58pt、函数 95 的余量 3.45pt，本来就在 ~3pt 上。
+  ⚠️ 基线那次跑有 2 条红，**与代码无关**，如实记下：`worktree` 里没有 `dist/` ⇒ `tests/docs` 的
+  记分牌量不了**发布体积**（`dist/index.js 不在场`）。那两条不执行 `src/` 代码、也不影响覆盖率读数。
+- **忠实性按 `docs/guards.md` 附 B.3 六条复核过**：字面量多重集对拍 `async.ts` **72 种 → 72 种**
+  （少的 3 处是 `'cancelled'` / `'suspended'` / `'succeeded'` 各 1 处，**都落在新件里**；多的 1 处是
+  `'./run-outcome.js'` 这条 import）⇒ **1:1**；新件**零模块级状态**；依赖单向（新件不 import `async.ts`，
+  `RunSettled` 是**结构镜像**，真类型漂移时调用点直接报错）。
+
+### 依赖
+
+- 开发依赖：`@anthropic-ai/sdk` → 0.132.0、`@types/node` → 26.6.4 —— **不影响运行时面**：
+  两个都在 devDependencies（根 `dependencies` 是 `{}`）。SDK 只在
+  `tests/types/message-compat.types.ts` 做「自有公共消息类型族 ↔ SDK 类型」的结构兼容门禁，
+  另在 `tests/engine/errors.test.ts` / `tests/engine/loop.test.ts` 里真 `new` 出 SDK 的错误类
+  断言引擎映射 ⇒ 两道都在 `verify-all` 射程内（第 4 步 / 第 5 步），本版是绿的。
+- 官网（不随包发布）：`astro` → 7.3.7。构建与产物形状由 `verify-all` 第 8 步
+  （`build:website` + 按产物形状核 404 / robots / sitemap / llms.txt）在 PR 阶段验证，
+  真实部署只在 main 上跑 —— 本版已随 main 的 CI 部署通过。
 ## [0.10.1] - 2026-10-05
 
 > 本版主题（窗口 `0.10.0 → 0.10.1`）：**从「看得见一次 run」到「留得下、比得出」**，外加给两块
@@ -743,350 +1109,6 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 没走」（抽块其实已走了三步）。
 
 ## [Unreleased]
-
-### 官网 · 全站英文版（`/en`）+ 语言自动检测与手动切换（2026-10-08 ①）
-
-- **是什么**：站点从中文单语扩成中 / 英两版 —— `index / docs / api / playground / tradeoffs`
-  五页**逐节对译** + 英文 404，挂在 `/en/*`（中文仍在根路径，是默认入口）。此前整站只有中文
-  （`fragments/` 下没有 `en/`、也没有 `/en` 路由）⇒ 对外检索面**没有英文落点**，而这正是本仓
-  「瓶颈在产品面 / 分发面」那句话里最直接的一格。
-- **语言怎么定**：`<head>` 最前的一段 `is:inline` 脚本，三条判据 —— ① 先读
-  `localStorage['agentia-lang']`（用户**显式**切过）；② 否则看 `navigator.languages` 里有没有
-  中文；③ 拿不到语言信息就**不跳**（宁可停在默认的中文版，也不猜）。⚠️ 自动跳转**只读不写**
-  localStorage —— 写了就等于把「自动」记成「用户选择」，用户之后手动点回中文会被**立刻弹走**；
-  只有 Nav 的切换控件才写。手动切换在导航右侧（`中 / EN`），指向**同页**的另一种语言。
-- **URL 形态**：`build.format: 'file'` 下英文首页的产物是**扁平的 `en.html`** ⇒ 首页地址是
-  `/en`（无尾斜杠）；`public/_worker.js` 加一条 `/en/` → `/en` 的 308 收敛（访客看到
-  `/en/docs` 会顺手猜 `/en/`）。站点地址一律干净形态（`.html` 会被 Cloudflare Pages 308）。
-- **SEO / agent 面**：两版各自 canonical 指自身，`hreflang` 三处互指（`x-default` 指中文版）；
-  `sitemap.xml.ts` 增 5 条 `/en/*`；`llms.txt.ts` 加「Documentation (English)」节；
-  `scripts/check-website-agent-readiness.mjs` 与 `scripts/build-md-variants.mjs` 的页面枚举改成
-  **递归** —— 不改则英文页**全部在产物守卫射程外**，且拿不到 `.md` 变体（GEO 档 C/D 直接退化）。
-- **英文 docs 页不摆第二份「已知边界」表**：那张表是构建期从**中文** `docs/usage-guide.md` §7
-  抠的，英文页手写第二份必然漂移 ⇒ 改成「一句说明 + 指回单源」；`llms-full.txt` 保持中文单源不动。
-- **客户端脚本文案**（首屏 trace 自播 / 回放面板 / BYOK 真实模式）是**运行期**插进 DOM 的，
-  构建期无从替换 ⇒ 新增 `packages/website/src/scripts/lang.js` 的 `pt(zh, en)` 接缝，中英**贴在一起写**
-  （不抽两份平行数组 —— 那会漂移，而且没有任何东西看得出来）；语言取 `<html lang>`
-  （服务端已经定下的事实），**不读 `localStorage`**（否则「服务端渲了英文页、脚本文案出中文」
-  这种错配就有了可能）。
-- **守卫 `tests/docs/website-i18n.test.ts`**：页面集合一一对应 / 中英 fragment 的 `id` 集合逐页
-  相等 + 剧本骨架（span id / 事件类型 / 顺序 / `usage`）逐例相等 / 英文面 0 CJK（fragment **与
-  真跑客户端脚本**）/ `<html lang>` 映射与三处 `hreflang` / 检测脚本**只读不写** localStorage /
-  五条 `/en` 路由已登记进 sitemap + llms.txt + `_worker.js`。**反向验证过 19 条**（各恰好点名
-  那条，复原后 `sha256` 逐字节一致）—— 其中第一版有一条**假守卫**（裸正则被文件头注释里的
-  `lang='en'` 满足），是变异验证当场抓出来的。
-- ⚠️ 两处如实标注的**射程**：① 该守卫**不看 `dist/`** —— `npm test` 在 `verify-all` 里早于官网
-  构建（步 6 vs 步 8）；产物侧仍由步 8 的 `scripts/check-website-agent-readiness.mjs` 守。
-  ② 「英文面 0 CJK」走**行为断言**（子进程喂假 DOM + 假 `fetch` 真跑，见
-  `tests/fixtures/website-i18n-harness.mjs`）而非源码扫描：本仓 `typescript` 是 7.x（tsgo），
-  主入口已不再导出经典 parser API，而手写扫描器会被 `playground.js` 里**带反引号 / 引号的正则**
-  （`/^\s*```/`、`/[&<>"']/g`）带偏（实测 24 处假命中）⇒ 它能抓「新增一段没包 `pt()` 的中文」，
-  抓不到「**永远跑不到的死分支**」里漏包。
-- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
-  既有使用者不需要任何动作。
-
-### 官网 · 手机版重点特性卡的 `Core` 徽章压住标题（2026-10-08 ②）
-
-- **病例**：390px 手机截图 —— 英文首页「Built for production」那张重点卡的 `Core` 徽章叠在
-  标题 `Observable: trace as a first-class citizen` 的首行上（暗色小字下像两个字叠印）。
-- **根因**：`.feature-flag` 是 `position: absolute; top: 16px; right: 18px`。桌面端这张卡
-  `grid-column: span 2` 跨两列、标题一侧有富余，撞不上；**单列窄屏下标题换行**，首行末端
-  直接钻进徽章底下。中英共用同一套 CSS ⇒ 不是「英文站专有」，标题一长就复现。
-- **修法**：在**已有的单列断点**（`@media (max-width: 560px)`，即那条把 `.feature--key` 的
-  `grid-column` 收回 `auto` 的地方）把徽章放回正常流：`position: static` +
-  `display: inline-block` + `margin-bottom`。⚠️ **只写 `position: static` 不够** ——
-  `<span>` 默认 `display: inline`，内联元素的 `padding` / `border` 不参与行高计算，
-  徽章框照样会叠到下一行去。
-- **守卫**：`tests/docs/website-css.test.ts` 增两条 —— ①「单列断点里 `.feature-flag` 必须
-  收回正常流（且不是内联）」；②「该断点须覆盖手机宽度（≥480px）」。**反向验证过 4 条**
-  （删掉整条规则 / `static`→`absolute` / 去掉 `display` / 断点 `560→360`），各点名对应断言，
-  复原后 `sha256` 逐字节一致。⚠️ 断言前**先剥注释**：本仓踩过「守卫被同文件注释满足」的假绿。
-- 顺手把 `docs/guards.md` §1 里 `website-css.test.ts` 那行补准：**2026-09-30 加的
-  「折叠菜单 CTA 边框」守卫一直没登记**（那行仍写着「反向验证过 3 条」）。本次给它补做
-  4 条变异验证，该行一并更新。同样**不涉及包**（改的是 `packages/website` 的样式与网站守卫）。
-
-### 官网 · 部署后的 agent 打分不再在半传播状态下跑；`/en/` 的 308 补缓存头（2026-10-08 ③）
-
-- **修掉一条腐烂的判据（真缺陷，非本次引入）**：`ci.yml` 的 `deploy-website` 在打分前要「等新
-  版本真上线」，而那条判据是「`robots.txt` 里出现 `Sitemap: ` 行」—— 注释写着「它是本轮新增的
-  产物，只有新版才可能有」。**那一行自 PR #119 起每一版都有** ⇒ 条件恒为真、从不等待。实测当场
-  中了：第 1 次探测就报「已在线上」，而 AFDocs 读到的是**上一版的 sitemap**，据此刷出两条 **假
-  FAIL**（`llms-txt-links-resolve` 报「2 条坏链」、`llms-txt-coverage` 报「5 links not in
-  sitemap」—— 而 11 条链接逐条复测全是 200）。
-  ⇒ 判据换成「**本次运行的提交**」：站点侧由 `packages/website/src/pages/robots.txt.ts` 在构建期
-  写下 `# build: <GITHUB_SHA>`（本地构建**不写** —— 「这一行在不在」本身就是「这份产物是不是 CI
-  构建的」的判据，不给它编假缺省值），CI 侧轮询等线上出现**同一个 SHA**。等不到不再静默：轮询
-  超时留 `::warning::`，而构建产物里没有该行则 `::error::` 并**跳过打分**。
-  ⚠️ **教训（写进 `ci.yml` 与 `robots.txt.ts` 的注释）**：判据不能是「某个只有新版才有的字面量」
-  —— 它会随版本变旧、然后恒真；只能是「本次运行自己的身份」。
-- **`/en/` 的 308 补上缓存头**：`public/_worker.js` 原先用 `Response.redirect()`，它只给一个
-  `location`、**不带任何 cache 头**（Pages 自己那条尾斜杠 308 同样不带）—— 而这条规则由我们接手
-  的理由**正是响应头**（否则没有任何地方能补）。改成显式 `new Response(...)` 并带上与站内其余响应
-  同一档的 `public, max-age=0, must-revalidate`。行为用例增 3 条（`/en/` ⇒ 308 + 目标 + **缓存头**
-  + 不劳烦 `ASSETS`；带 `Accept: text/markdown` 仍 308；`/en` 本体不拦），**反向验证 2 条**
-  各点名对应断言。
-  ⚠️ 两处更正：① 那条注释原先写着「Pages 对 `/en/` 只会回 404」，**是错的**（实测 Pages 会把
-  `/docs/`、`/en/docs/` 这类「产物里存在 `x.html`」的目录形态自己 308 到干净形态）；② 上一轮我曾把
-  那次 `cache-header-hygiene` FAIL 的账算在**这条 308** 头上 —— **也不是它**（AFDocs 会跟随重定向，
-  逐端点复测静态资源 / `.md` / llms / sitemap 全合格）。那次的真因就是上面那条**腐烂的判据**。
-  补这个头是显式的**卫生**，不是那次红的解药。
-- **守卫加固（并更正一处误判）**：`tests/docs/website-i18n.test.ts` 里「检测脚本用了
-  `location.replace`」这条断言原先直接匹配脚本原文 —— 一条**写着同样字面量的注释**就能把它喂绿。
-  现在先剥**整行注释**再断言，并给剥壳器加了自证断言。⚠️ 上一轮我把风险说成「靠那段 HTML 注释
-  用了全角括号才没爆」—— **不对**：那段注释在 `<script>` 块**之外**、根本不在被断言的字符串里；
-  真实（也较窄）的风险是**脚本块内**的注释。同一守卫里另一条「`_worker.js` 的 `/en/` 规范化必须是
-  308」原先钉死了整条 `Response.redirect(...)` 表达式 ⇒ 上面那次**行为等价**的改写把它打红了；已改成
-  只核**登记**（分支在场 + 是 308），行为交给真跑用例 —— **钉实现的字面量会把「等价改写」判成回归**。
-- **新增元守卫**：`tests/scripts/verify-all-wiring.test.ts` 增一条 —— 把「等新版上线」判据的
-  **两端契约**钉住（`ci.yml` 侧必须按本次提交比；生产侧**真跑** `robots.txt.ts`，按打桩的
-  `GITHUB_SHA` 核**渲染出来的产物**，并钉住「没给 SHA 时不输出这一行」）。写这条守卫时**我自己先
-  写出两条假守卫**（判据侧匹配整个 job body ⇒ 被同一 job 里另一处同样的串满足；生产侧核源码文本
-  ⇒ 被文件自己的注释满足），都是变异验证当场抓到的，已收紧。
-- 同样**不涉及包**（改的是 `.github/workflows/ci.yml`、`packages/website` 与 `tests/`）。
-
-### 官网 · 语言跳转从客户端 JS 搬到服务端 302（2026-10-09 ①）
-
-- **病例（真 FAIL，非判据抖动）**：AFDocs（`agentdocsspec.com` 的 0.20.0 打分器）的
-  `redirect-behavior` **逐页**判 `js-redirect` 而 FAIL —— 这是 CI 上唯一一条**真** FAIL
-  （`cache-header-hygiene` 那条是部署半传播的连带假红，早前已排除）。根因：语言自动检测是
-  `Base.astro` 里一段 `is:inline` 脚本（`location.replace`），而它**留在每一页 HTML 里**
-  （英文页也有，只是运行期不触发）；AFDocs 判的是「这份 HTML 里有没有 JS 跳转」，不区分它会不会真跑。
-- **搬到服务端**：`packages/website/public/_worker.js`（Pages **advanced mode** worker，源码 ==
-  线上行为）按 `Accept-Language` 对**中文页面路径**回 **302** 到 `/en` 等价路径，并带
-  **`Vary: Accept-Language`**（少了它 CDN 会把中文那份 200 回给英文访客 —— 跳转直接失效）。
-  客户端那段脚本连同 `localStorage['agentia-lang']` 一起下线。⚠️ 设计稿
-  `docs/plans/2026-10-08-website-i18n.md` §7 那条「静态托管没有服务端、JS 是唯一手段」当场被推翻
-  （它没把 `_worker.js` 算进去），已在原处划掉并补 §9。
-- **显式选择优先于自动检测（防循环的那把锁）**：`Nav.astro` 的中 / EN 切换控件改写成
-  **`hl=zh` / `hl=en` cookie**（`path=/`、一年有效）；`/` 见到 `hl=zh` 就**不跳** —— 没有它，
-  英文浏览器点「中」落回 `/` 后会被自动检测再次弹回 `/en`，用户**出不来**。
-- **四条刻意边界**（写进 `_worker.js` 注释 + 设计稿 §9.3）：① 只从中文路径跳到 `/en`、**不反向**
-  （`/en` 是本体、永不拦；代价如实标注：中文偏好访客循外链落到 `/en` 时**不会**被送回 `/`，
-  旧 JS 会 —— 有意收窄）；② **只在非 markdown 请求上做**（带 `Accept: text/markdown` 的 agent
-  要它请求的那个 URL 的 `.md`）；③ 只处理 `GET` / `HEAD`；④ 302 **不给长 `max-age`**
-  （与站内其余响应同档 `public, max-age=0, must-revalidate`）。
-- **守卫**：新增 `tests/docs/website-lang-negotiation.test.ts`（**真跑** `_worker.js`，喂假
-  `env.ASSETS`）11 条 —— 用户点名的五条（`hl=zh` 不跳 / 无 cookie + `Accept-Language: en` ⇒
-  302 到 `/en` / `zh-CN` 不跳 / `/en` 本体不被拦 / **手动切回中文后不再被弹回**）外加 `Vary` +
-  缓存头、深层页 query 保留、`POST` 与 markdown 不跳、`/en/` 308 与内容协商**不回归**。
-  `tests/docs/website-i18n.test.ts` 两条改写（客户端跳转**已下线**：断言打在**两层剥壳**后的源码上；
-  Nav 改核 **`hl` cookie**、且只认真实 `onclick` 处理器里的写入 —— Nav 注释里就写着 `localStorage`）。
-  **反向验证过 8 条**（各恰好点名那条，复原后 `sha256` 逐字节一致）：整段停用 ⇒ **4 条** /
-  忽略 cookie ⇒ **2 条** / `Vary` 换成 `Accept`、去掉 `/en` 排除、去掉「非 markdown」闸、
-  去掉方法闸 ⇒ **各 1 条**（服务端）；Nav 退回 `localStorage`、Base 加回客户端脚本 ⇒ **各 1 条**。
-- **验收读数（本地真跑，8 页 curated 样本）**：`redirect-behavior` 由 **FAIL（js-redirect，逐页）
-  翻成 PASS**（「No redirects detected across 8 pages」），`URL Stability and Redirects` 100/100；
-  同一份产物在**退回旧实现**时该检查重新 FAIL —— 红→绿两向都实测过。
-- ⚠️ **一处自己踩到的坑（顺手记下）**：第一版把「已下线」的说明写在 `<head>` 的 **HTML 注释**里，
-  而 Astro 会把它**渲进每一页**（`location.replace` 字面量又回到了产物 HTML 里 —— 正是这条检查
-  在看的字面量）；已把说明移进**构建期才执行的 frontmatter** 注释，`<head>` 只留一句不含该字面量的短注。
-- 官网**不随包发布**（`packages/website` 是 `private: true`）⇒ 本版**无包的对外面变更**，
-  既有使用者不需要任何动作。
-
-### 深度评审收口：框架记账 / patrol 软链边界 / soak 假红假绿 / i18n 守卫记录面（2026-10-09 ②）
-
-> 对 0.9.5 → 0.10.1 全窗口 + 在制品做了三轮深度评审（框架内核 / CLI / exports / soak /
-> terminal-bench / patrol / 官网 i18n / CI），本节是发现的修复批次。每处修法都带变异验证
-> （改坏 → 点名断言红 → 复原核 diff）。
-
-- **`createOpenAIClient` 接 DeepSeek 缓存计量**（`src/integrations/openai.ts`）：DeepSeek 的
-  `prompt_cache_hit_tokens` 此前被整个丢弃且 cache 恒记 0 —— agent loop 前缀缓存命中率常达
-  80–95%，成本读数系统性高估数倍。现映射进 `cache_read_input_tokens`，且因 DeepSeek 口径
-  `prompt_tokens` **已含**命中部分（与 Anthropic 相反），`input_tokens` 拆出未命中部分防双计；
-  无这两个字段的端点行为逐字不变。决策依据见 spec §10 2026-10-09 ①。
-  **对包的对外面**：DeepSeek 端点的记账口径变准（原先恒 0）—— 修正而非破坏；其余无公共 API 变更。
-- **patrol 示例的边界校验补上 realpath**（`examples/patrol/src/workspace.ts`）：原实现只有词法判定，
-  根内指向外部的符号链接可读出界（数据外泄给模型）、`quarantine_path` 可把界外真文件移进隔离区
-  （审批人只见 benign 相对路径）；头注却声称「软链逃逸一律抛错」。现为词法 + 真身两道校验，
-  walk 不跟随软链，注释/README 与实现对齐。
-- **terminal-bench 适配器五处**：基础设施错误（限流/5xx/超时/连接/上下文超长）不再落进能力分母
-  （新增 exit 4 桶）；bash 哨兵锚定整行（`set -x` 不再污染）；`harbor_agent.py` 版本从真值派生
-  （不再硬编码）；任务转换不再静默丢 `docker-compose.yaml`（单服务提取 ENV/WORKDIR/ENTRYPOINT，
-  做不到的响亮告警）与原版 `run-tests.sh`（保留原文 + 尾部接 reward 落盘，测试依赖安装不再丢失）；
-  容器内静态 node 包补 SHASUMS256 校验。
-- **soak 验证工具**：`e2e-soak-suspend` 看门狗余量从真实预算逐轮派生（旧写死 +30s 在长档必假红）、
-  approve 臂补「人工批落地 ≥1」闸（微档不再空转恒绿）、续跑段 link 校验从「存在」升级为
-  「指向上一段」；`e2e-soak-app` 头注改为如实表述（假端点只回 echo，subagent/skill 链路本档未压到）。
-- **官网 i18n 守卫补记录面**（`tests/fixtures/website-i18n-harness.mjs`）：`placeholder`/`value`/
-  `title`/`aria-label`/`setAttribute` 通道此前不被记录 —— 英文页漏包 `pt()` 直接显示中文也全绿；
-  假 fetch 剧本补 429 与网络错误分支。`_worker.js` 的 `/en/` → 308 补上 query/hash 保留。
-  ⚠️ 本批另有两条**在 rebase 时被 ①（服务端 302）吸收**：客户端检测脚本已删除 ⇒
-  「404 页跳过跳转」与「只读 localStorage 断言加强」两条随之失效（对象不存在了）；
-  404 形态的残留（坏路径被 302 到 `/en/<坏路径>` 再 404）记为已知边界，见 PR #222 描述。
-- 契约注释两条（不改行为）：`MemorySnapshot.rev` 声明「水合成功时不得为 undefined」；
-  `TaskStore.get` 声明「必须返回副本而非内部活引用」（transport 的「先落库再派发」纪律依赖它）。
-
-### 脚手架 README：「`npm start` 部署/Docker 用这条」的误导表述（2026-10-09 ③）
-
-- **病例**：`agentia create` 生成的 README 写「`npm start` ……（部署/Docker 用这条）」，但脚手架的
-  `main.ts` 是**一次性批处理入口**（`app.run` → 打印 → 退出：无端口、无 `/healthz`、无 drain）——
-  那句话会读成「脚手架能直接上线」。全仓此前没有一处明说「脚手架给的是 CLI 形态，服务看
-  `examples/deploy/`」。
-- **修法**：模板 README 的「构建与生产运行」节把 `npm start` 如实标为 Job 形态（适合 cron / CI /
-  容器一次性任务），并给出服务化的三个指引：`createHttpHandler` + `AsyncRunner` 的配方在
-  `examples/deploy/`、上线清单在 `docs/deployment.md`、API 见项目内 `AGENTS.md` 的「触发与宿主」节。
-- 只改文案，不改生成逻辑与脚本。CLI 套件 210/210 绿。
-
-### 脚手架默认入口 = 可上线的 HTTP 服务（`npm start`）（2026-10-09 ④）
-
-- **病例**：`agentia create` 生成的项目只有 **Job 形态**（`npm start` = 跑一次就退出的
-  `main.ts`），而框架的交付承诺是「build 产物可以直接上线当服务」—— 上一版
-  （2026-10-09 ③）只把 README 那句误导文案改诚实了，服务化仍要用户自己去
-  `examples/deploy/` 抄配方再接线。
-- **形态（对齐 NestJS 口径）**：`npm run build && npm start` 起来的就是**一个在监听的 HTTP
-  服务**。为此把两个入口调了个个儿 —— **`src/main.ts` = 服务**（NestJS 的 `main.ts` 就是那个
-  在 `listen` 的入口），原来的薄入口挪成 **`src/batch.ts`**（`npm run start:batch -- "你的问题"`）。
-  脚本表：`start` / `start:prod`（**同物**，显式生产名）/ `start:batch`；**不再有 `start:server`**
-  —— 它的角色被 `start` 吸收，留一个同物的旧名只会让人以为服务还有另一种起法。
-  决策记录（含「换骨 vs 换皮」「SQLite vs FileTaskStore」两个取舍）见
-  `docs/plans/2026-10-09-scaffold-default-service.md` 与 `docs/spec.md` §10 2026-10-09 ②。
-- **服务面**：`src/main.ts` 复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产共享
-  同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上 `createHttpHandler` +
-  `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`（含 SSE）、异步
-  `POST /tasks`、**崩溃续跑**（`resumePending`）、**优雅停机**（SIGTERM/SIGINT →
-  `drain({ timeoutMs: 15_000 })` → `server.close`，二次信号直接退出）。配套：模板
-  `package.json` / `.gitignore` / README 三节重写、`create` 的后续步骤文案、
-  `docs/usage-guide.md` §2.1 文件分工表两行。
-- **鉴权取舍**：可选，不强制 —— 设了 `AGENTIA_TOKEN` 就启用 Bearer 校验（`/healthz`
-  除外）；**不设则启动时打一条响亮警告**（「HTTP 面无任何鉴权，仅应监听回环/内网」）。
-  与 `examples/deploy` 同档：框架「鉴权只是缝」（策略是宿主/反代的事），patrol 那种
-  强制模式对第一天的新工程太重。
-- **两处顺手修掉的静默**（评审实报，都不是新功能）：① `AGENTIA_DB` 的缺省从 **cwd 相对**
-  改成按本文件位置落**工程根** —— 服务形态常换工作目录启动（systemd / 容器 `-w`），
-  cwd 相对会让同一个工程用上两个库，而 `resumePending()` 静默找不到上一个进程的任务
-  （表面看像「任务丢了」）；② `PORT=`（空串）此前经 `Number('')` ⇒ `0` ⇒ **静默随机端口**，
-  现在显式当缺省，非整数 / 越界则响亮报错（⚠️ **不能**改成 `|| 3000` —— 那会把冒烟测试
-  依赖的 `PORT=0` 一起吃掉）。另把 `PORT` / `AGENTIA_DB` / `AGENTIA_TOKEN` 补进 `.env.example`
-  的变量清单。
-- **Node ≥ 22.5 边界如实标注**：`SqliteTaskStore` 用 `node:sqlite`，更低版本**起服务时**
-  构造期抛可读报错（框架对它延迟加载）。默认入口变成服务之后，这条从「只有 `start:server`
-  需要」变成「**脚手架默认路径就需要**」—— README、`docs/usage-guide.md` 与上线清单
-  `docs/deployment.md` §1 三处都写明，并给出 `FileTaskStore` 这条 Node 18 的退路（同一套
-  API，代价是单写者前提）。框架**库**的 `engines: >=18` 与 `import-floor` job **不变**
-  —— 抬起来的是脚手架默认路径的下限，不是包的下限。
-- **只影响新建工程**：脚手架是**生成物**（`agentia create` 的那一刻写出去），
-  已生成的工程有自己的 `package.json` / `src/`，不会被这一版动到 ⇒ **既有使用者不需要任何动作**
-  （不构成破坏性变更）。
-- **交付面同步（补做）**：这次翻转改的是「哪个文件是默认入口」，而**散文面当时没跟着改** ——
-  官网中英两版 docs 页、仓库根 `README.md` 与 `packages/cli/README.md`（**随 npm 发布**）
-  都还写着翻转前的说法，而 `tsc`、单测与八步门禁**全绿**：它们扫源码与产物，不看散文。
-  已补齐，并加了 `tests/docs/scaffold-entry-contract.test.ts`（四层判据 + 三条防真空下限，
-  12 条变异验证）。⚠️ **射程如实写在该文件头**：目录树里「一行只写一个文件」的列举、以及
-  散文把两个入口名折到相邻两行的写法**不在射程内** —— 硬判会误红，而误报的门禁会被关掉。
-  ⚠️ 这次漂移此前**零守卫**：`check-website-agent-readiness.mjs` 只核 `llms-full.txt` 与单源
-  `docs/usage-guide.md` 逐字节相等，**官网 fragments 整片不在它的射程内**。
-- **同一类病的第二例（顺手修掉）**：2026-09-22 把装配拆成 `src/app.ts` 时，官网两版 api 参考
-  仍把读 `.env` 说成由默认入口 `src/main.ts` 首行做（它实际在 `src/app.ts`）—— 比本次翻转还早，
-  停了半个月。已一并改掉，并给上面那条守卫补了第 ④ 层判据（同一行不得把读 `.env` 的 API
-  挂在默认入口上、却不提装配模块）。⚠️ 这次也**零守卫**：`templates.test.mjs` 的同一条
-  不变量只守模板源码，守不到散文面。
-- **验证**：`templates.test.mjs` 的服务面形状断言改钉 `main.ts`（从 `./app.js` 取工厂、不许
-  旁路 `createApp`、AsyncRunner + createHttpHandler + SqliteTaskStore + resumePending +
-  `drain({` + SIGTERM、缺省无 token 必须有警告文案），原 `main.ts` 那两条**平移**到 `batch.ts`
-  （薄入口 + `result.error` 非零退出）；`scripts/e2e-cli.ts` 一步真起 `node dist/main.js`
-  （PORT=0、临时 DB、假 Anthropic 端点）—— `/healthz` 200、无 token `POST /run` 401、
-  带 token 真跑一轮 200、SIGTERM 干净退出，另一条从**两个 cwd** 真跑 `dist/batch.js`。
-  零 `src/` 框架改动。
-
-### 重构（纯结构，零行为变化）· 方法级体量闸 + 三处巨型体外移（2026-10-11 ①）
-
-来源：一轮框架深度评审的 §8 建议 ①②③。**零语义变更**（下游行为一字未改）⇒ 按
-`CONTRIBUTING.md:59` 的判据**不写 `docs/spec.md` §10**；决策留档在
-`docs/plans/2026-10-11-method-size-guard-and-debt.md`。
-
-- **新增方法级体量闸 `tests/architecture/method-size.test.ts`**（`src/**` 单个可调用体 ≤
-  **240** 行）+ 自带扫描器 `tests/architecture/lib/callable-spans.ts`。文件级已有闸
-  （`source-size`，单文件「含代码行」≤ 750），但**方法级没有** —— 而文件级闸的盲区正好是
-  最大那一档的生长方式：一个工厂把周边全吞进自己的花括号，**文件总行数几乎不变**。
-  ⚠️ **判据是行数、不是比例** —— 评审报告建议的「比例」判据经**实测后否掉**：抽件在减分子的
-  同时也减分母（`mcp-http.ts` 抽走 74 行后仍在 78%），比例的下限被文件的脚手架行数顶住，
-  要当时就咬只能落在离阈值 1~4pt 处 ⇒ 常态化误报（违 `guards.md` §3 纪律①）。
-  扫描器**刻意不是 AST**：`typescript` 7.0.2 是 tsgo、**已无经典 compiler API**（实测
-  `import * as ts` 只剩 `{default, version, versionMajorMinor}`）⇒ 走文本，并与结构体检技能
-  的独立尺对拍（13 行读数**逐字相等**）。
-- **三笔债按新闸的射程外移**（判据：这段代码能不能**局部问答**，能才搬）：
-  - `integrations/mcp-http.ts` 的 `createStreamableHttpMcpConnector` **265 → 191 行**
-    （文件 316 → 245）—— 两个连接器**各自抄了一份**的协议面（JSON-RPC 结果提取 / HTTP 错误
-    包装 / `tools` 清单校验 / `isError` 拒绝 / 会话自愈判定，共 7 个）收进既有的
-    `mcp-protocol.ts`（158 → 294）。同一条错误文案曾存在两份，**改一处漏一处没有用例看得见**。
-  - `integrations/mcp-stdio.ts` 的 `createStdioMcpConnector` **252 → 213 行** —— 子进程退出
-    观察面（`trackChildExit`）与收尾（`reapChild`）提出去；stdout 分帧派发提出 `dispatchLine`。
-  - `engine/mcp-server-http.ts` 的 `startHttpTransport` **192 → 145 行** —— 五个纯件
-    （`sendJson` / `readBody` / `jsonRpcIdOf` / `startListening` / `closeOwnServer`）提到
-    **同文件模块级**；`mcp-server-stdio.ts` 同款提出 `dispatchLine`（那个体本来就在 240 以下，
-    属顺手对齐，不是欠债）。
-  - `transport/async.ts` 的 `#executeInner` **257 → 217 行**（文件 1460 → 1419）—— 42 行 run
-    选项装配 + 幂等去重的终态采纳搬到**新文件** `transport/run-call-options.ts`。⚠️ 搬迁
-    **逐字**：那些 `...(cond ? {k: v} : {})` 的形状是承重的（本仓开着
-    `exactOptionalPropertyTypes`，「没这个键」与「键是 undefined」下游语义不同）。
-- ⚠️ **反直觉读数，写明免得下次误判**：外移让这七个文件的**总行数上升**（2569 → 2801，
-  **+232**）。原因不是多写了代码，而是**注释是证据载体** —— 搬走的每一块都带着自己的
-  「为什么外移」。这个方向**没有守卫会被触发**（`source-size` 是单文件闸，没有全仓总量闸）。
-- ⚠️ **本轮自己踩到并修掉的两个「守卫骗人」**：① 第一版自证样本把花括号放在**单独一行**，
-  而收尾判据**对整体深度平移是免疫的** ⇒ **摘掉遮蔽照样绿**（假守卫）—— 已换成「花括号与体的
-  开括号**同一行**」的真病灶形态。② 外移时漏掉**第三个写者**：基线 `markExited` 挂在
-  `error` / `exit` / `close` **三个**监听器上，只搬两个 ⇒ 表现为「关不掉」或「多等一个宽限期」，
-  **用例全绿、`tsc` 全绿、67 个 MCP 用例全过**。这正是 `guards.md` 附 B.3 第 1 条问的东西，
-  它是**被机械对拍（字面量 `'exit'` 计数 1→2）带出来的线索**，已补回并保持 1:1 映射。
-- **验证**：变异电池六条（4 条扫描器口径 + 棘轮 + 真空护栏）**咬住 6 / 漏网 0 / 还原异常 0**，
-  每条都是精确字面替换（命中数 ≠ 1 即中断）、备份先于一切变异、还原后 `sha256` 逐字节回到基线；
-  其中最强的一条是**把 `mcp-http.ts` 用 `git show HEAD` 退回拆分前** ⇒ 断言原文点名
-  `mcp-http.ts:52 createStreamableHttpMcpConnector = 265 行（占文件 84%，该文件可调用体 1 个）`
-  —— 即**本闸本来就能在拆分前咬住那笔债**。另按附 B.3 第 2 条做**字符串字面量机械对拍**
-  （163 种 / 300 处 → 164 种 / 302 处，5 处丢失逐条核过，只有三条 MCP 错误文案 2→1，
-  而那是本次的**目的**）。`guards.md` §1.1 补登记行（含两条已知偏离：**比例盲区** 与
-  「多行调用传对象字面量实参 `foo({` 会被判成一个体」——全量实测 538 个体里 4 个、最大 9 行）。
-
-### 重构（纯结构，零行为变化）· ③ 做全：`#executeInner` 的结果记账外移 + 直接单测（2026-10-11 ②）
-
-- **先更正上一份评审的口径**：它把 ③ 写成「`async.ts` 的 **drain 协调**（`#executeInner` 257 行含
-  **4 个嵌套 `try`**）」—— **两半都不准**。① drain 的**等待闸**早已抽成 `src/transport/drain-gate.ts`
-  （**在飞计数刻意不搬**：它同时是 `/healthz` 的 `inFlight` 口径、由任务生命周期加减）；
-  ② 现测是 **6 个 `try {`**（`catch` 只有 3 个，另 3 个是 `finally`；缩进 profile 4/6/8/8/10/8）
-  ⇒ **最深四级 `try` 嵌套**，不是 4 个。**根因是 `AGENTS.md` 自相矛盾**：`transport/`
-  导览一处写「只剩 drain 协调未抽」，几行之后就是 `drain-gate.ts` 的说明。⇒ 本轮**就地更正那句话**
-  并留下后果说明（正是它让人把已完成的抽件报成未偿的债）。
-- **做了什么**：抽 `src/transport/run-outcome.ts`（同族的第五件，前四件是 slot-pool →
-  approval-policy → drain-gate → run-call-options）——`readClaimed`（认领前重读；**读失败不升级成
-  「任务起不来」**，这条分支此前只能透过 runner 行为间接观察）+ `applySuspendedOutcome` /
-  `applyTerminalOutcome`（挂起与终态两支的**记录映射**）。逐字搬迁，判据与注释一并搬走。
-- **纯的边界**：实例副作用以**返回值**交回调用点。其中「用户输入快照必须在 `rec.spec` 被覆盖
-  **之前**取」是**承重的顺序事实** —— 取错时刻是**静默的错**（会话历史翻倍、token 复利），
-  所以它必须是一条类型上看得见的返回值，而不是藏在函数体里的回调。
-- **读数**：`#executeInner` **217 → 176 行**；其中的 `try` **6 → 5**、`catch` **3 → 2**
-  （`readClaimed` 摘掉一个 `try`+`catch`）。⚠️ **最深 `try` 嵌套没变，仍是四级** —— 去掉的那个与
-  run 段**平级**，不在 4→6→8→10 那条最深链上。⇒ 本轮降的是**体量与 `try` 个数**，不是嵌套深度；
-  `async.ts` **1419 → 1379 行**。⚠️ **剩下的 5 个各有不同语义**（最外层挡「异步 store 任何一处
-  reject 逃逸成 unhandled rejection」/ 认领终态闸 / run 段错误映射（`cancelIntent` 必须声明在
-  `try` **外**才能被 catch 看见）/ 收尾摘监听器 / 落库失败也要释放槽位）⇒ **抽平它们只会改变语义
-  或把 `try` 搬个地方**。所以本轮的判据是「**能抽的抽干净 + 把剩下的为什么不能抽写下来**」，
-  不是「把 `try` 数降到 1」。另**如实记一条**：本轮抽件**没有降低嵌套深度**（4 级 → 4 级），
-  降的是**体量与 `try`/`catch` 个数**；「抽走了一个 `try`」≠「嵌套浅了一层」。
-- **新增单测 `tests/transport/run-outcome.test.ts`**（14 个 `it`）：快照的三条判据**各缺一条都拿不到
-  快照**、`eventsDelivered` **两档都断**（只断一档的话「无条件清」也能绿）、终态 5 个挂起痕迹字段
-  + 返回值 3 组合（`isResume × run.status`，且非取消那支**用 `failed` 试**——只用 `succeeded`
-  的话两种写法都绿）、「取消但已有 error ⇒ 不覆盖」、以及**异步 store**（`get` 返回 Promise）那一支。
-  fixture **逐字段给值**、不用 `{} as AgentRunResult` —— 本件真正读的就是那几个字段，空对象 cast
-  会让「字段名写错」在 `tsc` 下全绿、运行时读成 `undefined`（本仓第 5 条踩过的原样形态）。
-  transport 套件 **353 → 367** 全绿（零行为变化的行为侧判据）。
-- **变异电池 16 条**（`.workbuddy/probes/2026-10-11-run-outcome-mutation-battery.py`）：咬住 **16** /
-  漏网 **0**。⚠️ 被改的文件是**本轮新增、尚未入库**的（`git status` 里是 `??`）⇒ 脚本按本仓第 15 条
-  **第四形态**写：备份先于一切变异、**开跑就把恢复点打印出来**、装 SIGTERM/SIGINT 处理器先还原再退
-  （`try/finally` 挡不住 SIGTERM：默认处置是立即终止、不展开栈）。
-- **覆盖率棘轮：分支阈值 88 → 89**。阈值按 `docs/guards.md` 附 B.2 那条推 —— **阈值 = 水位 − ~3pt**。
-  **改前基线**（在 `HEAD`（`303c870`）上开独立 `git worktree` 跑，里面只有改前那 353 条用例）：
-  `All files` 行 98.57 / **分支 92.82** / 函数 98.44，其中 `transport/async.ts` 分支 **94.91**；
-  **改后现测**（367 条用例）：行 98.58 / **分支 92.85** / 函数 98.45，`transport/async.ts` 分支
-  **95.08**，新件 `run-outcome.ts` **100/100/100/100**（那 14 条单测确实把它的分支走遍了）。
-  ⇒ 88 的余量 4.85pt 超出「~3pt」的必要范围，收口到 **89（余量 3.85pt）**；⚠️ **收 90 只剩 2.85pt
-  （低于 3pt）故不取** —— 阈值离水位太远会放掉一整个模块的测试，太近会把正常抖动当退化报。
-  **行 / 函数刻意不动** —— 行 95 的余量 3.58pt、函数 95 的余量 3.45pt，本来就在 ~3pt 上。
-  ⚠️ 基线那次跑有 2 条红，**与代码无关**，如实记下：`worktree` 里没有 `dist/` ⇒ `tests/docs` 的
-  记分牌量不了**发布体积**（`dist/index.js 不在场`）。那两条不执行 `src/` 代码、也不影响覆盖率读数。
-- **忠实性按 `docs/guards.md` 附 B.3 六条复核过**：字面量多重集对拍 `async.ts` **72 种 → 72 种**
-  （少的 3 处是 `'cancelled'` / `'suspended'` / `'succeeded'` 各 1 处，**都落在新件里**；多的 1 处是
-  `'./run-outcome.js'` 这条 import）⇒ **1:1**；新件**零模块级状态**；依赖单向（新件不 import `async.ts`，
-  `RunSettled` 是**结构镜像**，真类型漂移时调用点直接报错）。
 
 ## [0.9.5] - 2026-09-29
 
@@ -3223,7 +3245,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/retrychx/agentia/releases/tag/v0.10.2
 [0.10.1]: https://github.com/retrychx/agentia/releases/tag/v0.10.1
 [0.10.0]: https://github.com/retrychx/agentia/releases/tag/v0.10.0
 [0.9.5]: https://github.com/retrychx/agentia/releases/tag/v0.9.5

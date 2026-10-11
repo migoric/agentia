@@ -34,7 +34,7 @@ docker compose up --build
 
 > **为什么依赖写 `file:../..`**：这是**刻意**的 —— 示例要跑的是**仓库里刚构建的那份框架**，
 > 而不是 npm 发布版，所以先 `npm run build` 让它指向本仓库。想改用发布版就把这一行换成
-> `^0.10.1`（与 `agentia create` 脚手架模板一致），Dockerfile 也能退回常规单包写法。
+> `^0.10.2`（与 `agentia create` 脚手架模板一致），Dockerfile 也能退回常规单包写法。
 >
 > 想要**更完整**的示例（四类能力 + 三种触发 + 鉴权 + 全观测栈）见 [`../complete/`](../complete/)。
 

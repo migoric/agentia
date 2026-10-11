@@ -6198,7 +6198,13 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
     + 并排比两条 run（含「改一句 prompt 立刻重跑对照」的自动补对）+ `packages/trace-view`
     补规模棘轮与三条行为断言 + §7 补登记两条长跑边界；**无破坏性变更**，框架代码零改动，
     新增一处用户可见文件 `traces.jsonl`（只增不减））；
-  `AGENTIA_VERSION = '0.10.1'`。决策均见 §10。
+  → v0.10.2（**对外那一面各做实一格 ——「能不能被找到、能不能 5 分钟跑起来」**：脚手架默认入口翻成
+    可上线的 HTTP 服务（`npm start` 直接起服务，一次性挪去 `batch.ts`）+ 官网全站英文版（`/en`，
+    五页逐节对译 + 英文 404 + 语言自动检测与手动切换）+ 两轮**纯结构**重构（方法级体量闸与三处巨型体
+    外移；`#executeInner` 结果记账外移 + 14 条直接单测）+ c8 分支覆盖率棘轮 88 → 89；
+    **无破坏性变更**，框架公共 API 与 `exports` 逐字未变（本版唯一碰 `src/index.ts` 的是版本常量
+    那一行），脚手架是**生成物** ⇒ 既有使用者不需要任何动作）；
+  `AGENTIA_VERSION = '0.10.2'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
