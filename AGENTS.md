@@ -67,8 +67,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   后续抽块（审批监督 / 信号投递 / 恢复扫描 / drain 协调）才有基线
 │   │                        #   ⚠️ 2026-09-29 复算：09-20 写下时 895 行，**「后续三步」当时一步没走**，
 │   │                        #   类反长到 **1554 行**（文件 375→1929）；同日下午抽出审批监督 / 信号投递 /
-│   │                        #   恢复扫描三簇 ⇒ 文件 **1460 行**（含代码行 664），只剩 drain 协调未抽；
-│   │                        #   现由 `tests/architecture/source-size.test.ts` 钉住含代码行上限（750）
+│   │                        #   恢复扫描三簇 ⇒ 文件 **1460 行**（含代码行 664）
+│   │                        #   ⚠️ **原句「只剩 drain 协调未抽」是错的，2026-10-11 更正**（它让我把
+│   │                        #   已完成的抽件当成未偿的债报进评审）：drain 的**等待闸**早已抽成
+│   │                        #   `drain-gate.ts`（就在下面几行）；**在飞计数刻意不搬**（它同时是 /healthz 的
+│   │                        #   `inFlight` 口径、由任务生命周期加减）。⇒ 当时真正剩的是 `#executeInner`
+│   │                        #   那个体的**体积**；同轮已治（抽 `run-outcome.ts`，见下几行）。⚠️ 它体内
+│   │                        #   剩的 5 个 `try` 逐条盘过「各有语义、抽平会改语义」⇒ **嵌套深度保持
+│   │                        #   4 级不变**：本轮降的是体量与 `try`/`catch` 个数，**不是嵌套浅了一层**。
+│   │                        #   文件行数现由 `tests/architecture/source-size.test.ts` 钉住含代码行上限（750）
 │   │                        #   approval-policy.ts = 审批的**纯判定**（超时判定 / 超时兜底拒绝 / 决定齐没齐）：
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
 │   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
@@ -115,6 +122,11 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
 │   │                        #   终态采纳」；RunSessionStore 是会话 store 的**结构面单源**（旋钮本身的文档仍在
 │   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态
+│   │                        #   run-outcome.ts = 一次 run 的**结果记账**（同日抽，同族的第五件）：
+│   │                        #   readClaimed 收「认领前重读」（读失败不升级成「任务起不来」）；
+│   │                        #   applySuspendedOutcome / applyTerminalOutcome 收挂起与终态两支的**记录映射**。
+│   │                        #   纯件 ⇒ 实例副作用（快照写 sessionInputs、审批登记簿除名）以**返回值**
+│   │                        #   交回调用点；「用户输入快照必须在 rec.spec 被覆盖**之前**取」是承重的顺序事实
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
