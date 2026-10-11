@@ -91,7 +91,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
         <p>想再加一个 <strong>gRPC</strong> 入口：这是<strong>宿主侧</strong>的事，框架不内置（判别规则只有一条 —— 客户端是不是标准库：MCP 连接器能用 <code>spawn</code> + <code>fetch</code> 做到零新增依赖，gRPC 要引 <code>@grpc/grpc-js</code>）。配方见 <code>docs/usage-guide.md</code> §6.2，可直接抄的宿主 + 客户端 + 端到端在 <code>examples/grpc-host</code> —— 那里把四处最容易漏的语义逐条写明：deadline / 取消 → <code>signal</code>、metadata <code>traceparent</code> → run 根 link、框架错误 → gRPC 状态码、trace → sink。</p>
 
         <h3>给 run 上监控</h3>
-        <p>指标与 trace 走<strong>同一条缝</strong>：<code>metricsSink()</code> 满足 <code>TraceSink</code>，接进 <code>sinks</code> 即得 <code>agentia_*</code> 指标族（run / 能力 / 模型 / 评分四级，评分来自 <code>attachScore</code> 的 <code>agentia_score</code> / <code>agentia_score_total</code>）；<code>createOtlpExporter</code> 导出时对齐 OTel GenAI semconv（<code>gen_ai.*</code> 键，Langfuse / Grafana / Datadog 直接识别）。</p>
+        <p>指标与 trace 走<strong>同一条缝</strong>：<code>metricsSink()</code> 满足 <code>TraceSink</code>，接进 <code>sinks</code> 即得 <code>agentia_*</code> 指标族（run / 能力 / 模型 / 评分四级，评分来自 <code>attachScore</code> 的 <code>agentia_score</code> / <code>agentia_score_total</code>）；<code>createOtlpExporter</code> 导出时对齐 OTel GenAI semconv（<code>gen_ai.*</code> 键）。</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>observe.ts</em></div>
           <pre><code><span class="kw">import</span> { metricsSink, createOtlpExporter } <span class="kw">from</span> <span class="str">'@migor/agentia'</span>;

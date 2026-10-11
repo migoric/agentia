@@ -20,7 +20,8 @@ import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
  *   GenAI 约定自 **v1.42（2026-06-12）移出语义约定主线**到该独立仓；该仓**全篇 Development、
  *   无 tag、未版本化**，所以基准只能钉 commit（官方口径也是「记录你 instrument 的 commit/日期」）。
  *   ⚠️ 2026-10-12 更正：此前这里写「v1.37 时 `gen_ai.client` 侧已 stable」——**回源核为假**
- *   （v1.37 的 `docs/gen-ai/spans.md` / `metrics.md` 文首均为 `Status: [Development]`），已删。
+ *   （v1.37 的 `docs/gen-ai/gen-ai-spans.md` / `gen-ai-metrics.md` 文首均为 `Status: [Development]`，
+ *   且本模块映射的 7 个 `gen_ai.*` 键逐条 `[Development]`），已删。
  *   决策链与证据见 `docs/spec.md` §10 2026-10-12。
  * - **全部映射集中在 `genAiAttributes` / `mapEvent` 两处**，升级基准时只改本模块；
  *   键前缀冲突不存在（自有键一律 `agentia.*` 或无前缀），所以 additive 是安全的。
