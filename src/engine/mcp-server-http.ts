@@ -26,6 +26,95 @@ import type { McpCore, McpServer, McpServerOptions } from './mcp-server.js';
 /** http 侧请求 body 上限（固定 1 MiB，与 HTTP 宿主缺省一致；不公开成旋钮） */
 const MAX_BODY_BYTES = 1024 * 1024;
 
+/**
+ * 下面这一组（`sendJson` / `readBody` / `jsonRpcIdOf` / `startListening` / `closeOwnServer`）
+ * 2026-10-11 从 `startHttpTransport` 里提到**模块级**：它们是纯件（只看传入的 `req` / `res` /
+ * `server`，不碰那条连接的闭包状态），留在闭包里那一个函数有 **192 行 / 占文件 87%**
+ * 〔**修前**读数，文件 220 行 —— 那是定阈值当天的全仓最高比例〕。见
+ * `tests/architecture/method-size.test.ts` 头注的读数表。
+ * ⚠️ **别把「修后多少」写在这里** —— 那是个会腐烂的比例（头部注释改动就会动分母），
+ * 能现算：把那个上限临时改成 0 跑一次就是全表。搬迁是**逐字**的，判据与注释一并搬走。
+ */
+
+/** 回 JSON。⚠️ 客户端已走时静默返回：写了也没人收，而 `writeHead` 会抛 `ERR_STREAM_WRITE_AFTER_END`。 */
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  if (res.writableEnded || res.destroyed) return; // 客户端已走：写了也没人收
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}
+
+/**
+ * 读请求体；**超过上限 / 连接中断都返回 `null`**（调用方回 413，不区分是哪一种）。
+ *
+ * 四个事件都听着是为了**不挂死**：`data` 攒、`end` 收口、`error` 与 `close` 都是「不会再有
+ * 数据了」—— 只盯 `end` 的话，客户端中途断开会让这个 Promise 永远不 settle（在飞连接泄漏）。
+ */
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolvePromise) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    const finish = (v: string | null): void => {
+      if (done) return;
+      done = true;
+      resolvePromise(v);
+    };
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        finish(null);
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => finish(null));
+    req.on('close', () => finish(null));
+  });
+}
+
+/** 报文里的 JSON-RPC `id`（兜底那一支要用它回 `-32603`）；**不是数字 / 字符串 / null 就回 null** */
+function jsonRpcIdOf(msg: unknown): number | string | null {
+  const rawId = (msg as { id?: unknown }).id;
+  return typeof rawId === 'number' || typeof rawId === 'string' || rawId === null ? rawId : null;
+}
+
+/** 起监听并算出对外 URL（端口 0 = 让内核挑一个；拿不到地址则返回 `undefined`） */
+function startListening(
+  server: Server,
+  port: number,
+  host: string,
+  path: string,
+): Promise<string | undefined> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('error', rejectPromise);
+    server.listen(port, host, () => {
+      const addr = server.address();
+      resolvePromise(
+        addr !== null && typeof addr === 'object'
+          ? `http://${host}:${addr.port}${path}`
+          : undefined,
+      );
+    });
+  });
+}
+
+/**
+ * 关掉自有 server。
+ * ⚠️ 仍在飞的连接会吊住 `close` 的回调（Node ≥ 18.2 有 `closeAllConnections`；旧版没有则
+ * 靠 `abortAll` 之后工具自行收尾 —— 读 signal 的工具会退出，连接随之结束）。
+ */
+function closeOwnServer(server: Server): Promise<void> {
+  return new Promise<void>((resolvePromise) => {
+    server.close(() => resolvePromise());
+    server.closeAllConnections?.();
+  });
+}
+
 export function startHttpTransport(
   core: McpCore,
   opts: Pick<McpServerOptions, 'host' | 'port' | 'path' | 'server' | 'auth'>,
@@ -36,39 +125,6 @@ export function startHttpTransport(
   const server: Server = opts.server ?? createServer();
   /** initialize 响应发的会话 id（生成的 uuid；无状态 server 只发不校验 —— 宽容是有意的） */
   const sessionId = randomUUID();
-
-  const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
-    if (res.writableEnded || res.destroyed) return; // 客户端已走：写了也没人收
-    const payload = JSON.stringify(body);
-    res.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(payload),
-    });
-    res.end(payload);
-  };
-
-  const readBody = (req: IncomingMessage): Promise<string | null> =>
-    new Promise((resolvePromise) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      let done = false;
-      const finish = (v: string | null): void => {
-        if (done) return;
-        done = true;
-        resolvePromise(v);
-      };
-      req.on('data', (c: Buffer) => {
-        size += c.length;
-        if (size > MAX_BODY_BYTES) {
-          finish(null);
-          return;
-        }
-        chunks.push(c);
-      });
-      req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', () => finish(null));
-      req.on('close', () => finish(null));
-    });
 
   const onRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
@@ -164,9 +220,7 @@ export function startHttpTransport(
       // 一读就抛）、或惰性 client 构造失败（默认 `createAnthropicClient()` 缺 API key）。
       // 这些是**请求级**的意外 ⇒ 该回一条 JSON-RPC 错误并继续服务，而不是退出进程。
       console.error('[agentia:mcp-server] 请求处理异常:', e);
-      const rawId = (msg as { id?: unknown }).id;
-      const id =
-        typeof rawId === 'number' || typeof rawId === 'string' || rawId === null ? rawId : null;
+      const id = jsonRpcIdOf(msg);
       if (res.headersSent) {
         res.end(); // 响应头已定（200 已发）：只能收口，状态码改不了了
       } else if (!res.writableEnded && !res.destroyed) {
@@ -183,15 +237,8 @@ export function startHttpTransport(
   let url: string | undefined;
   const ready = shared
     ? Promise.resolve()
-    : new Promise<void>((resolvePromise, rejectPromise) => {
-        server.once('error', rejectPromise);
-        server.listen(opts.port ?? 0, host, () => {
-          const addr = server.address();
-          if (addr !== null && typeof addr === 'object') {
-            url = `http://${host}:${addr.port}${path}`;
-          }
-          resolvePromise();
-        });
+    : startListening(server, opts.port ?? 0, host, path).then((u) => {
+        url = u;
       });
 
   let closed = false;
@@ -209,12 +256,7 @@ export function startHttpTransport(
         server.off('request', onRequest);
         return Promise.resolve();
       }
-      return new Promise<void>((resolvePromise) => {
-        server.close(() => resolvePromise());
-        // 仍在飞的连接会吊住 close 的回调（Node ≥ 18.2 有 closeAllConnections；旧版没有则
-        // 靠 abortAll 之后工具自行收尾 —— 读 signal 的工具会退出，连接随之结束）
-        server.closeAllConnections?.();
-      });
+      return closeOwnServer(server);
     },
   };
 }

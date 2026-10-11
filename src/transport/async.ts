@@ -29,6 +29,8 @@ import { formatOwnerId } from './owner-id.js';
 import { TaskWaiters } from './task-waiters.js';
 import { TaskEventStreams } from './task-events.js';
 import type { TaskStreamEvent } from './task-events.js';
+import { adoptSucceededOutcome, buildRunCallOptions } from './run-call-options.js';
+import type { RunSessionStore } from './run-call-options.js';
 
 // 三个监督件（2026-09-29 抽出）的实现与类型现在各自在文件里 —— 审批（approval-supervisor.ts）、
 // 事件投递（signal-supervisor.ts）、恢复扫描（resume-scanner.ts）。下面 **re-export** 它们的
@@ -206,10 +208,7 @@ export interface AsyncRunnerOptions {
    * 不配它而任务带了 `sessionId` ⇒ submit 当场抛 `TaskInputError`（响亮失败，
    * 不静默降级成「没有会话」）。
    */
-  sessionStore?: {
-    load(sessionId: string): MessageParam[] | Promise<MessageParam[]>;
-    append(sessionId: string, messages: MessageParam[]): void | Promise<void>;
-  };
+  sessionStore?: RunSessionStore;
   /** 同时执行的任务上限；缺省不限。超出部分排队等槽位（状态保持 queued） */
   concurrency?: number;
   /**
@@ -1125,20 +1124,12 @@ export class AsyncRunner {
     // 顶层容错：异步 store（网络客户端）任何一处 reject 都不得逃逸成
     // unhandled rejection（Node ≥15 默认终止进程）——任务标记失败尽力落库。
     try {
-      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）：
-      // 同键已有 succeeded 记录 → 采纳其结果，不重复执行；queued/running 不采纳 ——
-      // 重复执行本就是 at-least-once 允许的行为。同步 store 下 submit 已完成去重，
-      // 这里查到的一般是 rec 自身（taskId 相同，直接放行）。
-      // 注意（load-bearing）：该去重依赖 store.save 先写记录、后写 idem 索引的顺序
-      // （见 redisStore 头注释）——索引指向自身时上面的 taskId 相等判断放行。
+      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）。三条判据（存在既有记录 /
+      // 不是自己 / 状态是 succeeded）与那条 load-bearing 的顺序依赖（`store.save` 先写记录、
+      // 后写 idem 索引）都搬进了 `adoptSucceededOutcome` 的注释里 —— 一字未改。
       if (rec.idempotencyKey) {
         const existing = await this.store.byIdempotency(rec.idempotencyKey);
-        if (existing && existing.taskId !== rec.taskId && existing.status === 'succeeded') {
-          rec.status = 'succeeded';
-          rec.runId = existing.runId;
-          rec.result = existing.result;
-          rec.error = existing.error;
-          rec.finishedAt = Date.now();
+        if (adoptSucceededOutcome(rec, existing)) {
           // 采纳既有结果：落库失败也不该把一次已知成功的任务翻成 failed
           await this.#safeSave(rec, 'outcome');
           return;
@@ -1221,48 +1212,16 @@ export class AsyncRunner {
             (e) => this.#streams.push(rec.taskId, e),
             rec.spec.options?.onTraceEvent,
           );
-          const callOpts: RunInvocationOptions & {
-            session?: { store: NonNullable<AsyncRunnerOptions['sessionStore']>; id: string };
-          } = {
-            ...(rec.spec.options ?? {}),
-            // HITL 恢复段**不注入 session**（2026-09-20，spec §10 当日条）：恢复段的
-            // rec.spec.messages 是挂起段落库的 suspendedMessages —— 已含 loadSession
-            // 拼入的完整会话历史，再注入会让 run 层把 store 历史**再 prepend 一遍**
-            // （历史翻倍、token 复利）；且成功后 appendSession 会把整段扩展历史
-            // （含未决 tool_use 的 assistant）写进会话 —— 违反「只存对话轮次」不变量，
-            // 留下孤立 tool_use + 连续两条 assistant，下一轮该会话直接撞 API 400。
-            // 恢复段的会话回写由本类在成功后补写（见 #appendResumedSession）。
-            ...(!isResume &&
-            rec.spec.options?.sessionId !== undefined &&
-            this.sessionStore !== undefined
-              ? { session: { store: this.sessionStore, id: rec.spec.options.sessionId } }
-              : {}),
-            // 显式 undefined ≠ 不传（exactOptionalPropertyTypes）：无幂等键时不落这个键
-            ...(rec.idempotencyKey !== undefined ? { idempotencyKey: rec.idempotencyKey } : {}),
-            ...(rec.spec.options?.client !== undefined
-              ? { client: rec.spec.options.client }
-              : this.client !== undefined
-                ? { client: this.client }
-                : {}),
-            // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
-            ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
-            // 事件投入口（2026-09-28 ⑥）：挂起期间投递的事件随记录进引擎，由它在
-            // 未决 tool_use 解决之后注入消息流（为什么不能由宿主直接追加进
-            // spec.messages 的末尾：见 signalTask 与 engine/loop.ts 的注入点纪律）
-            ...(rec.pendingEvents !== undefined && rec.pendingEvents.length > 0
-              ? { events: rec.pendingEvents }
-              : {}),
-            // 恢复段的 trace 是一棵**新树**，经 traceContext link 挂到上一段 runId
-            // （spec §9.2 的入站关联机制）——「挂起段 → 恢复段 → …」在观测后端连成一条链。
-            // 判定依据：本段是续跑段（isResume）且已有上一段 runId；首次执行两者皆无。
-            ...(isResume && rec.runId !== undefined
-              ? { traceContext: { traceId: rec.runId } }
-              : {}),
-            rethrow: false, // 硬失败也以 failed 记录落库
+          // 装配交给引擎的选项（三条口径：续跑段不注入 session / 无值不落键 /
+          // 续跑段的 trace 挂到上一段 runId）—— 逐条理由在 `run-call-options.ts` 里
+          const callOpts = buildRunCallOptions({
+            rec,
+            isResume,
+            sessionStore: this.sessionStore,
+            client: this.client,
             signal: combined,
-            // 记账事件 → 本任务的流（见上面 bridgeTraceEvents 的注释）
-            ...(bridgeTraceEvents !== undefined ? { onTraceEvent: bridgeTraceEvents } : {}),
-          };
+            bridgeTraceEvents,
+          });
           try {
             const out = await this.#raceTimeout(
               this.app.run(rec.spec.messages, callOpts),

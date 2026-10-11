@@ -110,13 +110,21 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   parseJsonBody / 405 / 413 / 503 / 500 的机械动作，**零内部依赖**
 │   │                        #   （只 import node:http 的类型）—— 宿主与端点都引它 ⇒ 不可能成环是**构造性**的
 │   │                        #   （`HttpException` 刻意不在这里：它是宿主契约，搬过去会让原语层反向依赖宿主）
+│   │                        #   run-call-options.ts = run 选项的**装配件**（2026-10-11 自 async.ts 抽出）：
+│   │                        #   buildRunCallOptions 把「按 isResume / sessionId / signal / trace 桥」拼出
+│   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
+│   │                        #   终态采纳」；RunSessionStore 是会话 store 的**结构面单源**（旋钮本身的文档仍在
+│   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
 │   │                        #   指标(metricsSink，满足 TraceSink)
-│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（7 helper + 4 结构类型）：
+│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（12 helper + 3 常量 + 4 结构类型）：
 │   │                        #   2026-09-28 自 mcp.ts 抽出，为断开 `mcp.ts ↔ mcp-stdio.ts` 那条**真实值环**
-│   │                        #   （「层内也运行期无环」现由 tests/architecture/file-cycles.test.ts 钉住）
+│   │                        #   （「层内也运行期无环」现由 tests/architecture/file-cycles.test.ts 钉住）。
+│   │                        #   2026-10-11 再收 7 个（5 → 12）：两个连接器**各自抄了一份**的 JSON-RPC 结果
+│   │                        #   提取 / HTTP 错误包装 / tools 清单校验 / isError 拒绝 / 会话自愈判定 ——
+│   │                        #   同一条错误文案曾存在两份，改一处漏一处**没有任何用例看得见**
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥

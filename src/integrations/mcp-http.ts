@@ -2,9 +2,12 @@ import {
   DEFAULT_CLIENT_INFO,
   DEFAULT_PROTOCOL_VERSION,
   MCP_DEFAULT_TIMEOUT_MS,
-  brief,
-  isJsonRpcResponse,
-  unwrap,
+  assertToolResultNotError,
+  canSelfHealSession,
+  mcpHttpError,
+  parseToolList,
+  readMcpResult,
+  readMcpText,
   withDeadline,
 } from './mcp-protocol.js';
 import type { Guard, McpConnector, McpToolInfo } from './mcp-protocol.js';
@@ -76,21 +79,6 @@ export function createStreamableHttpMcpConnector(
 
   const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
 
-  /** HTTP 层失败：带上数值 `status`，让 `classifyError` 能按状态分流 */
-  const httpError = (status: number, method: string, body: string): Error => {
-    const e = new Error(`MCP ${method} HTTP ${status}${body ? `：${body}` : ''}`);
-    (e as { status?: number }).status = status;
-    return e;
-  };
-
-  const readText = async (res: Response): Promise<string> => {
-    try {
-      return await res.text();
-    } catch {
-      return '';
-    }
-  };
-
   const post = async (
     payload: unknown,
     o: { withVersion?: boolean; signal?: AbortSignal } = {},
@@ -112,53 +100,6 @@ export function createStreamableHttpMcpConnector(
     const sid = res.headers.get('mcp-session-id');
     if (sid !== null && sid !== '') sessionId = sid;
     return res;
-  };
-
-  /** 非 SSE 报文（单条 JSON-RPC）→ 取 result；SSE 里可能有别的通知帧，只取与 `id` 配对的 */
-  const pickResult = (msg: unknown, id: number, method: string): unknown => {
-    // id 必须**等值**配对（与 SSE 分支同款）：只验「是带 id 的响应」会把别的请求的
-    // 结果当本次的返回（代理串包/通知帧），静默错值比报错难查得多。
-    if (!isJsonRpcResponse(msg) || msg.id !== id) {
-      throw new Error(`MCP ${method}：响应里没有 id 为 ${id} 的 JSON-RPC 报文`);
-    }
-    return unwrap(msg, method);
-  };
-
-  /**
-   * 从响应取结果。SSE 分支一次性读完整个 body 再解析 —— StreamableHTTP 约定 server 发完
-   * 响应即关流，读全比手写增量解析器稳（`text/event-stream` 里 `data:` 行按规范可跨多行拼接）。
-   */
-  const readResult = async (res: Response, id: number, method: string): Promise<unknown> => {
-    const ct = (res.headers.get('content-type') ?? '').toLowerCase();
-    const text = await readText(res);
-    if (ct.includes('text/event-stream')) {
-      for (const frame of text.split(/\r?\n\r?\n/)) {
-        const data = frame
-          .split(/\r?\n/)
-          .filter((l) => l.startsWith('data:'))
-          .map((l) => l.slice(5).trim())
-          .join('');
-        if (data === '') continue;
-        let msg: unknown;
-        try {
-          msg = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
-      }
-      throw new Error(`MCP ${method}：SSE 响应里没有 id 为 ${id} 的报文`);
-    }
-    if (text.trim() === '') {
-      throw new Error(`MCP ${method}：响应体为空（期望 id 为 ${id} 的 JSON-RPC 报文）`);
-    }
-    let msg: unknown;
-    try {
-      msg = JSON.parse(text);
-    } catch {
-      throw new Error(`MCP ${method}：响应不是合法 JSON：${brief(text)}`);
-    }
-    return pickResult(msg, id, method);
   };
 
   /**
@@ -202,19 +143,19 @@ export function createStreamableHttpMcpConnector(
       { jsonrpc: '2.0', id, method, params },
       { withVersion, ...(abandoned !== undefined ? { signal: abandoned } : {}) },
     );
-    if (res.status === 404 && sessionId !== null && allowReinit) {
-      await readText(res); // 排空，别把连接晾着
+    if (canSelfHealSession(res.status, sessionId !== null, allowReinit)) {
+      await readMcpText(res); // 排空，别把连接晾着
       opts.onSessionExpired?.();
       await reinitialize();
       // 自愈重试那次同样带上 abandoned —— 裁判放弃时两条在飞 fetch 都要被掐
       return rpc(method, params, withVersion, false, abandoned);
     }
-    if (!res.ok) throw httpError(res.status, method, await readText(res));
+    if (!res.ok) throw mcpHttpError(res.status, method, await readMcpText(res));
     // 计时裁判权在调用方（initialize / notifications / tools/list 都在调用点自带
     // guard —— 它们是装配期路径、没有别的裁判）；`tools/call` 不在此起计时器：
     // 它的裁判是引擎的 `toolTimeoutMs`（spec §10 2026-09-17 ① 超时单源化）——
     // 再包一层 guard 就是双计时器，同一事件两本账（stdio 侧就没有这层）。
-    return readResult(res, id, method);
+    return readMcpResult(res, id, method);
   };
 
   const ensureReady = (): Promise<void> => {
@@ -240,9 +181,9 @@ export function createStreamableHttpMcpConnector(
         'notifications/initialized',
       );
       if (!res.ok) {
-        throw httpError(res.status, 'notifications/initialized', await readText(res));
+        throw mcpHttpError(res.status, 'notifications/initialized', await readMcpText(res));
       }
-      await readText(res); // 排空：202 + 空体是合法应答，但别把连接晾着
+      await readMcpText(res); // 排空：202 + 空体是合法应答，但别把连接晾着
     })();
     return ready;
   };
@@ -250,15 +191,7 @@ export function createStreamableHttpMcpConnector(
   const listTools = async (): Promise<McpToolInfo[]> => {
     await ensureReady();
     const r = await guard(rpc('tools/list', {}, true), 'tools/list');
-    if (typeof r !== 'object' || r === null) {
-      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
-    }
-    const listed = (r as { tools?: unknown }).tools;
-    if (listed === undefined) return [];
-    if (!Array.isArray(listed)) {
-      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
-    }
-    return listed as McpToolInfo[];
+    return parseToolList(r);
   };
 
   const callTool = async (
@@ -268,12 +201,8 @@ export function createStreamableHttpMcpConnector(
   ): Promise<unknown> => {
     await ensureReady();
     const r = await rpc('tools/call', { name, arguments: args }, true, true, callOpts?.abandoned);
-    // 承重同 stdio：协议层 isError 只有连接器看得见
-    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
-      throw new Error(
-        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
-      );
-    }
+    // 承重同 stdio：协议层 isError 只有连接器看得见（判定与文案在 mcp-protocol.ts）
+    assertToolResultNotError(r, name);
     return r;
   };
 
@@ -293,7 +222,7 @@ export function createStreamableHttpMcpConnector(
         // **抛错**，兜不住**挂死** —— server 接受连接后不回（半开 / 卡在代理后面），
         // `close()` 就永久挂住，而调用方（宿主停机路径）会一直等它。**挂住比失败更糟**，
         // 与「best-effort、不抛错」的承诺相悖。fetch 与排空**一起**进 guard：
-        // 只护住响应头、body 照样能卡（`readText` 读的是 body）。
+        // 只护住响应头、body 照样能卡（`readMcpText` 读的是 body）。
         await guard(
           (async () => {
             const res = await fetchImpl(url, {
@@ -304,7 +233,7 @@ export function createStreamableHttpMcpConnector(
                 'mcp-protocol-version': negotiated,
               },
             });
-            await readText(res);
+            await readMcpText(res);
           })(),
           'close',
         );

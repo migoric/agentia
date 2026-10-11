@@ -156,3 +156,139 @@ export function unwrap(msg: { result?: unknown; error?: unknown }, method: strin
   if (!('result' in msg)) throw new Error(`MCP ${method}：响应里既没有 result 也没有 error`);
   return msg.result;
 }
+
+// ───────────────────────── 下面这一组：两个内置连接器**共用**的纯件（2026-10-11 抽） ─────────────────────────
+//
+// 为什么抽在这里：它们此前**逐字重复**在两个连接器里（`tools/list` 与 `tools/call` 的结果校验
+// 一字不差地写了两遍），或者只属于协议面的知识（SSE 帧 / JSON-RPC 信封 / id 配对）——
+// 正是本文件头注那句「新增『桥与连接器都要用』的东西请加在这里」。
+//
+// ⚠️ 抽出去的另一半效果是**读数**：`integrations/mcp-http.ts` 与 `mcp-stdio.ts` 的
+// 「最大可调用体」因此从 265 / 252 降下来（见 `tests/architecture/method-size.test.ts`）。
+// 那不是目的、是副作用 —— 目的是这两条连接器从此只有「各自传输那一份」的代码。
+
+/**
+ * 读响应体文本；读失败**返回空串而非抛**。
+ *
+ * 为什么吞：调用方用它的地方（排空、错误文案、SSE 解析）都不该因为「body 读不出来」二次失败
+ * —— 真正的原因由 `res.status` / 网络层给出，这里再抛只会把第一条错误盖掉。
+ */
+export async function readMcpText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return '';
+  }
+}
+
+/** HTTP 层失败：带上数值 `status`，让 `classifyError` 能按状态分流 */
+export function mcpHttpError(status: number, method: string, body: string): Error {
+  const e = new Error(`MCP ${method} HTTP ${status}${body ? `：${body}` : ''}`);
+  (e as { status?: number }).status = status;
+  return e;
+}
+
+/**
+ * 非 SSE 报文（单条 JSON-RPC）→ 取 result。
+ *
+ * ⚠️ id 必须**等值**配对（与 SSE 分支同款）：只验「是带 id 的响应」会把别的请求的结果
+ * 当本次的返回（代理串包 / 通知帧），**静默错值比报错难查得多**。
+ */
+export function pickJsonRpcResult(msg: unknown, id: number, method: string): unknown {
+  if (!isJsonRpcResponse(msg) || msg.id !== id) {
+    throw new Error(`MCP ${method}：响应里没有 id 为 ${id} 的 JSON-RPC 报文`);
+  }
+  return unwrap(msg, method);
+}
+
+/**
+ * 从 HTTP 响应取结果 —— 两种响应形态**都要接**（StreamableHTTP 的规范面）。
+ *
+ * SSE 分支一次性读完整个 body 再解析：StreamableHTTP 约定 server 发完响应即关流，
+ * 读全比手写增量解析器稳（`text/event-stream` 里 `data:` 行按规范可跨多行拼接）。
+ * SSE 里可能有别的通知帧或别的请求的应答，**只取与 `id` 配对的**那一条。
+ */
+export async function readMcpResult(res: Response, id: number, method: string): Promise<unknown> {
+  const ct = (res.headers.get('content-type') ?? '').toLowerCase();
+  const text = await readMcpText(res);
+  if (ct.includes('text/event-stream')) {
+    for (const frame of text.split(/\r?\n\r?\n/)) {
+      const data = frame
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trim())
+        .join('');
+      if (data === '') continue;
+      let msg: unknown;
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
+    }
+    throw new Error(`MCP ${method}：SSE 响应里没有 id 为 ${id} 的报文`);
+  }
+  if (text.trim() === '') {
+    throw new Error(`MCP ${method}：响应体为空（期望 id 为 ${id} 的 JSON-RPC 报文）`);
+  }
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    throw new Error(`MCP ${method}：响应不是合法 JSON：${brief(text)}`);
+  }
+  return pickJsonRpcResult(msg, id, method);
+}
+
+/**
+ * `tools/list` 的应答 → 工具表。**两条连接器共用一份**（此前逐字写了两遍）。
+ *
+ * 形状不对一律**响亮失败**：把协议不符吞成空菜单，用户看到的是「这个 server 一个工具都没有」
+ * 而不是「server 坏了」—— 前者会被当成正常结果排错到别处去。只有 `tools` **缺席**才当空表
+ * （那是合法的「没有工具」）。
+ */
+export function parseToolList(r: unknown): McpToolInfo[] {
+  if (typeof r !== 'object' || r === null) {
+    throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
+  }
+  const listed = (r as { tools?: unknown }).tools;
+  if (listed === undefined) return [];
+  if (!Array.isArray(listed)) {
+    throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
+  }
+  return listed as McpToolInfo[];
+}
+
+/**
+ * `tools/call` 的结果里协议层 `isError: true` ⇒ **必须转成抛错**。
+ *
+ * 承重：这个位只有连接器看得见，吞了它模型会收到一条「成功」的结果、trace 也记成成功调用
+ * （见 `McpClientLike` 的约定）。两条连接器共用一份。
+ */
+export function assertToolResultNotError(r: unknown, name: string): void {
+  if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
+    throw new Error(
+      `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
+    );
+  }
+}
+
+/**
+ * **会话过期自愈**的判定（MCP Streamable HTTP 的规范语义）。
+ *
+ * 带会话 id 收到 `404` 的含义是「这个会话我不认识」⇒ **该请求没有被执行** ⇒ 丢会话、
+ * 重新握手、把这一次**重试一次**是安全的（不会重复执行副作用）；规范也要求客户端此时
+ * **必须**新建会话。`allowReinit` 那一位保证**只重试一次**：第二次再 404 说明对面不是
+ * 「会话过期」而是别的问题，直接抛（不循环）。
+ *
+ * 抽成纯函数是为了让这三条判据**可以被单独钉住** —— 它此前内联在 `rpc` 的 `if` 里，
+ * 三个条件任意一个写反都没有用例看得见（症状是「重试带着旧会话再 404」或「无限重握」）。
+ */
+export function canSelfHealSession(
+  status: number,
+  hasSessionId: boolean,
+  allowReinit: boolean,
+): boolean {
+  return status === 404 && hasSessionId && allowReinit;
+}
