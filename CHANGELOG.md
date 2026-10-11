@@ -988,6 +988,55 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   带 token 真跑一轮 200、SIGTERM 干净退出，另一条从**两个 cwd** 真跑 `dist/batch.js`。
   零 `src/` 框架改动。
 
+### 重构（纯结构，零行为变化）· 方法级体量闸 + 三处巨型体外移（2026-10-11 ①）
+
+来源：一轮框架深度评审的 §8 建议 ①②③。**零语义变更**（下游行为一字未改）⇒ 按
+`CONTRIBUTING.md:59` 的判据**不写 `docs/spec.md` §10**；决策留档在
+`docs/plans/2026-10-11-method-size-guard-and-debt.md`。
+
+- **新增方法级体量闸 `tests/architecture/method-size.test.ts`**（`src/**` 单个可调用体 ≤
+  **240** 行）+ 自带扫描器 `tests/architecture/lib/callable-spans.ts`。文件级已有闸
+  （`source-size`，单文件「含代码行」≤ 750），但**方法级没有** —— 而文件级闸的盲区正好是
+  最大那一档的生长方式：一个工厂把周边全吞进自己的花括号，**文件总行数几乎不变**。
+  ⚠️ **判据是行数、不是比例** —— 评审报告建议的「比例」判据经**实测后否掉**：抽件在减分子的
+  同时也减分母（`mcp-http.ts` 抽走 74 行后仍在 78%），比例的下限被文件的脚手架行数顶住，
+  要当时就咬只能落在离阈值 1~4pt 处 ⇒ 常态化误报（违 `guards.md` §3 纪律①）。
+  扫描器**刻意不是 AST**：`typescript` 7.0.2 是 tsgo、**已无经典 compiler API**（实测
+  `import * as ts` 只剩 `{default, version, versionMajorMinor}`）⇒ 走文本，并与结构体检技能
+  的独立尺对拍（13 行读数**逐字相等**）。
+- **三笔债按新闸的射程外移**（判据：这段代码能不能**局部问答**，能才搬）：
+  - `integrations/mcp-http.ts` 的 `createStreamableHttpMcpConnector` **265 → 191 行**
+    （文件 316 → 245）—— 两个连接器**各自抄了一份**的协议面（JSON-RPC 结果提取 / HTTP 错误
+    包装 / `tools` 清单校验 / `isError` 拒绝 / 会话自愈判定，共 7 个）收进既有的
+    `mcp-protocol.ts`（158 → 294）。同一条错误文案曾存在两份，**改一处漏一处没有用例看得见**。
+  - `integrations/mcp-stdio.ts` 的 `createStdioMcpConnector` **252 → 213 行** —— 子进程退出
+    观察面（`trackChildExit`）与收尾（`reapChild`）提出去；stdout 分帧派发提出 `dispatchLine`。
+  - `engine/mcp-server-http.ts` 的 `startHttpTransport` **192 → 145 行** —— 五个纯件
+    （`sendJson` / `readBody` / `jsonRpcIdOf` / `startListening` / `closeOwnServer`）提到
+    **同文件模块级**；`mcp-server-stdio.ts` 同款提出 `dispatchLine`（那个体本来就在 240 以下，
+    属顺手对齐，不是欠债）。
+  - `transport/async.ts` 的 `#executeInner` **257 → 217 行**（文件 1460 → 1419）—— 42 行 run
+    选项装配 + 幂等去重的终态采纳搬到**新文件** `transport/run-call-options.ts`。⚠️ 搬迁
+    **逐字**：那些 `...(cond ? {k: v} : {})` 的形状是承重的（本仓开着
+    `exactOptionalPropertyTypes`，「没这个键」与「键是 undefined」下游语义不同）。
+- ⚠️ **反直觉读数，写明免得下次误判**：外移让这七个文件的**总行数上升**（2569 → 2801，
+  **+232**）。原因不是多写了代码，而是**注释是证据载体** —— 搬走的每一块都带着自己的
+  「为什么外移」。这个方向**没有守卫会被触发**（`source-size` 是单文件闸，没有全仓总量闸）。
+- ⚠️ **本轮自己踩到并修掉的两个「守卫骗人」**：① 第一版自证样本把花括号放在**单独一行**，
+  而收尾判据**对整体深度平移是免疫的** ⇒ **摘掉遮蔽照样绿**（假守卫）—— 已换成「花括号与体的
+  开括号**同一行**」的真病灶形态。② 外移时漏掉**第三个写者**：基线 `markExited` 挂在
+  `error` / `exit` / `close` **三个**监听器上，只搬两个 ⇒ 表现为「关不掉」或「多等一个宽限期」，
+  **用例全绿、`tsc` 全绿、67 个 MCP 用例全过**。这正是 `guards.md` 附 B.3 第 1 条问的东西，
+  它是**被机械对拍（字面量 `'exit'` 计数 1→2）带出来的线索**，已补回并保持 1:1 映射。
+- **验证**：变异电池六条（4 条扫描器口径 + 棘轮 + 真空护栏）**咬住 6 / 漏网 0 / 还原异常 0**，
+  每条都是精确字面替换（命中数 ≠ 1 即中断）、备份先于一切变异、还原后 `sha256` 逐字节回到基线；
+  其中最强的一条是**把 `mcp-http.ts` 用 `git show HEAD` 退回拆分前** ⇒ 断言原文点名
+  `mcp-http.ts:52 createStreamableHttpMcpConnector = 265 行（占文件 84%，该文件可调用体 1 个）`
+  —— 即**本闸本来就能在拆分前咬住那笔债**。另按附 B.3 第 2 条做**字符串字面量机械对拍**
+  （163 种 / 300 处 → 164 种 / 302 处，5 处丢失逐条核过，只有三条 MCP 错误文案 2→1，
+  而那是本次的**目的**）。`guards.md` §1.1 补登记行（含两条已知偏离：**比例盲区** 与
+  「多行调用传对象字面量实参 `foo({` 会被判成一个体」——全量实测 538 个体里 4 个、最大 9 行）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
