@@ -853,11 +853,11 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 （`gen_ai.evaluation.name` / `.score.value`，`source` / `comment` 走自有 `agentia.score.*` 键）→
 `metricsSink` 聚合成 `agentia_score` 指标族（见 §6「指标」）。eval / 在线评估怎么用见 §6「evals」与「在线评估采样」。
 
-**OTLP 的 `gen_ai.*` 对齐**（对齐 OTel GenAI semconv **v1.37**，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
+**OTLP 的 `gen_ai.*` 对齐**（对齐 `open-telemetry/semantic-conventions-genai` @ `6fd0d763`（2026-10-09）—— GenAI 约定自 v1.42（2026-06-12）起移出语义约定主线、该独立仓**无 tag、未版本化**，所以基准钉 commit，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
 run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
 `llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
 capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
-`score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处，下游（Langfuse / Grafana / Datadog）按 1.37+ 识别这批键做 GenAI 专项视图。
+`score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处。
 从 Tempo / Grafana 按 run 找回 trace 的做法（id 的 hex 投影、run 根按 `invoke_agent` 过滤）见 `docs/observability.md` §2.7。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——

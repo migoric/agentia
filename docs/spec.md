@@ -6085,6 +6085,61 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
 新增 `docs/plans/2026-10-09-scaffold-default-service.md` 与 `tests/docs/scaffold-entry-contract.test.ts`。
 **零 `src/` 框架改动**；脚手架是**生成物** ⇒ 既有使用者不需要任何动作（不构成破坏性变更）。
 
+### 2026-10-12 ①：**OTLP 的 GenAI 基准「已 stable」是假断言，且基准本身已过期** —— 版本号也是断言
+
+**起因**：v0.10.2 之后的全仓体检（`docs/reviews/2026-10-11/framework-review-v0.10.2.md` §1）
+拿本仓的可观测栈跟 2026 生态对拍时，发现 `src/integrations/otlp.ts` 头注与
+`docs/{observability,usage-guide,roadmap}.md`（**四处**）都写着「对齐 OTel GenAI semconv **v1.37**」，
+（同一个字符串还在官网 `api.html` / `en/api.html` 各一处 —— 处置时才发现，见文末「影响面」）
+其中头注还多一句理由：**「该版本里 `gen_ai.client` 侧已 stable，agent 侧仍 experimental，
+故选 stable 键优先」**。
+
+**回源核（v1.37.0 原文，非二手材料）——那句是假的**：
+
+| 核什么 | 读数（`semantic-conventions` @ `v1.37.0`） |
+|---|---|
+| 文档状态 | `docs/gen-ai/gen-ai-spans.md` 与 `gen-ai-metrics.md` 文首**均为 `Status: [Development]`** |
+| 本仓映射的键 | `gen_ai.operation.name` / `gen_ai.request.model` / `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` / `gen_ai.tool.name` / `gen_ai.conversation.id` / `gen_ai.agent.name` —— **逐条 `[Development]`（7/7）** |
+| 徽章总数 | spans 文档 `Stable` 10 / `Development` 75；metrics 文档 `Stable` 14 / `Development` 139 |
+
+⇒ `gen_ai.client` 侧在 v1.37 **不是 stable**。「选 stable 键优先」这个理由当时就不成立。
+
+**第二件事：基准位置已被废弃**（同一轮现查）：
+- 主仓 `docs/gen-ai/README.md` 由正文变成「Moved」跳转声明：**v1.41.1 = 2,397 字节 / 49 行 →
+  v1.42.0 = 404 字节 / 11 行**（口径 = GitHub contents API 的 `size` + `wc -l`；`wc -c` / `wc -m` 同值）。
+  ⇒ GenAI 约定自 **v1.42.0（2026-06-12）移出语义约定主线**。
+  ⚠️ 本条初稿写的是「2,396 → 403」，**复算不出** ⇒ 换成上面可复算的口径（能现算的数字必须现算一遍）。
+- 新家 `open-telemetry/semantic-conventions-genai`：建于 2026-05-05，**`GET /tags` 返回空数组**
+  （真的无 tag；`RELEASING.md` + Towncrier 化的 `CHANGELOG.md` 已在，但内容**只有 `## Unreleased`**），
+  `main` HEAD = `6fd0d763`（2026-10-09，写本文时**仍是该仓 HEAD**）。
+
+⇒ 「钉 v1.37」不只是措辞错 —— 它**钉在一个不再维护的仓库位置上**。生态的官方口径正是
+「pin 到某个 commit / 记下你 instrument 的日期」，因为没有版本可钉。
+
+**处置**（按本仓「文档里的版本号也是断言」的口径）：
+1. **删**掉「已 stable」那句假措辞 —— 本仓对错误主张的纪律是删，不另写一个更正版；
+2. 基准改钉 **`semantic-conventions-genai` @ `6fd0d763`（2026-10-09）**，并写明「该仓无 tag、
+   未版本化」，免得下一个读者去那里找一个不存在的版本号；
+3. 顺手**删**掉一条**未独立核实**的断言（「下游 Datadog / Axiom / Langfuse 已按 1.37+ 识别这批键」）——
+   它只出现在旧注释里、我无法验证；把没证据的话当依据，正是本仓反复收口的那类病。
+
+**为什么记一条**：这是「**文档里的版本号也是断言**」这条纪律的最新样本，且揭示了这类断言的
+**到期机制** —— 基准一旦钉在**会被废弃的仓库位置**上，上游搬仓那天它就开始腐化，
+而**没有任何门禁会因此变红**（`otlp.test.ts` 验的是映射结果，不验基准措辞；官网 `api.html` 那两处同理 ——
+`tests/docs/api-page.test.ts` 只钉「首列名字真实存在 + 每个导出都出现」，**表内描述文字零射程**）。
+⚠️ 与 `boundary-table.test.ts` 那句「§7 每条 gap 的『今天还成不成立』仍要人读」同根：
+**可机械判的只有形状，判不了「这句话今天是真是假」。**
+
+**与历史原文的关系**：§10 2026-09-16 R7 那条**保留不改**（它如实记录了当时的决策与理由），
+读它以本条为准 —— 与 2026-10-09 ② 对 §10 的处理同款。
+
+**影响面 = 六处**：`src/integrations/otlp.ts`（头注一处）、`docs/observability.md` §3 表一行、
+`docs/usage-guide.md` §「OTLP 的 `gen_ai.*` 对齐」两处、`docs/roadmap.md` R7「已落地」一行、
+**官网 `packages/website/src/fragments/api.html` 与 `en/api.html` 各一行**。
+⚠️ 官网那两处是初稿**漏掉**的（初稿按「四处」写）—— 它们**没有守卫盯散文**，正是它漂移 4 个月的机制。
+**零行为变更** —— 只动注释与散文，`genAiAttributes` / `mapEvent` 的映射逐字未动，
+`tests/integrations/otlp.test.ts` 无需改动。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

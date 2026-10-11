@@ -220,8 +220,8 @@ schema 与方法签名双写且默认互不校验。这三点既是人「记不�
   - **score 一等公民**：`Score` + `attachScore`（run 根 `score` 事件，公共导出）；
     `defineEval` 结论自动落 score（`{ name:'eval', value:0/1, source: eval 名, comment: 失败原因 }`）；
     metricsSink 聚合出 `agentia_score` / `agentia_score_total` 指标族 —— eval → trace → 监控一次打通；
-  - **OTLP 属性对齐 OTel GenAI semconv v1.37**（additive 保留旧 `usage.*` 键；映射集中
-    `integrations/otlp.ts` 单模块并钉住基准版本；score 译为 `gen_ai.evaluation.result`）；
+  - **OTLP 属性对齐 `open-telemetry/semantic-conventions-genai` @ `6fd0d763`（2026-10-09）**（additive 保留旧 `usage.*` 键；映射集中
+    `integrations/otlp.ts` 单模块并钉住基准 commit；score 译为 `gen_ai.evaluation.result`）；
   - **sessionId 提升为 trace 根属性**（`session.id`，OTLP 映射 `gen_ai.conversation.id`，thread 维度）；
   - **prompt 版本进 trace**：`PromptSpec.version` → run 根 `prompts.versions`（对照 `system.version`）；
   - **线上 trace 回流 eval 数据集**：`agentia harvest <file.jsonl> [--failed] [--limit N] [--out]`

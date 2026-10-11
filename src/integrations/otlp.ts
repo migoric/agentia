@@ -16,12 +16,14 @@ import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
  * - events → OTLP events（body 的原始类型字段进 attributes，其余 JSON 化）。
  *
  * GenAI 语义约定（R7 质量闭环，**additive** —— 只追加 gen_ai.* 键，既有键一律保留）：
- * - 对齐基准：OTel GenAI semconv **v1.37** —— 该版本里 `gen_ai.client` 侧
- *   （chat / execute_tool / gen_ai.request.model / gen_ai.usage.*）已 stable，
- *   agent 侧（invoke_agent / gen_ai.agent.name / gen_ai.conversation.id / evaluation 事件）
- *   仍是 experimental；选 stable 键优先、experimental 键补齐 agent 语义，
- *   是因为下游（Datadog / Axiom 等）已按 1.37+ 识别这批键做 GenAI 专项视图。
- * - **全部映射集中在 `genAiAttributes` / `mapEvent` 两处**，升级基准版本时只改本模块；
+ * - 对齐基准：**`open-telemetry/semantic-conventions-genai` @ `6fd0d763`（2026-10-09）**。
+ *   GenAI 约定自 **v1.42（2026-06-12）移出语义约定主线**到该独立仓；该仓**全篇 Development、
+ *   无 tag、未版本化**，所以基准只能钉 commit（官方口径也是「记录你 instrument 的 commit/日期」）。
+ *   ⚠️ 2026-10-12 更正：此前这里写「v1.37 时 `gen_ai.client` 侧已 stable」——**回源核为假**
+ *   （v1.37 的 `docs/gen-ai/gen-ai-spans.md` / `gen-ai-metrics.md` 文首均为 `Status: [Development]`，
+ *   且本模块映射的 7 个 `gen_ai.*` 键逐条 `[Development]`），已删。
+ *   决策链与证据见 `docs/spec.md` §10 2026-10-12。
+ * - **全部映射集中在 `genAiAttributes` / `mapEvent` 两处**，升级基准时只改本模块；
  *   键前缀冲突不存在（自有键一律 `agentia.*` 或无前缀），所以 additive 是安全的。
  * - 保留 `usage.inputTokens` 等旧键：既有看板/告警已消费它们，双发成本极低。
  *
