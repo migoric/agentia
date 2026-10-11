@@ -543,6 +543,12 @@ describe('「本链几步 / 必需检查是哪些」的每一处抄写都要与�
         why: '注册表本身：行文必须点名 job；它的完整性由自己的元守卫管',
       },
       { re: /^docs\/plans\//, why: '带日期的计划存档，只增不改' },
+      {
+        re: /^docs\/reviews\//,
+        why:
+          '快照目录（docs/reviews/<日期>/）：正文记的是**当日读数**、只增不改，' +
+          '引用口径见 docs/reviews/2026-09-28/README.md §0 —— 与 docs/plans/ 同类',
+      },
     ];
     const registered = new Set(REQUIRED_LIST_FILES);
     const suspects = markdownInTree().filter((f) => {
