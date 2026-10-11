@@ -27,7 +27,7 @@ import { filePicture } from './lib/callable-spans.js';
  * | 体行数 | 文件 | 体占文件 | 备注 |
  * |---:|---|---:|---|
  * | **265** | `integrations/mcp-http.ts` | 84% | 一个工厂包住 12 个共享闭包状态的闭包 |
- * | **257** | `transport/async.ts` | 18% | `#executeInner`，含 4 个嵌套 `try`（253/214/169/86） |
+ * | **257** | `transport/async.ts` | 18% | `#executeInner`，含 **6 个 `try {`**（缩进 4/6/8/8/10/8 ⇒ 最深四级 `try` 嵌套）。⚠️ 同一个体 2026-10-11 ② 又被抽走「结果记账」⇒ **当期 176 行 / 5 个 `try`**，见 `docs/plans/2026-10-11-execute-inner-debt.md` |
  * | **252** | `integrations/mcp-stdio.ts` | 81% | 同上形态（spawn 子进程那条） |
  * | 224 | `integrations/metrics-render.ts` | 69% | `renderPrometheus`，**不该拆**（纯格式化器） |
  * | 215 | `toolkit/module.ts` | 37% | `constructor`，7 个可调用体之一 |
@@ -70,11 +70,11 @@ const SRC_ROOT = fileURLToPath(new URL('../../src', import.meta.url));
 /** 单个可调用体的行数上限（口径见头注：原始行，含签名行、体内注释行与收尾 `}`） */
 const MAX_CALLABLE_LINES = 240;
 
-/** 防真空：`src/**` 的 `.ts` 文件数下限（2026-10-11 实测 110；这个数会随文件增减漂移，别照着调） */
+/** 防真空：`src/**` 的 `.ts` 文件数下限（**定阈值当天**实测 110 —— 真值随文件增减漂移，别照着调） */
 const MIN_FILES = 100;
-/** 防真空：识别出的可调用体个数下限（2026-10-11 实测 538）—— 解析崩了会变成一个空表 */
+/** 防真空：识别出的可调用体个数下限（**定阈值当天**实测 538；真值同样漂移）—— 解析崩了会变成一个空表 */
 const MIN_CALLABLES = 400;
-/** 防真空：**最大体 ≥ 120 的文件个数**下限（2026-10-11 实测 13）—— 只挡「解析器只认出小体」这种退化 */
+/** 防真空：**最大体 ≥ 120 的文件个数**下限（定阈值当天 13）—— 只挡「解析器只认出小体」这种退化 */
 const MIN_BIG_FILES = 8;
 
 function allTsFiles(dir: string, acc: string[] = []): string[] {
