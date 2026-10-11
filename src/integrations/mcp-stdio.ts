@@ -4,8 +4,9 @@ import {
   DEFAULT_CLIENT_INFO,
   DEFAULT_PROTOCOL_VERSION,
   MCP_DEFAULT_TIMEOUT_MS,
-  brief,
+  assertToolResultNotError,
   isJsonRpcResponse,
+  parseToolList,
   unwrap,
   withDeadline,
 } from './mcp-protocol.js';
@@ -21,6 +22,68 @@ import { frameLimitText, MAX_FRAME_CHARS } from '../core/line-framing.js';
 
 /** `close()` 里 SIGTERM → SIGKILL 的宽限期（毫秒） */
 export const MCP_CLOSE_GRACE_MS = 2_000;
+
+/** 子进程退出观察面（见 {@link trackChildExit}） */
+interface ChildExitTracker {
+  /** 真的退出时兑现 */
+  done: Promise<void>;
+  /** 即时读数（`close()` 用它避开「已经死了还要等宽限期」） */
+  exited(): boolean;
+}
+
+/**
+ * 建立一个子进程的「退出」观察面。
+ *
+ * ⚠️ **两个事件都要听**：`'exit'` 在 **spawn 失败**（ENOENT 那类）时可能不触发，`'close'`
+ * 一定会 —— `close()` 靠它才不会白等（等一个永不到来的承诺 = 停机路径永久挂住）。
+ *
+ * 2026-10-11 从 `close()` 里抽出来。此前这件事靠一个 `resolveExit` / `exited` / `markExited`
+ * 的闭包三元组维护，散落在 `ensureProc` 的三个监听器与 `close()` 里 —— 两处任意一处漏改
+ * 都是「关不掉」或「白等」，而**两者都没有用例看得见**。
+ */
+function trackChildExit(p: ChildProcess): ChildExitTracker {
+  let exited = false;
+  let resolveDone: () => void = () => {};
+  const done = new Promise<void>((r) => {
+    resolveDone = r;
+  });
+  const mark = (): void => {
+    exited = true;
+    resolveDone();
+  };
+  p.once('exit', mark);
+  p.once('close', mark);
+  // ⚠️ `'error'` 也要听 —— 外移前的 `markExited` 挂在三个监听器上（error / exit / close），
+  // 只搬两个就是**改了行为**，而 `close()` 只会表现为「多等一个宽限期」或「永不返回」，
+  // 用例看不见。实测 `spawn` ENOENT 时事件序 = `error:ENOENT` → `close:-2`（close 会到），
+  // 但那是**观察到的**行为、不是文档承诺；保持逐字等价比赌它安全。
+  p.once('error', mark);
+  return { done, exited: () => exited };
+}
+
+/**
+ * `close()` 的收尾：先 `SIGTERM`，宽限期到后 `SIGKILL`，然后**等真正的退出**。
+ *
+ * ⚠️ SIGKILL 之后**不** resolve：SIGKILL 不可被捕获，`'exit'` / `'close'` 必达 ——
+ * 继续等真的退出。到点即返回是 2026-09-18 之前的行为：调用方以为进程没了，
+ * 实际还留着一个孤儿。
+ */
+async function reapChild(p: ChildProcess, tracker: ChildExitTracker | null): Promise<void> {
+  p.kill('SIGTERM');
+  if (tracker?.exited() === true) return;
+  const killTimer = setTimeout(() => {
+    try {
+      p.kill('SIGKILL');
+    } catch {
+      /* 已经死了 */
+    }
+  }, MCP_CLOSE_GRACE_MS);
+  try {
+    await (tracker?.done ?? Promise.resolve());
+  } finally {
+    clearTimeout(killTimer);
+  }
+}
 
 export interface StdioMcpConnectorOptions {
   /** 追加 / 覆盖的环境变量（缺省继承 `process.env`） */
@@ -73,20 +136,12 @@ export function createStdioMcpConnector(
   let proc: ChildProcess | null = null;
   let fatal: Error | null = null;
   let closed = false;
-  let exited = false;
   let buf = '';
   let nextId = 1;
   let ready: Promise<void> | null = null;
-  let resolveExit: (() => void) | null = null;
-  const exitPromise = new Promise<void>((r) => {
-    resolveExit = r;
-  });
+  /** spawn 时建立（`close()` 靠它等真的退出）；从未 spawn 过则为 null */
+  let exitTracker: ChildExitTracker | null = null;
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-  const markExited = (): void => {
-    exited = true;
-    resolveExit?.();
-  };
 
   /** 进程已死 / 已 close 时一次性拒绝全部在途请求 —— 不留永久挂起的 promise */
   const fail = (err: Error): void => {
@@ -110,11 +165,11 @@ export function createStdioMcpConnector(
     };
     const p = spawn(bin, rest, spawnOpts);
     proc = p;
+    exitTracker = trackChildExit(p);
 
     p.on('error', (err: unknown) => {
       // 见函数头第 1 条：这个监听器不是可选的
       fail(err instanceof Error ? err : new Error(String(err)));
-      markExited();
     });
     p.on('exit', (code, signal) => {
       if (!closed) {
@@ -122,10 +177,7 @@ export function createStdioMcpConnector(
           new Error(`MCP server 进程已退出（code=${code ?? 'null'} signal=${signal ?? 'null'}）`),
         );
       }
-      markExited();
     });
-    // 'exit' 在 spawn 失败时可能不触发，'close' 一定会 —— close() 靠它才不会白等
-    p.on('close', markExited);
     // 进程已死时写 stdin 会异步报 EPIPE；真实原因由上面的 'error' / 'exit' 给出
     p.stdin?.on('error', () => {
       /* 吞掉：EPIPE 是「进程没了」的次生现象，不是根因 */
@@ -253,16 +305,7 @@ export function createStdioMcpConnector(
 
   const listTools = async (): Promise<McpToolInfo[]> => {
     const r = await guard(request('tools/list', {}), 'tools/list');
-    if (typeof r !== 'object' || r === null) {
-      throw new Error(`MCP tools/list 返回了非对象：${brief(r)}`);
-    }
-    const listed = (r as { tools?: unknown }).tools;
-    if (listed === undefined) return [];
-    if (!Array.isArray(listed)) {
-      // 响亮失败：把协议不符吞成空菜单，用户看到的是「一个工具都没有」而不是「server 坏了」
-      throw new Error(`MCP tools/list 的 tools 不是数组：${brief(listed)}`);
-    }
-    return listed as McpToolInfo[];
+    return parseToolList(r);
   };
 
   const callTool = async (
@@ -271,12 +314,8 @@ export function createStdioMcpConnector(
     callOpts?: { abandoned?: AbortSignal },
   ): Promise<unknown> => {
     const r = await request('tools/call', { name, arguments: args }, callOpts?.abandoned);
-    // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条）
-    if (typeof r === 'object' && r !== null && (r as { isError?: unknown }).isError) {
-      throw new Error(
-        `MCP 工具 ${name} 返回 isError: ${brief((r as { content?: unknown }).content)}`,
-      );
-    }
+    // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条；判定与文案在 mcp-protocol.ts）
+    assertToolResultNotError(r, name);
     return r;
   };
 
@@ -290,22 +329,7 @@ export function createStdioMcpConnector(
       const p = proc;
       proc = null;
       if (!p) return;
-      p.kill('SIGTERM');
-      if (exited) return;
-      const killTimer = setTimeout(() => {
-        try {
-          p.kill('SIGKILL');
-        } catch {
-          /* 已经死了 */
-        }
-        // ⚠️ 这里**不** resolve：SIGKILL 不可被捕获，'exit'/'close' 必达 —— 继续等真的退出。
-        // 到点即返回是 2026-09-18 之前的行为：调用方以为进程没了，实际还留着一个孤儿。
-      }, MCP_CLOSE_GRACE_MS);
-      try {
-        await exitPromise;
-      } finally {
-        clearTimeout(killTimer);
-      }
+      await reapChild(p, exitTracker);
     },
   };
 }
