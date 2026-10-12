@@ -10,7 +10,7 @@
  *   `createStreamableHttpMcpConnector`，外加裸 fetch 验 GET → 405 / DELETE → 200。
  *
  * trace 侧的证据：夹具把每次 tools/call 的 trace 经 `jsonlTraceSink` 落盘，本脚本
- * 逐条核对（run 根 `mcp.tools/call` + capability span + 成败状态）。
+ * 逐条核对（run 根 `mcp.tools/call` + capability span + 成败状态 + SEP-414 的跨进程 link）。
  *
  * 跑法：npm run e2e:mcp:server（**不进** verify-all，与 e2e:mcp 同档）
  */
@@ -90,16 +90,29 @@ async function stdioRound(): Promise<void> {
       /isError/.test(failed) && failed.includes('夹具工具炸了'),
       failed,
     );
+
+    // SEP-414 跨进程链路：连接器把 traceparent 放进 params._meta（裸键）发出，
+    // 反向桥提取后记成那棵 trace run 根的一条 link —— 对账在下面的落盘 trace 上
+    const linked = (await conn.callTool(
+      'say_hello',
+      { name: '链路' },
+      { traceparent: '00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01' },
+    )) as { content: Array<{ type: string; text: string }> };
+    check(
+      '带 _meta.traceparent 的调用照常返回（对端宽容）',
+      linked.content[0]?.text === '你好，链路',
+      linked.content[0]?.text,
+    );
   } finally {
     await conn.close();
   }
 
-  // trace 叙事不破：三次调用各一棵，落盘逐条可对账
+  // trace 叙事不破：四次调用各一棵，落盘逐条可对账
   const traces = readFileSync(traceFile, 'utf8')
     .trim()
     .split('\n')
     .map((l) => JSON.parse(l) as Trace);
-  check('每次 tools/call 一棵 trace（3 次调用 3 棵）', traces.length === 3);
+  check('每次 tools/call 一棵 trace（4 次调用 4 棵）', traces.length === 4);
   check(
     'run 根名都是 mcp.tools/call',
     traces.every((t) => t.spans.find((s) => s.spanId === t.rootSpanId)?.name === 'mcp.tools/call'),
@@ -107,7 +120,14 @@ async function stdioRound(): Promise<void> {
   check(
     'capability span 名字 = 工具名，失败那棵 status=error',
     traces.map((t) => t.spans.find((s) => s.kind === 'capability')?.name).join(',') ===
-      'say_hello,echo_object,fail_tool' && traces[2]?.status === 'error',
+      'say_hello,echo_object,fail_tool,say_hello' && traces[2]?.status === 'error',
+  );
+  const linkedRoot = traces[3]?.spans.find((s) => s.spanId === traces[3].rootSpanId);
+  check(
+    'SEP-414：跨进程 link 真出现在落盘 trace 的 run 根上',
+    linkedRoot?.links?.[0]?.traceId === '0af7651916cd43dd8448eb211c80319c' &&
+      linkedRoot.links[0].spanId === '00f067aa0ba902b7',
+    JSON.stringify(linkedRoot?.links),
   );
 }
 

@@ -1,7 +1,8 @@
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
+import { formatTraceparent } from '../core/trace.js';
 import { MCP_DEFAULT_TIMEOUT_MS, withDeadline } from './mcp-protocol.js';
-import type { McpClientLike } from './mcp-protocol.js';
+import type { McpCallOptions, McpClientLike } from './mcp-protocol.js';
 
 /**
  * Agentia —— MCP 桥（D1）+ 两个内置连接器（spec §10 决策记录）。
@@ -151,6 +152,21 @@ export async function mcpTools(
           input && typeof input === 'object' && !Array.isArray(input)
             ? (input as Record<string, unknown>)
             : {};
+        // 出站传播（SEP-414）：把「发起本次调用的那个 span」的 traceparent 带给 server，
+        // 由连接器放进 params._meta（裸键）。
+        // 落点在**桥**而不在连接器里调 `currentTraceparent()`：分层上 integrations 够不到
+        // engine 的 span-scope（只许依赖 core）—— 但 ctx 里**已经有同一份投影的原料**
+        // （`recorder.traceId` + `parentSpanId`；turn.ts 包工具执行的 `withCurrentSpan`
+        // 用的就是这两个值，二者与 currentTraceparent() 同源同格式，经 core 的
+        // formatTraceparent 编出同一个串）。ctx 缺席（桥脱离引擎单用）⇒ 不带
+        // —— 没有上下文可传时不造空值（纪律③）。
+        const traceparent = ctx
+          ? formatTraceparent(ctx.recorder.traceId, ctx.parentSpanId)
+          : undefined;
+        const baseOpts: McpCallOptions = {
+          ...(ctx?.abandoned !== undefined ? { abandoned: ctx.abandoned } : {}),
+          ...(traceparent !== undefined ? { traceparent } : {}),
+        };
         // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎**表过态**时，桥不启动自己的计时器 ——
         // 两个计时器判同一件事，只会得到两种账（桥那份曾被记成 error(unknown)/errorKind=threw），
         // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（只在脱离引擎单用、
@@ -163,11 +179,7 @@ export async function mcpTools(
         if (engineBudget != null) {
           // 引擎是裁判：它的 toolTimeoutMs 到点会 fire ctx.abandoned —— 连接器据此
           // 清掉这次调用的簿记（stdio 的 pending 条目），不留下等不到回收的残骸。
-          return client.callTool(
-            original,
-            args,
-            ctx?.abandoned !== undefined ? { abandoned: ctx.abandoned } : undefined,
-          );
+          return client.callTool(original, args, baseOpts);
         }
         // 桥兜底裁判（脱离引擎单用 / 引擎没设超时）：到点除了放弃等待，还要通知连接器
         // 清理簿记 —— 与引擎路径共用同一个 `abandoned` 缝（`core/abort.ts` 合成）。
@@ -176,7 +188,7 @@ export async function mcpTools(
           ctx?.abandoned !== undefined ? combineSignals(ctx.abandoned, ac.signal) : ac.signal;
         try {
           return await withDeadline(
-            client.callTool(original, args, { abandoned }),
+            client.callTool(original, args, { ...baseOpts, abandoned }),
             timeoutMs,
             original,
           );

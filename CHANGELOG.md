@@ -1110,6 +1110,19 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键）（2026-10-12 ④）
+
+- **出站**：run 内经 MCP 桥调 `tools/call` 时，两个出厂连接器自动把当前 span 的 W3C
+  `traceparent` 放进 `params._meta`（SEP-414 定的载体：裸键、不加前缀、**不进 `arguments`**）——
+  认出它的 server（MCP Python SDK、agentia 反向桥等）就能把这次调用链回你的 trace。
+  不在 run 内（桥脱离引擎单用）则不带：不造空上下文。
+- **入站**：`createMcpServer` 认 `tools/call` 的 `params._meta.traceparent`，合法即记成该次
+  trace run 根的一条 `links`（与 HTTP `traceparent` 头同款缝合）；缺失 / 畸形静默当作
+  没有上游 —— 不报错、不影响调用成败。
+- **无破坏性变更**：`McpClientLike.callTool` 第三参新增可选 `traceparent` 字段（鸭子类型，
+  只实现两个参数的旧客户端照常兼容，只是链路断在它的传输上）；公共导出面零变化。
+  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ④。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
