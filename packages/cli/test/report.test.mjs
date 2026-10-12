@@ -174,4 +174,133 @@ describe('agentia report', { skip: SKIP }, () => {
   it('--help 里列出 report', () => {
     assert.match(run(['--help']), /agentia report <trace\.jsonl>/);
   });
+
+  // ---------- G6：会话 / 任务维度 ----------
+  /* 造一条可控的 run：session 属性 / 成本 / 成败 / 根耗时都能指定。
+   * `cost === undefined` ⇒ **不写** `totalUsage`（模拟手工 trace / 未定价），
+   * 这是「成本读不出」那条用例的病灶形状。 */
+  const runTrace = ({ traceId, session, status = 'ok', cost, ms = 1000 }) => ({
+    traceId,
+    rootSpanId: 's0',
+    status,
+    ...(cost === undefined ? {} : { totalUsage: { costEstimate: cost } }),
+    spans: [
+      {
+        spanId: 's0',
+        parentSpanId: null,
+        kind: 'run',
+        name: 'agent.run',
+        startedAt: 0,
+        endedAt: ms,
+        status,
+        attributes: session === undefined ? {} : { 'session.id': session },
+        events: [],
+      },
+      {
+        spanId: 's1',
+        parentSpanId: 's0',
+        kind: 'llm.turn',
+        name: 'claude-opus-5',
+        startedAt: 0,
+        endedAt: 10,
+        status: 'ok',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 2,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.001,
+        },
+        attributes: {},
+        events: [],
+      },
+    ],
+  });
+
+  it('会话维度：按 run 根 session.id 归组，成本按成功数摊（成功率带分母）', () => {
+    withFile(
+      [
+        JSON.stringify(runTrace({ traceId: 'a', session: 'S', cost: 0.02, ms: 2000 })),
+        JSON.stringify(
+          runTrace({ traceId: 'b', session: 'S', status: 'error', cost: 0.03, ms: 500 }),
+        ),
+      ],
+      (file) => {
+        const p = JSON.parse(run(['report', file, '--json']));
+        assert.equal(p.sessions.length, 1);
+        const s = p.sessions[0];
+        assert.equal(s.session, 'S');
+        // runs / succeeded / failed 三个数都在 ⇒ 「成功 1 条」不是孤立百分比
+        assert.deepEqual([s.runs, s.succeeded, s.failed], [2, 1, 1]);
+        assert.equal(s.totalMs, 2500);
+        assert.equal(s.costUsd, 0.05);
+        assert.equal(s.costPerSuccess, 0.05); // 0.05 / 1 成功条
+      },
+    );
+  });
+
+  it('无会话的 run 落 (无会话) 桶；TaskRecord 的 taskId 作回退键（两者不混排）', async () => {
+    // 桶名从源码取常量，不在测试里重写一遍字面量 —— 否则改名时两边一起漂移。
+    // 动态 import 放在用例内：dist 缺席时整个用例已被 skip（顶层 import 会连累整份文件）。
+    const { NO_SESSION } = await import(new URL('../dist/report.js', import.meta.url).href);
+    withFile(
+      [
+        JSON.stringify(runTrace({ traceId: 'a' })),
+        JSON.stringify({ taskId: 'T-1', result: { trace: runTrace({ traceId: 'b' }) } }),
+      ],
+      (file) => {
+        const p = JSON.parse(run(['report', file, '--json']));
+        assert.deepEqual(p.sessions.map((s) => s.session).sort(), [NO_SESSION, 'T-1']);
+      },
+    );
+  });
+
+  it('总耗时降序：会话表也按 total 排（与人读的顺序一致）', () => {
+    withFile(
+      [
+        JSON.stringify(runTrace({ traceId: 'a', session: 'small', ms: 100 })),
+        JSON.stringify(runTrace({ traceId: 'b', session: 'big', ms: 900 })),
+      ],
+      (file) => {
+        const p = JSON.parse(run(['report', file, '--json']));
+        assert.deepEqual(
+          p.sessions.map((s) => s.session),
+          ['big', 'small'],
+        );
+      },
+    );
+  });
+
+  // ⚠️ **反向断言**：这一条是 G6 的存在理由 —— 「成功率」最容易写成一笔假账。
+  it('成功数为 0 的组：cost/ok 是 `-`（null），**不是 0、也不是 Infinity**', () => {
+    withFile(
+      [JSON.stringify(runTrace({ traceId: 'a', session: 'F', status: 'error', cost: 0.07 }))],
+      (file) => {
+        const p = JSON.parse(run(['report', file, '--json']));
+        const s = p.sessions[0];
+        assert.equal(s.costUsd, 0.07); // 成本照记（它确实花了钱）
+        assert.equal(s.costPerSuccess, null); // ← 除不了就是 null，不伪装
+        assert.equal(JSON.stringify(s.costPerSuccess), 'null'); // 不能是 0 / Infinity / NaN
+        const out = run(['report', file]);
+        assert.match(out, /^F\s+1\s+0\s+1\s+1\.00s\s+0\.070000\s+-/m);
+      },
+    );
+  });
+
+  it('成本读不出（无 totalUsage）：cost 与 cost/ok 都给 `-`，不伪装成 0', () => {
+    withFile([JSON.stringify(runTrace({ traceId: 'a', session: 'N' }))], (file) => {
+      const p = JSON.parse(run(['report', file, '--json']));
+      assert.equal(p.sessions[0].costUsd, null);
+      assert.equal(p.sessions[0].costPerSuccess, null);
+      assert.match(run(['report', file]), /^N\s+1\s+1\s+0\s+1\.00s\s+-\s+-/m);
+    });
+  });
+
+  it('没配会话时如实给一行 (无会话)（不隐藏、不折叠）', () => {
+    withFile([JSON.stringify(trace)], (file) => {
+      const out = run(['report', file]);
+      assert.match(out, /^session\s+runs\s+ok\s+fail\s+total/m);
+      assert.match(out, /^\(无会话\)\s+1\s+1\s+0\s+500ms/m);
+    });
+  });
 });

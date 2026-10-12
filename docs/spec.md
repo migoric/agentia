@@ -6254,6 +6254,43 @@ MCP **SEP-414**（Final，已进 2026-07-28 规范）把跨进程 trace 载体�
 另核过 `npm run e2e:mcp`（真 `uvx mcp-server-time`）：注入 `_meta` 后第三方 server 照常服务
 （纪律① 的真实对端证据）。
 
+### 2026-10-12 ⑤：`agentia report` 加会话 / 任务维度（G6）—— 「成功率」必须带分母
+
+**起因**：2026-10-12 的可观测深钻评审（`docs/reviews/2026-10-12/observability-deep-dive.md` §3 缺口表）
+列了十项缺口，四个 PR 做完七项、剩下 G6 / G7 / G8；补缺设计稿 =
+`docs/plans/2026-10-12-observability-g6-g7-g8.md`。G6 的病灶很具体：`report` 只有**能力维度**
+（`capabilities[]`）+ run 级**计数**（`runs` / `failed`），`failed` 是**次数不是分母**
+⇒ 「成功率」在当前输出上**根本算不出来**，而它恰恰是「这一段跑得好不好」的第一问。
+
+**决策**：
+
+- **同文件加维度，不新开子命令**：CLI 已有 9 个子命令，而 `report` 的输入（同一批 trace 行）与
+  用途（调优）和会话视图**完全重合**。`ReportJson` 增 `sessions: SessionRow[]`（**加法**，兼容）。
+- **分组键三选一，不混排**（一条 run 只进一个组）：run 根 span 的 `session.id`（宿主传
+  `session: { store, id }` 才写）→ 记录里的 `TaskRecord.taskId` → `(无会话)` 桶。
+  ⚠️ 会话一般聚多条 run，而 `taskId` 逐任务唯一 ⇒ 后一路通常是「一组一条」，它是给单任务批跑
+  逐条标成本，**不是**多轮聚合；这一层差别写在该接口的注释里，免得被当成会话维度用。
+- **三个数一起给，百分比不单独出现**：`runs` / `succeeded` / `failed` 都出列 —— 只报百分比在小
+  组上是噪声（与 `summarizeTrace` 头注「单条 run 样本常 < 5，不给分位」同一取向）。
+- ⭐ **对设计稿的一处修正（本条最该记下来的）**：成本口径从设计稿的「该组各 run 的
+  capability 行 `costUsd` 之和」改成 **`totalUsage.costEstimate`**。理由是前者**会重复计数**：
+  capability span 的 `usage` 是**其子孙 `llm.turn` 的聚合**（`core/trace.ts` 的 `Span.usage` 注），
+  `@SubAgent` 里套 `@Skill` 时两者带的是**同一批 token**；而 `Trace.totalUsage` 的注写明它
+  刻意不含 capability 聚合，正是为免重。⇒ 设计稿那句「现成的 `summarizeTrace` 产物，不另算」
+  在**嵌套能力**这个形状上是假账，落地时必须改。
+- **「除不了」不给数**：成功数为 0 时 `costPerSuccess` 是 `null`（渲染成 `-`），**不是 0**
+  —— 写成 0 等于说「每个成功任务不花钱」，正好说反；同时它也不能是 `Infinity`。
+- 展示层顺带修一处：`pad` 改成按**显示宽度**补齐（CJK 记 2 列）—— `(无会话)` 是没配会话时的
+  **唯一**一行，按 `String.length` 补齐会把整张表右推 3 格。
+
+**影响面**：`packages/cli/src/report.ts`（194 → 339 行；棘轮账 LINE/TOTAL 同步，**为什么超了设计稿
+估算的 +60~90** 记在 `packages/cli/test/structure.test.mjs` 的基线条目里）；
+`docs/usage-guide.md` §6.4 的 `--json` 形状列表同步加 `sessions`。**框架侧 `src/` 零改动**。
+测试：`packages/cli/test/report.test.mjs` +6 条（归组 / `(无会话)` 桶 / `taskId` 回退键 / 降序 /
+**「成功数为 0 ⇒ `-`」的反向断言** / 成本读不出 ⇒ `-`）；**变异验证 4 条各咬住预期的那一条**
+（`> 0` → `>= 0` ⇒ 反向断言那条例外变 `Infinity`；丢掉 `taskId` 回退；把「读不出」写成 `0`；
+`session.id` 读成 `sessionId`）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
