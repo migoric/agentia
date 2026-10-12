@@ -60,6 +60,16 @@ export const TOOL_OUTPUT_EVENT = 'tool.output';
  */
 export const USAGE_MISSING_EVENT = 'usage.missing';
 
+/**
+ * 「上下文策略在本回合开始前**真的压缩了**历史」事件名（body 带 `{ from, to, model }`）。
+ *
+ * 记账点在 `engine/turn.ts` 的回合入口检查（压缩发生时本回合的 llm.turn span 还不存在，
+ * 故事件记在回合的**父** span 上）；消费方是 `integrations/otlp.ts`
+ * （映射 `gen_ai.conversation.compacted`）。与 `TOOL_INPUT_EVENT` 同因单源：
+ * 跨 engine → integrations 的名字各写一份就是静默归零。
+ */
+export const CONTEXT_BUDGET_EVENT = 'context.budget';
+
 /** 工具 I/O 事件名的联合 —— `eval/export.ts` 的工具事件过滤器按它取参数 */
 export type ToolIoEventName = typeof TOOL_INPUT_EVENT | typeof TOOL_OUTPUT_EVENT;
 

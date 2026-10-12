@@ -6147,6 +6147,39 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
 **零行为变更** —— 只动注释与散文，`genAiAttributes` / `mapEvent` 的映射逐字未动，
 `tests/integrations/otlp.test.ts` 无需改动。
 
+### 2026-10-12 ②：OTLP 导出侧投影 execute_tool + 三个缓存/压缩 semconv 键
+
+**起因**：同一天的生态对拍深评（`docs/reviews/2026-10-12/observability-deep-dive.md` §3）
+发现两个缺口 —— G3：三个「本仓已有信号、只是没以 semconv 键名发出去」的 Recommended 键
+（每次 run 都算出了缓存 token、每次压缩都记了 `context.budget` 事件，但只发自有键）；
+G2：上游 6 家框架（Mastra / Vercel AI SDK / CrewAI / AutoGen / Google ADK / Semantic Kernel，
+**六中六**，逐家检索源码核过）都把 `execute_tool` 当一等 span，而本仓普通 @Tool 只有事件没有 span。
+
+**键名拼写以钉 commit 的上游原文为准**（`semantic-conventions-genai @ 6fd0d763` 的
+`client-inference.md` 属性表逐字核）：`gen_ai.usage.cache_read.input_tokens` ←
+`Usage.cacheReadTokens`、`gen_ai.usage.cache_write.input_tokens` ← `Usage.cacheCreationTokens`、
+`gen_ai.conversation.compacted` ← `context.budget` 事件。三条都是 additive、双发不替换。
+
+**三个刻意口径**：
+
+1. **投影放导出侧，engine 一行不动**。普通 @Tool 不建 span 是记账侧的刻意 trade-off
+   （core/trace.ts 的 SpanKind 注释），生态变了也不必推翻它：OTLP 导出器吃的是按 span 分好组的
+   `span.events`，父 span 隐含、配对键是 `tool_use_id`（不是名字 ⇒ 同名并行不配错）、
+   `tool.output` 带真实 `durationMs` / `ok` / `errorKind` ⇒ **导出侧投影**即可让
+   「按 span 查工具」的后端正常工作，本地 trace 形状与体量闸都不参与。事件本体保留在父 span
+   上（投影是**多**出来的 span，不是搬走）。
+2. **`projectToolSpans` 默认关**。与「不改既有产物、不悄悄改变导出体积」同款纪律：关闭时
+   导出与既往一致（有「缺省 ≡ 显式 false 逐字节相等」的用例钉着）。
+3. **孤儿 input 不编账**。开 `traceLimits.maxEvents` 后实测存在「只有 `tool.input` 没有
+   `tool.output`」的对（超限停记丢的是后记那条）—— 投影成**无 `endTimeUnixNano`、无 status**
+   的 span + `agentia.projection.orphan: true`（「开始了、没等到结束」，编零时长或编成败都是编账）。
+   反方向的孤儿 output 记账侧不可达，防御口径是跳过（没有诚实的 start）。
+   start/end 取两条事件各自的记账时刻（都是真实时刻，`durationMs` 与二者之差同源，不另发）。
+
+**顺带一处单源**：`context.budget` 事件名此前是 turn.ts 里的字面量，本轮第一次有了跨层消费方
+（otlp.ts）⇒ 按 E8 同款教训（跨 engine → integrations 的名字各写一份就是静默归零）上移到
+`core/trace.ts` 的 `CONTEXT_BUDGET_EVENT`。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

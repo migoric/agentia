@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createOtlpExporter } from '../../src/integrations/otlp.js';
 // 投影**单一真源**在 core/trace.ts：断言用它而不是就地写 `replaceAll().slice(0,16)` ——
 // 这样「导出的 span id 就是出站 traceparent 里那个 span id」是被钉住的，改成别的切法立刻红。
-import { type Trace, wireSpanId, wireTraceId } from '../../src/core/trace.js';
+import { type Span, type Trace, wireSpanId, wireTraceId } from '../../src/core/trace.js';
 
 function sampleTrace(): Trace {
   const traceId = randomUUID();
@@ -483,6 +483,290 @@ describe('createOtlpExporter', () => {
     );
     try {
       await createOtlpExporter({ endpoint: base }).export(sampleTrace());
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+/** 造一条「run 根 + 若干 llm.turn」的 trace（G3/G2 用例共用的骨架） */
+function traceWithTurns(turns: Array<Partial<Span> & { spanId: string }>): {
+  trace: Trace;
+  rootId: string;
+} {
+  const traceId = randomUUID();
+  const rootId = randomUUID();
+  const trace: Trace = {
+    traceId,
+    rootSpanId: rootId,
+    status: 'ok',
+    totalUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    spans: [
+      {
+        spanId: rootId,
+        traceId,
+        parentSpanId: null,
+        kind: 'run',
+        name: 'my-app',
+        startedAt: 1000,
+        endedAt: 2000,
+        status: 'ok',
+        attributes: {},
+        events: [],
+      },
+      ...turns.map(
+        (t): Span => ({
+          traceId,
+          parentSpanId: rootId,
+          kind: 'llm.turn',
+          name: 'claude-opus-5',
+          startedAt: 1100,
+          endedAt: 1500,
+          status: 'ok',
+          attributes: {},
+          events: [],
+          ...t,
+        }),
+      ),
+    ],
+  };
+  return { trace, rootId };
+}
+
+/** OTLP span 的 attributes 数组 → 按 key 取值的map（与上方用例同款读法） */
+// biome-ignore lint/suspicious/noExplicitAny: OTLP/JSON 是外部协议信封，测试逐字段断言
+function attrByKey(span: any): Record<string, any> {
+  return Object.fromEntries(
+    span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
+  );
+}
+
+describe('G3：三个「已有信号、没以 semconv 键名发出去」的 Recommended 键', () => {
+  it('缓存 token 双发 gen_ai.usage.cache_read/cache_write.input_tokens（>0 才发，0 不留键）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const { trace } = traceWithTurns([
+        {
+          spanId: randomUUID(),
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 50, cacheCreationTokens: 25 },
+        },
+        // 反向：没走缓存的回合（两个缓存读数都是 0）⇒ 一个 gen_ai 缓存键都不发
+        {
+          spanId: randomUUID(),
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        },
+      ]);
+      await createOtlpExporter({ endpoint: base }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      const hit = attrByKey(spans[1]);
+      assert.deepEqual(hit['gen_ai.usage.cache_read.input_tokens'], { intValue: '50' });
+      assert.deepEqual(hit['gen_ai.usage.cache_write.input_tokens'], { intValue: '25' });
+      // 双发不是替换：自有键原样保留
+      assert.deepEqual(hit['usage.cacheReadTokens'], { intValue: '50' });
+      assert.deepEqual(hit['usage.cacheCreationTokens'], { intValue: '25' });
+
+      const miss = attrByKey(spans[2]);
+      assert.equal('gen_ai.usage.cache_read.input_tokens' in miss, false);
+      assert.equal('gen_ai.usage.cache_write.input_tokens' in miss, false);
+      // 0 读数的自有键照旧发（既有行为不变）
+      assert.deepEqual(miss['usage.cacheReadTokens'], { intValue: '0' });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('父 span 上有早于本回合的 context.budget ⇒ llm.turn 发 gen_ai.conversation.compacted: true（否则不设，连 false 都不发）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const { trace, rootId } = traceWithTurns([
+        { spanId: randomUUID(), startedAt: 1100 }, // 压缩**之前**的回合 ⇒ 不发
+        { spanId: randomUUID(), startedAt: 1300 }, // 压缩之后的回合 ⇒ true
+        { spanId: randomUUID(), startedAt: 1400 }, // 再之后的回合 ⇒ 仍是压缩视图 ⇒ true
+      ]);
+      // 记账点的真实位置：context.budget 记在回合的**父** span 上（engine/turn.ts ——
+      // 压缩发生时本回合的 llm.turn 还不存在）
+      trace.spans[0]!.events.push({
+        time: 1200,
+        name: 'context.budget',
+        body: { from: 40, to: 12, model: 'claude-opus-5' },
+      });
+      assert.equal(trace.spans[0]!.spanId, rootId);
+      await createOtlpExporter({ endpoint: base }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      // run 根自己不带这个键（它是 inference span 的属性）
+      assert.equal('gen_ai.conversation.compacted' in attrByKey(spans[0]), false);
+      assert.equal('gen_ai.conversation.compacted' in attrByKey(spans[1]), false);
+      assert.deepEqual(attrByKey(spans[2])['gen_ai.conversation.compacted'], { boolValue: true });
+      assert.deepEqual(attrByKey(spans[3])['gen_ai.conversation.compacted'], { boolValue: true });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('没有 context.budget 事件 ⇒ 任何 span 都不发 gen_ai.conversation.compacted', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const { trace } = traceWithTurns([{ spanId: randomUUID() }]);
+      await createOtlpExporter({ endpoint: base }).export(trace);
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      for (const s of spans) {
+        assert.equal('gen_ai.conversation.compacted' in attrByKey(s), false);
+      }
+    } finally {
+      await close(server);
+    }
+  });
+});
+
+describe('G2：projectToolSpans 把 tool.input/tool.output 事件投影成 execute_tool child span', () => {
+  const input = (id: string, tool: string, time: number) => ({
+    time,
+    name: 'tool.input',
+    body: { tool, tool_use_id: id, input: '{}' },
+  });
+  const output = (id: string, tool: string, time: number, ok: boolean, errorKind?: string) => ({
+    time,
+    name: 'tool.output',
+    body: { tool, tool_use_id: id, ok, durationMs: 90, ...(errorKind ? { errorKind } : {}) },
+  });
+
+  it('默认关：不投影（span 数不变、无 execute_tool span），与显式 false 逐字节一致', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const turnId = randomUUID();
+      const { trace } = traceWithTurns([
+        {
+          spanId: turnId,
+          events: [input('tu1', 'search', 1110), output('tu1', 'search', 1200, true)],
+        },
+      ]);
+      await createOtlpExporter({ endpoint: base }).export(trace);
+      await createOtlpExporter({ endpoint: base, projectToolSpans: false }).export(trace);
+
+      assert.equal(captured.length, 2);
+      assert.deepEqual(captured[1].body, captured[0].body, '缺省与显式 false 必须一致');
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      assert.equal(spans.length, 2, 'span 数不变：run 根 + llm.turn');
+      assert.ok(
+        !spans.some((s: { name: string }) => s.name.startsWith('execute_tool')),
+        '默认关 ⇒ 没有 execute_tool span',
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('开启：配对成功/失败各投影一条（父子关系、起止时刻、属性、status 口径）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const turnId = randomUUID();
+      const { trace } = traceWithTurns([
+        {
+          spanId: turnId,
+          events: [
+            input('tu-ok', 'search', 1110),
+            input('tu-bad', 'search', 1210),
+            output('tu-ok', 'search', 1200, true),
+            output('tu-bad', 'search', 1300, false, 'timeout'),
+          ],
+        },
+      ]);
+      await createOtlpExporter({ endpoint: base, projectToolSpans: true }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      assert.equal(spans.length, 4, 'run 根 + llm.turn + 2 条投影 span');
+      const projected = spans.slice(2);
+      // biome-ignore lint/suspicious/noExplicitAny: 同上，线缆形状逐字段断言
+      const byEnd = (s: any) => s.startTimeUnixNano;
+      projected.sort((a: unknown, b: unknown) => byEnd(a).localeCompare(byEnd(b)));
+
+      const okSpan = projected[0];
+      assert.equal(okSpan.name, 'execute_tool search');
+      assert.equal(okSpan.traceId, wireTraceId(trace.traceId));
+      assert.equal(okSpan.parentSpanId, wireSpanId(turnId), '父是发起它的 llm.turn');
+      assert.match(okSpan.spanId, /^[0-9a-f]{16}$/, '投影 id 与既有 span id 同宽');
+      assert.equal(okSpan.startTimeUnixNano, String(1110 * 1e6), 'start = tool.input 时刻');
+      assert.equal(okSpan.endTimeUnixNano, String(1200 * 1e6), 'end = tool.output 时刻');
+      assert.deepEqual(okSpan.status, { code: 1 });
+      const okAttrs = attrByKey(okSpan);
+      assert.deepEqual(okAttrs['gen_ai.operation.name'], { stringValue: 'execute_tool' });
+      assert.deepEqual(okAttrs['gen_ai.tool.name'], { stringValue: 'search' });
+      assert.equal('agentia.projection.orphan' in okAttrs, false);
+      assert.equal('error.type' in okAttrs, false);
+
+      const badSpan = projected[1];
+      assert.equal(badSpan.startTimeUnixNano, String(1210 * 1e6));
+      assert.equal(badSpan.endTimeUnixNano, String(1300 * 1e6));
+      assert.deepEqual(badSpan.status, { code: 2, message: 'timeout' });
+      assert.deepEqual(attrByKey(badSpan)['error.type'], { stringValue: 'timeout' });
+
+      // 投影是「多出来的 span」：原事件原样留在父 span 上（事件消费方不受影响）
+      assert.equal(spans[1].events.length, 4);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('同名工具并行不配错：配对键是 tool_use_id 不是名字', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const { trace } = traceWithTurns([
+        {
+          spanId: randomUUID(),
+          events: [
+            input('tu-a', 'search', 100),
+            input('tu-b', 'search', 110), // 同名并行，时间交叠
+            output('tu-a', 'search', 150, true),
+            output('tu-b', 'search', 165, true),
+          ],
+        },
+      ]);
+      await createOtlpExporter({ endpoint: base, projectToolSpans: true }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      // biome-ignore lint/suspicious/noExplicitAny: 同上
+      const projected = spans.filter((s: any) => s.name === 'execute_tool search');
+      assert.equal(projected.length, 2);
+      assert.notEqual(projected[0].spanId, projected[1].spanId, '两次调用各是各的 span');
+      const windows = projected
+        // biome-ignore lint/suspicious/noExplicitAny: 同上
+        .map((s: any) => [s.startTimeUnixNano, s.endTimeUnixNano])
+        .sort();
+      assert.deepEqual(windows, [
+        [String(100 * 1e6), String(150 * 1e6)],
+        [String(110 * 1e6), String(165 * 1e6)],
+      ]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('孤儿 input ⇒ 有 span 但不写 endTimeUnixNano / status，带 agentia.projection.orphan: true（孤儿 output 跳过）', async () => {
+    const { server, base, captured } = await startCollector(200);
+    try {
+      const { trace } = traceWithTurns([
+        {
+          spanId: randomUUID(),
+          events: [
+            input('tu-orphan', 'search', 1110),
+            // traceLimits.maxEvents 是「超限停记」⇒ 丢的是后记的那条，孤儿 output 在记账侧
+            // 不可达；防御口径：没有诚实的 start 就不投影（事件本体仍在父 span 上）
+            output('tu-lonely', 'search', 1200, true),
+          ],
+        },
+      ]);
+      await createOtlpExporter({ endpoint: base, projectToolSpans: true }).export(trace);
+
+      const spans = captured[0].body.resourceSpans[0].scopeSpans[0].spans;
+      assert.equal(spans.length, 3, 'run 根 + llm.turn + 1 条孤儿投影（孤儿 output 不产 span）');
+      const orphan = spans[2];
+      assert.equal(orphan.name, 'execute_tool search');
+      assert.equal(orphan.startTimeUnixNano, String(1110 * 1e6));
+      assert.equal('endTimeUnixNano' in orphan, false, '不许编零时长');
+      assert.equal('status' in orphan, false, '「没等到结束」不是 OK 也不是 Error');
+      assert.deepEqual(attrByKey(orphan)['agentia.projection.orphan'], { boolValue: true });
     } finally {
       await close(server);
     }

@@ -836,6 +836,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `serviceName` | OTLP resource 的 `service.name`，缺省 `agentia` |
 | `timeoutMs` | 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——裸 `fetch` 没有超时，collector 半开连接会让 run 收尾**永久挂起**；超时按导出失败处理 |
 | `onExportError` | 导出失败回调：给了它，**所有**失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都交给它、不再向 `TraceSink` 调用方抛；不给则维持既有行为（抛出，由 `flushSinks` 吞掉并落 `console.warn` —— 观测失败不击穿业务）。存在理由：`TraceSink` 的失败缺省只有一条泛化的 warn，「导出其实少了一半数据」这类**带分类的**消息得有人能收到 |
+| `projectToolSpans` | 把 span 上按 `tool_use_id` 配对的 `tool.input` / `tool.output` 事件**投影**成 `execute_tool` child span，缺省 **false**（关闭时导出产物与既往一致）：name 为 `execute_tool <工具名>`、带 `gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`，start/end 取两事件的真实记账时刻；`ok:false` → status Error + `error.type=errorKind`；孤儿 input（`traceLimits.maxEvents` 截断可造出）→ **不写 `endTimeUnixNano` / status** 并带 `agentia.projection.orphan: true`（不编零时长）。原事件保留在父 span 上，engine 记账点不动 |
 
 导出器的两条线缆口径（都有守卫钉着，别按直觉改）：
 
@@ -856,8 +857,11 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 **OTLP 的 `gen_ai.*` 对齐**（对齐 `open-telemetry/semantic-conventions-genai` @ `6fd0d763`（2026-10-09）—— GenAI 约定自 v1.42（2026-06-12）起移出语义约定主线、该独立仓**无 tag、未版本化**，所以基准钉 commit，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
 run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
 `llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
+缓存读数 > 0 时另发 `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`（上游口径「when applicable」：0 = 没走缓存 ⇒ 不留键，与自有 `usage.cache*` 键双发不替换）；
+父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，**不设 false**）；
 capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
 `score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处。
+普通 @Tool 只有 `tool.input` / `tool.output` 事件、没有 span（刻意口径）；要上游六家框架同款的 `execute_tool` span，开 `projectToolSpans`（导出侧投影，见上表）。
 从 Tempo / Grafana 按 run 找回 trace 的做法（id 的 hex 投影、run 根按 `invoke_agent` 过滤）见 `docs/observability.md` §2.7。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——

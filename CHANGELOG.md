@@ -1110,6 +1110,23 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### OTLP 导出：三个缓存/压缩 semconv 键 + 可选的 execute_tool span 投影（2026-10-12 ②）
+
+- **G3（additive、双发不替换）**：`llm.turn` 缓存读数 > 0 时另发
+  `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`
+  （0 = 没走缓存 ⇒ 不留键）；父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ 发
+  `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，不设 false）。
+  键名逐字核自 `semantic-conventions-genai @ 6fd0d763` 的 `client-inference.md`。
+- **G2（`OtlpExporterOptions.projectToolSpans`，默认关）**：开启后把 span 上按 `tool_use_id`
+  配对的 `tool.input` / `tool.output` 事件投影成 `execute_tool <工具名>` child span
+  （`gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`；start/end 取两事件的真实记账时刻；
+  `ok:false` → status Error + `error.type`）。**导出侧投影**：engine 记账点不动、本地 trace
+  形状不变、原事件保留在父 span 上；关闭时导出产物与既往一致。孤儿 input
+  （`traceLimits.maxEvents` 截断可造出）→ 不写 `endTimeUnixNano` / status +
+  `agentia.projection.orphan: true`，不编零时长。
+- 顺带：`context.budget` 事件名上移为 `core/trace.ts` 的 `CONTEXT_BUDGET_EVENT` 单源常量
+  （第一次有了跨层消费方）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

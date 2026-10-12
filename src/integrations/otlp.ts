@@ -1,6 +1,16 @@
 // 内部 id → 线缆形态的投射**单一真源**在 core/trace.ts（与 parseTraceparent 同处）——
 // 出站 traceparent 用的是同一份，改这里就等于同时改出站（见 core/trace.ts 的注释）。
-import { type Span, type SpanEvent, type Trace, wireSpanId, wireTraceId } from '../core/trace.js';
+import { createHash } from 'node:crypto';
+import {
+  CONTEXT_BUDGET_EVENT,
+  type Span,
+  type SpanEvent,
+  type Trace,
+  TOOL_INPUT_EVENT,
+  TOOL_OUTPUT_EVENT,
+  wireSpanId,
+  wireTraceId,
+} from '../core/trace.js';
 import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
 
 /**
@@ -26,6 +36,13 @@ import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
  * - **全部映射集中在 `genAiAttributes` / `mapEvent` 两处**，升级基准时只改本模块；
  *   键前缀冲突不存在（自有键一律 `agentia.*` 或无前缀），所以 additive 是安全的。
  * - 保留 `usage.inputTokens` 等旧键：既有看板/告警已消费它们，双发成本极低。
+ * - 缓存计量双发 semconv 键（`gen_ai.usage.cache_read/cache_write.input_tokens`），
+ *   **只在 > 0 时发**（上游口径「When applicable」：0 = 该次往返没走缓存，不留键）；
+ *   父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ llm.turn 追加
+ *   `gen_ai.conversation.compacted: true`（上游：只在能可靠判定时置真，**不设 false**）。
+ * - 普通 @Tool 不建 span（记账侧刻意口径，core/trace.ts）——要 `execute_tool` span 的
+ *   后端开 `projectToolSpans`（**默认关**）：把 llm.turn 上按 `tool_use_id` 配对的
+ *   `tool.input`/`tool.output` 事件投影成 child span（导出侧概念，engine 不动）。
  *
  * 非 2xx 抛 `OtlpExportError`（带**数值** status 与响应前 200 字符）。导出失败不影响 run
  * 本身 —— 调用方自行取舍；但对「要不要重试」的判定必须可判：状态码只写进文案、对象没有
@@ -57,6 +74,20 @@ export interface OtlpExporterOptions {
    * 「导出其实少了一半数据」这类**带分类的**消息要有人能收到。
    */
   onExportError?: (err: unknown) => void;
+  /**
+   * 把 span 上按 `tool_use_id` 配对的 `tool.input` / `tool.output` 事件对**投影**成
+   * `execute_tool` child span，缺省 **false**（关闭时导出产物与既往版本一致）。
+   *
+   * 普通 @Tool 刻意不建 span（记账侧口径，见 core/trace.ts 的 SpanKind 注释）——投影是
+   * **导出侧**的概念：本地 trace 形状不变、engine 记账点一行不动、原事件保留在父 span 上。
+   * 开启后每次工具调用多一条 span：name 为 `execute_tool <工具名>`，attributes 带
+   * `gen_ai.operation.name: execute_tool` 与 `gen_ai.tool.name`；start 取 `tool.input`
+   * 事件时刻、end 取 `tool.output` 事件时刻（都是真实记账时刻）；`ok: false` →
+   * status Error + `error.type` = errorKind（有值时）。孤儿 input（`traceLimits.maxEvents`
+   * 截断可造出只有 input 的对）→ 投影成**无 `endTimeUnixNano`、无 status** 的 span
+   * 并带 `agentia.projection.orphan: true` —— 不编零时长、不编成败。
+   */
+  projectToolSpans?: boolean;
 }
 
 export interface OtlpExporter {
@@ -109,10 +140,19 @@ function nanos(ms: number): string {
 }
 
 /**
+ * 一次导出的按 id 取 span 视图：llm.turn 的 `gen_ai.conversation.compacted` 要看
+ * **父** span 上的 `context.budget` 事件（记账点在 engine/turn.ts 的回合入口 ——
+ * 压缩发生时本回合的 llm.turn 还不存在，事件只能记在父上）。
+ */
+interface TraceView {
+  byId: Map<string, Span>;
+}
+
+/**
  * GenAI semconv 追加属性（additive，见模块头注释）。
  * 返回的键与 span.attributes 自有键不同名（gen_ai.* 前缀），直接 push 不查重。
  */
-function genAiAttributes(span: Span): OtlpAttribute[] {
+function genAiAttributes(span: Span, view: TraceView): OtlpAttribute[] {
   const attrs: OtlpAttribute[] = [];
   const str = (key: string, v: string): OtlpAttribute => ({ key, value: { stringValue: v } });
   if (span.kind === 'run') {
@@ -128,6 +168,30 @@ function genAiAttributes(span: Span): OtlpAttribute[] {
         { key: 'gen_ai.usage.input_tokens', value: toValue(span.usage.inputTokens) },
         { key: 'gen_ai.usage.output_tokens', value: toValue(span.usage.outputTokens) },
       );
+      // 缓存计量的上游级别是「Recommended when applicable」：0 = 该次往返没走缓存 ⇒ 不留键
+      if (span.usage.cacheReadTokens > 0) {
+        attrs.push({
+          key: 'gen_ai.usage.cache_read.input_tokens',
+          value: toValue(span.usage.cacheReadTokens),
+        });
+      }
+      if (span.usage.cacheCreationTokens > 0) {
+        attrs.push({
+          key: 'gen_ai.usage.cache_write.input_tokens',
+          value: toValue(span.usage.cacheCreationTokens),
+        });
+      }
+    }
+    // 上游注 [14]：「只在能可靠判定压缩已应用时置 true；否则**不设**，连 false 都不发」——
+    // 判据：父 span 上有时刻 ≤ 本回合开始的 context.budget 事件（它带 {from,to,model}，
+    // 是「压缩真的发生了」的记账点）。本回合及之后各回合的生效上下文都是压缩视图。
+    if (span.parentSpanId) {
+      const compacted = view.byId
+        .get(span.parentSpanId)
+        ?.events.some((e) => e.name === CONTEXT_BUDGET_EVENT && e.time <= span.startedAt);
+      if (compacted) {
+        attrs.push({ key: 'gen_ai.conversation.compacted', value: { boolValue: true } });
+      }
     }
   } else if (span.kind === 'capability') {
     // subagent 是一次嵌套 agent 调用（invoke_agent）；skill 对外语义是「执行一件工具」（execute_tool）。
@@ -148,12 +212,12 @@ function genAiAttributes(span: Span): OtlpAttribute[] {
   return attrs;
 }
 
-function spanAttributes(span: Span): OtlpAttribute[] {
+function spanAttributes(span: Span, view: TraceView): OtlpAttribute[] {
   const attrs: OtlpAttribute[] = Object.entries(span.attributes).map(([key, v]) => ({
     key,
     value: toValue(v),
   }));
-  attrs.push(...genAiAttributes(span));
+  attrs.push(...genAiAttributes(span, view));
   if (span.usage) {
     const u = span.usage;
     attrs.push(
@@ -228,7 +292,7 @@ function mapEvent(e: SpanEvent) {
   };
 }
 
-function mapSpan(span: Span) {
+function mapSpan(span: Span, view: TraceView) {
   return {
     traceId: wireTraceId(span.traceId),
     spanId: wireSpanId(span.spanId),
@@ -249,7 +313,7 @@ function mapSpan(span: Span) {
     kind: 1, // SPAN_KIND_INTERNAL
     startTimeUnixNano: nanos(span.startedAt),
     ...(span.endedAt !== undefined ? { endTimeUnixNano: nanos(span.endedAt) } : {}),
-    attributes: spanAttributes(span),
+    attributes: spanAttributes(span, view),
     events: span.events.map(mapEvent),
     status:
       span.status === 'error'
@@ -265,15 +329,119 @@ function mapSpan(span: Span) {
   };
 }
 
+/**
+ * 投影 span 的 id：`sha256(父 spanId \0 tool_use_id)` 的前 16 位 hex ——
+ * 与既有 span id 同宽（8 字节），且同一条 trace 重复导出幂等（id 稳定）。
+ */
+function projectedSpanId(parentSpanId: string, toolUseId: string): string {
+  return createHash('sha256')
+    .update(parentSpanId)
+    .update('\0')
+    .update(toolUseId)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+interface ProjectedToolSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId: string;
+  name: string;
+  kind: 1;
+  startTimeUnixNano: string;
+  endTimeUnixNano?: string;
+  attributes: OtlpAttribute[];
+  events: [];
+  /** 孤儿 span 没有 status（UNSET）：「开始了、没等到结束」，编 OK 或 Error 都是编账 */
+  status?: { code: number; message?: string };
+}
+
+/**
+ * `projectToolSpans` 开启时的投影本体：把 span 的 events 里按 `tool_use_id` 配对的
+ * `tool.input` / `tool.output` 投影成 `execute_tool` child span（依据
+ * docs/reviews/2026-10-12/observability-deep-dive.md §3 G2；engine 记账点不动、
+ * 原事件保留在父 span 上 —— 投影是**多**出来的 span，不是把事件搬走）。
+ *
+ * 口径：
+ * - start = `tool.input` 事件时刻、end = `tool.output` 事件时刻 —— 两条都是真实记账时刻
+ *   （engine/tool-events.ts：input 记在执行开始前、output 记在执行结束后）；output 的
+ *   `durationMs` 与二者之差同源，不另发；
+ * - 配对键是 `tool_use_id`（**不是**工具名）：同名工具并行各配各的；
+ * - `ok: false` → status Error（`errorKind` 有值时进 `error.type` 属性并当 status message）；
+ * - **孤儿 input**（`traceLimits.maxEvents` 超限停记可造出只有 input 的对）→ 投影但
+ *   **不写 `endTimeUnixNano`、不写 status**，并带 `agentia.projection.orphan: true`；
+ * - 孤儿 output（无配对 input ⇒ 没有诚实的 start）→ 跳过（事件本体仍在父 span 上原样导出）；
+ * - body 形状不符（非对象 / 缺 `tool_use_id` 等）→ 跳过该条，观测不击穿导出。
+ */
+function projectToolSpans(span: Span): ProjectedToolSpan[] {
+  const inputs = new Map<string, { time: number; tool: string }>();
+  const outputs = new Map<string, { time: number; ok: boolean; errorKind?: string }>();
+  for (const e of span.events) {
+    if (e.name !== TOOL_INPUT_EVENT && e.name !== TOOL_OUTPUT_EVENT) continue;
+    const body = e.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) continue;
+    const b = body as Record<string, unknown>;
+    if (typeof b.tool_use_id !== 'string') continue;
+    if (e.name === TOOL_INPUT_EVENT) {
+      if (typeof b.tool !== 'string' || inputs.has(b.tool_use_id)) continue;
+      inputs.set(b.tool_use_id, { time: e.time, tool: b.tool });
+    } else {
+      if (typeof b.ok !== 'boolean' || outputs.has(b.tool_use_id)) continue;
+      outputs.set(b.tool_use_id, {
+        time: e.time,
+        ok: b.ok,
+        ...(typeof b.errorKind === 'string' ? { errorKind: b.errorKind } : {}),
+      });
+    }
+  }
+  const projected: ProjectedToolSpan[] = [];
+  for (const [toolUseId, input] of inputs) {
+    const output = outputs.get(toolUseId);
+    const attributes: OtlpAttribute[] = [
+      { key: 'gen_ai.operation.name', value: { stringValue: 'execute_tool' } },
+      { key: 'gen_ai.tool.name', value: { stringValue: input.tool } },
+    ];
+    if (output === undefined) {
+      attributes.push({ key: 'agentia.projection.orphan', value: { boolValue: true } });
+    } else if (!output.ok && output.errorKind !== undefined) {
+      attributes.push({ key: 'error.type', value: { stringValue: output.errorKind } });
+    }
+    projected.push({
+      traceId: wireTraceId(span.traceId),
+      spanId: projectedSpanId(span.spanId, toolUseId),
+      parentSpanId: wireSpanId(span.spanId),
+      name: `execute_tool ${input.tool}`,
+      kind: 1,
+      startTimeUnixNano: nanos(input.time),
+      ...(output ? { endTimeUnixNano: nanos(output.time) } : {}),
+      attributes,
+      events: [],
+      ...(output === undefined
+        ? {}
+        : {
+            status: output.ok
+              ? { code: 1 }
+              : {
+                  code: 2,
+                  ...(output.errorKind !== undefined ? { message: output.errorKind } : {}),
+                },
+          }),
+    });
+  }
+  return projected;
+}
+
 export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
   const endpoint = opts.endpoint.replace(/\/+$/, '');
   const serviceName = opts.serviceName ?? 'agentia';
   const timeoutMs = opts.timeoutMs ?? 10_000;
+  const projectTools = opts.projectToolSpans === true;
 
   // 真正发请求的那条路径：一切失败都**抛**（非 2xx / 超时 / 200 但部分接收）。
   // 外面那层 `export` 决定抛给谁：有 onExportError 就交给它，否则保持既有行为（抛出去，
   // 由 flushSinks 吞掉 —— 观测失败不得击穿业务）。
   const send = async (trace: Trace): Promise<void> => {
+    const view: TraceView = { byId: new Map(trace.spans.map((s) => [s.spanId, s])) };
     const payload = {
       resourceSpans: [
         {
@@ -283,7 +451,10 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
           scopeSpans: [
             {
               scope: { name: 'agentia' },
-              spans: trace.spans.map(mapSpan),
+              // 投影的 child span 紧跟其父（数组顺序对 collector 无语义，只为 payload 可读）
+              spans: trace.spans.flatMap((s) =>
+                projectTools ? [mapSpan(s, view), ...projectToolSpans(s)] : [mapSpan(s, view)],
+              ),
             },
           ],
         },
