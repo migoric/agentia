@@ -124,7 +124,7 @@ Record<string, string|number|boolean>`（`core/trace.ts:202`）现成的自由 K
 | **②** | **G7** 属性 + 约定 + summary 聚合 | 四个键各有「在场 / 不在场」两态用例；审批**不建 span** 由既有守卫继续钉住 |
 | **③** | **G8** 示例 | 起真 server，用 `mcpTools` 连回去跑通一次 `report` |
 
-**三期都已落地**：① = §10 2026-10-12 ⑤（`620ad8c`）；② = ⑥（`01ad279`）；③ = ⑦（`examples/observability-mcp/`，
+**三期都已落地**：① = §10 2026-10-12 ⑤（`620ad8c`）；② = ⑥（`01ad279`）；③ = ⑦（`f37cce5`，`examples/observability-mcp/`，
 17 条 check + 3 条变异各自咬住 + `e2e:examples` 第 10 轮）。
 
 每期都要：**变异验证**（守卫真的会咬）→ `verify-all` 8 步 → 单独 PR。
