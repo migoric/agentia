@@ -3,7 +3,7 @@
  *
  * ## 为什么需要它
  *
- * §7 是一张 **92 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
+ * §7 是一张 **93 行**的表，逐条说明框架**不保证什么**。它是使用者判断「我能不能用这个框架」
  * 的唯一依据 —— 也是仓库里**最厚的一张对外承诺表**。
  *
  * 而它此前**零守卫**，且是被解析器**结构性**排除的：`usage-guide.test.ts` 的 `parseTables`
@@ -127,7 +127,8 @@ type Entry =
   | { key: string; gap: string; candidate: string };
 
 /**
- * 登记表（92 条，与 §7 的行一一对应；2026-09-29 复核：7 条 gap 已回填为 pin）。
+ * 登记表（93 条，与 §7 的行一一对应；2026-09-29 复核：7 条 gap 已回填为 pin；2026-10-12
+ * 新增 1 条 choice：OTLP trace 导出只发 JSON）。
  *
  * `pin` 的 `marker` 是目标用例 `it(...)` 标题里的**一段原文**（或脚本里的原文），
  * A3 会逐条断言它在场 —— 引用一条其实不相关的用例会当场红。
@@ -475,6 +476,11 @@ const REGISTRY: ReadonlyArray<Entry> = [
     },
   },
   {
+    key: 'OTLP trace 导出**只发 JSON**（直打 Phoenix 会 415）',
+    choice:
+      '零运行时依赖 > 内建 protobuf 编码器（手写 varint/length-delimited 几百行进核心不值）；处置是缝外配方 —— collector 收 JSON 转 binary（docs/observability.md §7）',
+  },
+  {
     key: 'GET /metrics 不鉴权',
     pin: {
       file: 'tests/transport/metricsRoute.test.ts',
@@ -723,7 +729,7 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
   it('解析器没退化：§7 至少有 70 行（解析崩了会红，而不是空转绿）', () => {
     assert.ok(
       rows.length >= 70,
-      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 92 行）`,
+      `只解析出 ${rows.length} 行 —— §7 的表格结构变了或解析器坏了（预期 93 行）`,
     );
   });
 
@@ -804,8 +810,11 @@ describe('usage-guide §7 已知边界：行 ↔ 守卫登记（2026-09-26）', 
     for (const e of REGISTRY) {
       if ('choice' in e) assert.ok(e.choice.length >= 8, `「${e.key}」的 choice 理由太短`);
     }
-    // 当前读数（2026-10-02 复核更新）：pin 57 / choice 10 / gap 25 = 92 行。
-    // 本轮新增 2 行（TB 4.0 轨迹形态复核带来的主循环两条边界）：一条 pin（模型侧无输出闸，
+    // 当前读数（2026-10-12 更新）：pin 57 / choice 11 / gap 25 = 93 行。
+    // 本轮新增 1 行（choice：OTLP trace 导出只发 JSON ⇒ 直打 Phoenix 415，处置是 collector
+    // 转码配方）—— 依据 docs/reviews/2026-10-12/observability-deep-dive.md 的 G10。
+    // 上轮（2026-10-02 复核）是 pin 57 / choice 10 / gap 25 = 92 —— 那轮新增 2 行
+    // （TB 4.0 轨迹形态复核带来的主循环两条边界）：一条 pin（模型侧无输出闸，
     // 由 eventChars.test.ts 那条「记多少 ≠ 模型看到多少」的门禁钉住）、一条 gap（缺省不裁
     // —— 配置读数 `config.contextPolicy=false` 会在缺省行为改变时红，但**裁剪行为本身**没人钉）。
     // 上轮（2026-09-29）是 pin 56 / choice 10 / gap 24 = 90 —— 那次把 7 条 gap 回填为 pin

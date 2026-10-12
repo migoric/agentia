@@ -1,7 +1,8 @@
 # 生产可观测栈（配方）
 
 面向「把 agentia 服务**交付上线**」的人 —— 定位见 [spec §1](./spec.md)（交付物是可上线的 Agent 服务，
-不是对话助手）。本文只讲**观测落地**：框架给什么、不给什么，以及四条开箱即用的 sink 配方。
+不是对话助手）。本文只讲**观测落地**：框架给什么、不给什么，四条开箱即用的 sink 配方（§2），
+以及投递纪律 / 已知边界处置 / trace 分析三类缝外配方（§6–§9）。
 
 > 代码：[`examples/observability/`](./../examples/observability/)（本地小包 `@migor/agentia-observability`，
 > 四个 sink 的完整实现，零依赖）。
@@ -18,6 +19,10 @@
 | **日志层**（级别 / 结构化 JSON / runId 贯穿） | ❌ 框架无日志层，`src/` 内只有零星 `console.error/warn` 兜底 —— ⚠️ **这一处在长，别引用具体数字**（2026-09-15 测 9 处 → 2026-09-29 测 22 处，散在 12 个文件）；要精确值现数：`grep -rn "console\." src/` → **配方 2.2** |
 | **采样**（量大时别压垮后端） | ❌ → **配方 2.3** |
 | **字段级脱敏**（框架只有长度截断） | ❌ → **配方 2.4** |
+| **投递纪律**（非阻塞攒批 / 关停 drain / 后端不可达怎么办） | ❌（sink 内部实现是宿主的）→ **§6** |
+| **只收 binary 的 OTLP 接收端**（如 Phoenix，直打 415） | ❌ 内置导出器只发 JSON → **§7**（collector 转码） |
+| **步数 / 环信号**（trace 总量里看不见） | ❌ → **§8**（纯 trace 函数，按回合归属） |
+| **轨迹评测**（确定性检查优先） | ❌ → **§9**（eval 面与 CLI 已有，这里是拼法） |
 | **按 runId 落库 + 检索** | ❌ → **配方 2.1** |
 | **部署产物**（Dockerfile / compose） | ❌ → `examples/deploy/` |
 
@@ -213,8 +218,10 @@ createApp({ name: 'svc', providers, sinks: [sink] });
 ```ts
 import { createOtlpExporter, type TraceSink } from '@migor/agentia';
 
-// ① 平台支持 OTLP（Langfuse / Arize Phoenix / Grafana Tempo …）→ 用内置导出器即可
+// ① 平台支持 OTLP 且收 JSON（Langfuse / Grafana Tempo …）→ 用内置导出器即可
 //    它本身就是一个 TraceSink（{ export(trace) }），直接挂进 sinks。
+//    ⚠️ Phoenix 不在此列：它只收 application/x-protobuf，直打会 415 —— 中间加一层
+//    collector 转码，见 §7。
 //    端点与鉴权以各平台官方文档为准（Langfuse 形如 …/api/public/otel + Basic 鉴权）。
 const otlp = createOtlpExporter({
   endpoint: 'https://cloud.langfuse.com/api/public/otel',
@@ -326,4 +333,240 @@ createHttpHandler(app, { metrics });
   但按 duration 统计时要过滤 —— `metricsSink` 就是这么做的（根没收尾的 run 不进延迟样本）。
 - **采样与「错误必留」是取舍**：错误全留会让故障期的落库量反而升高；极端场景请自行收紧。
 - **`costUsd` 依赖模型在价格表内**：不在表里时成本恒 0（见 `usage.ts`）。
+- **OTLP 导出只发 JSON**：`createOtlpExporter` 的 `content-type: application/json` 写死、
+  `OtlpExporterOptions` 无编码选项 ⇒ 只收 binary 的接收端（Phoenix 回 415）直打不进去；
+  处置是中间加一层 collector 转码（§7），为什么不内建 protobuf 编码器也在那节。
 - **部署示例未含自动扩缩 / 密钥管理 / 反代鉴权** —— 见 `examples/deploy/README.md` 的标注。
+
+## 6. 投递纪律（sink 侧三条）
+
+三条纪律，全部落在 **sink 内部或宿主侧** —— 框架侧的投递语义（§1）一个字不用改。
+
+### ① 非阻塞投递：在 sink 内部攒批，不改 `flushSinks`
+
+`flushSinks` 是**串行 `await`**：run 收尾时挨个等每个 sink 的 `export()` 返回（`runtime/run.ts`）。
+「run 收尾不该等一次同步 POST」的正确落点是 **sink 内部攒批 + 定时 flush** —— 收尾只入队
+（微秒级、不碰网络），网络在后台走：
+
+```ts
+import type { Trace, TraceSink } from '@migor/agentia';
+
+/**
+ * 批量投递 sink：export 只入队，后台按 flushMs 攒批 flush。
+ * 关停前宿主自己调一次 drain()（冲完队列再退出），close() 停定时器让进程能退出。
+ */
+function batchingSink(
+  downstream: TraceSink,
+  opts: { flushMs?: number; maxQueue?: number } = {},
+): TraceSink & { drain(): Promise<void>; close(): void } {
+  const flushMs = opts.flushMs ?? 5_000;
+  const maxQueue = opts.maxQueue ?? 1_000;
+  const queue: Trace[] = [];
+  let chain: Promise<void> = Promise.resolve();
+
+  const flush = (): Promise<void> => {
+    // 串行链：两轮 flush 不并发 —— 并发 POST 会让后端看到的 trace 顺序失真
+    chain = chain.then(async () => {
+      for (;;) {
+        const trace = queue.shift();
+        if (trace === undefined) break;
+        try {
+          await downstream.export(trace);
+        } catch (err) {
+          // 纪律 ③：后端不可达就丢遥测、绝不丢可用性 —— 接住、出声、继续
+          console.warn('[agentia] 遥测投递失败（该条 trace 已丢弃）:', err);
+        }
+      }
+    });
+    return chain;
+  };
+
+  const timer = setInterval(() => void flush(), flushMs);
+  timer.unref(); // 观测定时器不该拖住进程退出
+
+  return {
+    export(trace) {
+      if (queue.length >= maxQueue) {
+        // 队列满 = 后端持续不可达：丢最旧并出声（丢了要数，与配方 2.3 同一条纪律）
+        queue.shift();
+        console.warn('[agentia] 遥测队列已满，丢弃最旧的一条 trace');
+      }
+      queue.push(trace);
+    },
+    drain: flush,
+    close: () => clearInterval(timer),
+  };
+}
+```
+
+**为什么不把 `flushSinks` 改成 fire-and-forget**：spec §9.3 给 sink 的语义是「收尾拿整棵、
+**有兜底、会投递**」—— 与 `onTraceEvent` 的「运行期逐笔、不保证送达」是**两条不同的缝**。
+把 `flushSinks` 改成不等待，等于把 sink 缝降级成事件缝：**删掉的是一条已有承诺**，而想要
+「不阻塞」的人什么也没得到（trace 仍要有人投，只是没人再等它）。所以非阻塞是 sink 的实现细节，
+不是框架的投递语义。
+
+### ② 关停时 drain
+
+攒批 sink 的队列在 run 生命周期之外，`handler.drain()` 只等在飞 run 收尾 —— 批量队列要在
+**同一个信号处理器里**、退出之前自己冲一次。顺序（`examples/deploy/src/main.ts` 的信号处理器
+就是模板）：SIGTERM/SIGINT → `handler.drain({ timeoutMs: 15_000 })`（等在飞 run 把各自 trace
+**投进队列**）→ `sink.drain()`（把队列发完）→ `sink.close()` → 退出。
+
+### ③ 后端不可达就丢遥测、绝不丢可用性
+
+已有两层兜底：sink 抛错被框架吞掉（吞前落一条含「trace sink」的 `console.warn`，§1）；
+`createOtlpExporter` 自带 `timeoutMs`（缺省 10s 的半开连接防护）、非 2xx 抛 `OtlpExportError`
+（带数值 `status`，429 / 5xx 可分类）。**自己写 sink 时照上面骨架的 `catch`**：接住、出声、
+继续 —— 「能拖垮调用方的可观测，比没有更糟」。要分类信号就给
+`createOtlpExporter({ onExportError })`；别把错误重抛给框架 —— 框架只会吞掉它，分类信息就丢了。
+
+## 7. OTLP 只发 JSON：直打 Phoenix 会 415（已知边界 + 转码配方）
+
+**事实**（源码级核实，2026-10-12）：
+
+- 内置导出器**只发 `application/json`**：content-type 在 `src/integrations/otlp.ts` 写死，
+  `OtlpExporterOptions`（`endpoint` / `headers` / `serviceName` / `timeoutMs` / `onExportError`）
+  里**没有编码选项**。
+- **Arize Phoenix 只收 `application/x-protobuf`**：它的 traces 路由对别的 content-type 直接回
+  **415**。OTLP 规范对接收端只是 **SHOULD** 双收（binary + JSON 同端口、按 Content-Type 分派）
+  ⇒ Phoenix 是「未遵循推荐」，不是违规；**但这不改变本仓默认配置打不进去的事实**。
+- 收 JSON 的一侧没问题：OTel Collector（实测 `HTTP 200`）与 Langfuse（源码级：按 content-type
+  分派，JSON 分支就是 `JSON.parse`）都收。⇒ 换后端前先确认它的 OTLP/HTTP 收不收 JSON。
+
+**处置：中间加一层 OTLP Collector 转码**（收 JSON、转 binary 发 Phoenix），本仓一行不用改：
+
+```yaml
+# collector.yaml —— 收 agentia 的 OTLP/JSON，转 binary 发给 Phoenix
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  otlphttp:
+    endpoint: http://phoenix:6006  # Phoenix 的 OTLP 端点（/v1/traces 由 exporter 自己拼）
+    encoding: proto                # binary protobuf（本就是缺省值，写明是省得读的人去查）
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlphttp]
+```
+
+应用侧把 `createOtlpExporter({ endpoint })` 指向 collector（`http://localhost:4318`）即可 ——
+与 §2.6「平台支持 OTLP 就直打」之间只多了这一层。
+
+**为什么不内建 protobuf 编码器**：零运行时依赖是硬约定
+（`tests/architecture/no-runtime-deps.test.ts` 强制），手写一套 varint / length-delimited /
+field number 编码器是几百行进核心 —— 为「打某一个挑食的接收端」不值；collector 转码是这个
+生态的标准件。
+
+## 8. 步数与环：在 trace 上数出来
+
+「步数 / 环」在 trace **总量**里看不见：`Trace.totalUsage` 是合计，一个 20 步的 run 和一个 3 步的
+run 都只给一个总数。**只有把成本按回合（`llm.turn` span）归属，环才显形** —— 「agent 在同一个
+问题上问了三遍」。这是纯 trace 函数，离线可跑、框架零改动：
+
+```ts
+import type { Trace } from '@migor/agentia';
+
+/** 一条工具调用的签名：同名同参视为同一次（事件的 input 已是 JSON 串，直接比） */
+function toolSignatures(trace: Trace): Array<{ turn: number; signature: string }> {
+  const turns = trace.spans
+    .filter((s) => s.kind === 'llm.turn')
+    .sort((a, b) => a.startedAt - b.startedAt);
+  return turns.flatMap((s, i) =>
+    s.events
+      .filter((e) => e.name === 'tool.input')
+      .map((e) => {
+        const body = e.body as { tool?: unknown; input?: unknown };
+        return { turn: i + 1, signature: `${String(body.tool)}(${String(body.input)})` };
+      }),
+  );
+}
+
+/** 环：同一签名**连续**出现 ≥ minRepeat 次（「同一工具同参数连调 N 次」的典型形状） */
+function detectLoops(
+  trace: Trace,
+  minRepeat = 3,
+): Array<{ signature: string; count: number; fromTurn: number }> {
+  const seq = toolSignatures(trace);
+  const out: Array<{ signature: string; count: number; fromTurn: number }> = [];
+  for (let i = 0; i < seq.length; ) {
+    let j = i + 1;
+    while (j < seq.length && seq[j].signature === seq[i].signature) j++;
+    if (j - i >= minRepeat) {
+      out.push({ signature: seq[i].signature, count: j - i, fromTurn: seq[i].turn });
+    }
+    i = j;
+  }
+  return out;
+}
+```
+
+读数口径（与记账侧逐条对齐）：
+
+- **步数** = `llm.turn` span 数；**每回合成本** = 该 span 的 `usage.costEstimate`（未定价模型缺
+  这个键 —— 那种回合上有 `usage.unpriced` 事件、上游没回报计量时有 `usage.missing`，两个都可数）；
+- **工具耗时与成败**按 `tool_use_id` 把 `tool.input` / `tool.output` 配对（两笔都记在发起它的
+  `llm.turn` 上；`tool.output` 带 `durationMs` / `ok` / 有值才在场的 `errorKind`）；
+- ⚠️ 开了 `traceLimits.maxEvents` 的 trace 可能**缺尾巴**（超限停记，run 根有 `trace.truncated`
+  摘要；实测出现过「只有 `tool.input`、没有配对的 `tool.output`」）—— 这类 trace 先按不完整
+  剔除或标注，别把截断读成「agent 没调工具」。
+
+## 9. 轨迹评测：确定性检查优先
+
+三层评测（final-answer / trajectory / per-turn）里，本仓原料最齐的是第二层（**trajectory**：
+路径对不对）—— 判据大多是 trace 的纯函数，而 trace 在本仓是一等公民。拼法（全部现成件）：
+
+- **确定性检查先进闸门**：工具调用签名相等、步数上限、成本上限 —— 都是代码判得了的
+  （§8 的数法直接复用）；
+- **用例从线上 trace 回流**：`agentia harvest trace.jsonl --failed --out evals/harvested.ts`
+  生成骨架（`docs/usage-guide.md` §6「线上 trace 回流」），人工把断言改成确定性检查后进套件；
+- **A/B 对照**：同一输入换模型 / 换 prompt 重跑，`agentia diff a.jsonl b.jsonl`（程序内是
+  `diffTraces`，与 CLI 逐字同源）—— 有差异退出码 1，可直接挂 CI；
+- **跑法**：`defineEval` + `scriptedClient` —— 断言在 `expect(r, { trace })` 里，trace 就在
+  手边；结论由框架自动 `attachScore` 挂到 trace 根的 `score` 事件，`metricsSink` 聚合成通过率。
+
+```ts
+import assert from 'node:assert/strict';
+import { defineEval, scriptedClient, type Trace } from '@migor/agentia';
+
+/** 轨迹判据 = trace 的纯函数：工具调用签名序列（tool + 入参，顺序敏感） */
+function trajectoryOf(trace: Trace): string[] {
+  return trace.spans
+    .filter((s) => s.kind === 'llm.turn')
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .flatMap((s) =>
+      s.events
+        .filter((e) => e.name === 'tool.input')
+        .map((e) => {
+          const body = e.body as { tool?: unknown; input?: unknown };
+          return `${String(body.tool)}:${String(body.input)}`;
+        }),
+    );
+}
+
+// 参考轨迹：跑一次「正确」的 run 落 jsonl，人工核对后抄进这里
+const REFERENCE = ['search:{"q":"agentia"}', 'summarize:{"n":3}'];
+
+export const trajectoryEval = defineEval({
+  name: 'trajectory-first',
+  app: () => app, // 既有的 createApp 产物（模型侧由用例的 client 接管）
+  cases: [
+    { name: '先查再总结', input: '查一下 agentia 再总结', client: scriptedClient([/* … */]) },
+  ],
+  expect: (r, { trace }) => {
+    // ① 确定性优先：签名序列与参考轨迹逐项相等
+    assert.deepEqual(trajectoryOf(trace), REFERENCE);
+    // ② 步数上限：llm.turn span 数（与 §8 同一份数法）
+    assert.ok(trace.spans.filter((s) => s.kind === 'llm.turn').length <= 5);
+    // ③ final-answer 层照常断 r.finalText / r.typed —— 主观项才轮到 judge
+  },
+});
+```
+
+**LLM-judge 殿后**：judge 只补主观项（语气 / 忠实度 / 开放式质量），不进这道闸门 —— 它要花钱、
+会抖，「要花钱、会抖的门禁没人敢当发布判据」（`docs/eval-gate.md` 同款理由）。要跑就单独一条
+命令、按采样率跑，结论走 `attachScore` 进指标看趋势，不挡发布。「这一版能不能发」的对照闸门
+（回归 / 删用例检测）见 `docs/eval-gate.md`，与本节互补。

@@ -1772,6 +1772,7 @@ const callable = {
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
 | OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run）。`reset()` 语义是**开启新窗口**：计数清零**且**数据点起点前移（同一 `startTime` 下 counter 只能单调不减，只清零会让后端算出负增量或丢样本） |
+| OTLP trace 导出**只发 JSON**（直打 Phoenix 会 415） | `createOtlpExporter` 的 content-type 写死 `application/json`，`OtlpExporterOptions` **没有编码选项**；只收 `application/x-protobuf` 的接收端（Phoenix 的 traces 路由对别的 content-type 回 415，源码级核实 2026-10-12）**直打不进去** —— OTLP 规范对接收端只是 SHOULD 双收，Phoenix 未遵循推荐但不违规。处置：中间加一层 OTLP Collector 收 JSON、转 binary（最小配置见 `docs/observability.md` §7）。**不内建 protobuf 编码器**：零运行时依赖是硬约定，手写编码器几百行进核心不值 |
 | `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
 | 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `capability` span）与模型维度产出 |
 | `@Prompt` 没有能力指标 | 资产类能力不建 span、无独立耗时，故不出现在能力排行里（这是刻意的：硬凑一个假耗时会误导调优） |
