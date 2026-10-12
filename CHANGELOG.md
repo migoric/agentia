@@ -1110,6 +1110,25 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 观测面给 agent 的入口：两个 MCP 只读工具（G8）（2026-10-12 ⑦）
+
+- **是什么**：新示例 `examples/observability-mcp/`（本地小包，`private`）用现成的反向桥
+  `createMcpServer` 把调优报告包成两个只读工具：`report_trace`（能力排行 + 会话维度的成功率
+  与「每成功任务成本」）与 `diff_traces`（两条 run 的结构化差异）。任何 MCP 宿主（编辑器 /
+  桌面客户端 / 另一个 agent）接上来，agent 就能自己查「我上一轮慢在哪 / 贵在哪」。
+  **核心零改动**：两个工具是 `buildRunReport` / `mergeRunReports` / `diffTraces` 的薄壳。
+- ⚠️ **这是分发面，不是功能面**（本仓瓶颈在产品面 / 分发面）：验收标准是「外部客户端接得上」，
+  不是「新增了多少能力」。`npm run verify` 起真 HTTP server + 出厂连接器 + `mcpTools`
+  连回去跑通 17 条 check（report / diff / 缺侧 / 截断 / 越界拒绝）。
+- **三条口径**：① 只读 **trace 根**（`AGENTIA_TRACE_ROOT`，缺省 cwd）**内**的文件 —— 工具参数
+  由模型给 ⇒ 不设边界等于对外发一个任意文件读原语，判据是 realpath 比前缀（不是 `startsWith`，
+  后者挡不住 `../` 与同前缀兄弟目录）；② 进模型上下文的东西有天花板（差异 span 最多 40 条，
+  截掉多少如实报出）；③ 读不出就说读不出（一条 trace 都认不出 ⇒ 报错而不是空表；成本给
+  `null` 而不是 0）。
+- **门禁**：示例进了 `tsconfig.tests.json`（按仓库根那套严格开关类型检查，含
+  `exactOptionalPropertyTypes`）与 `e2e:examples` 第 10 轮；`examples/README.md` 表行由
+  `examples-table` 守卫双向核。
+
 ### 交接与护栏：四个 `agentia.*` 属性 + 护栏进能力排行（G7）（2026-10-12 ⑥）
 
 - **是什么**：交接（agent → agent）在这个框架里就是一条 capability span 本身，护栏（审批）则

@@ -15,6 +15,7 @@
     "tests",
     "scripts",
     "examples/observability/src",
+    "examples/observability-mcp/src",
     "examples/complete/src",
     "examples/deploy/src",
     "examples/code-review/src",

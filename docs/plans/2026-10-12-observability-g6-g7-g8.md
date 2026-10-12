@@ -98,6 +98,24 @@ Record<string, string|number|boolean>`（`core/trace.ts:202`）现成的自由 K
 ⚠️ **要判的一句话**：这是**分发面**不是功能面（§四「本仓瓶颈是产品面 / 分发面」）。
 所以它的验收标准是「能被外部 agent 接上」，不是「新增了多少能力」。
 
+### ✅ 落地（2026-10-12 ⑦）：`examples/observability-mcp/`
+
+四处按设计稿走、三处**落地时才补上**的：
+
+| 设计稿写的 | 落地 |
+|---|---|
+| 新示例 `examples/observability-mcp/` | ✅ 4 个源文件（`traces.ts` 读 + 两个视图 / `tools.ts` 两个 `@Tool` / `main.ts` 入口 / `verify.ts` 验收）+ README |
+| 复用 `createMcpServer` | ✅ 一行协议面都没重写；`app` 走 `createApp` + `@Tool` 真装配（顺带验鸭子类型） |
+| tools = `report` / `diff` | ⚠️ **改名为 `report_trace` / `diff_traces`** —— 裸 `report` / `diff` 太泛，MCP 宿主里与别的 server 撞名时看不出是谁的工具 |
+| 验收 = 起真 server + `mcpTools` 连回去跑通一次 `report` | ✅ 扩成 17 条 check：`report` / `diff`（换能力）/ `diff`（**缺侧**）/ **截断** / **越界拒绝** |
+| （没写）读数边界 | ➕ **只读 trace 根内的文件**（`AGENTIA_TRACE_ROOT`，缺省 cwd），判据 realpath 比前缀。工具参数由模型给、返回内容直接进模型上下文 ⇒ 不设边界等于发一个任意文件读原语 |
+| （没写）返回体积 | ➕ 差异 span 最多 40 条（`SpanDiff.a/b` 是完整 span），截掉多少在 `truncated` 里如实报出 |
+| （没写）失败语义 | ➕ 认不出 trace ⇒ **报错**（不是空表）；成本读不出给 `null`；客户端的桥把 `isError` 转成**抛错** ⇒ 边界断言要 catch |
+
+两条**实测才发现的**（都写进了 `docs/spec.md` §10 2026-10-12 ⑦）：① 边界变异能被「错误发生了」
+的断言放过（夹具当时是个非 trace 的 JSON ⇒ 照样报错、只是理由不同）⇒ 夹具必须换**合法 trace**；
+② 引擎 `maxIterations` 缺省 40 会**悄悄截断夹具**，让「截断到 40」那条断言恰好踩在边界上假装通过。
+
 ## 5. 分期与验收
 
 | 期 | 做什么 | 验收判据 |
@@ -105,6 +123,9 @@ Record<string, string|number|boolean>`（`core/trace.ts:202`）现成的自由 K
 | **①** | **G6**（ROI 第 4 位，最独立、纯 `packages/cli`） | `report` 出会话表；「成功数为 0 ⇒ `-`」有反向断言；棘轮账补齐 |
 | **②** | **G7** 属性 + 约定 + summary 聚合 | 四个键各有「在场 / 不在场」两态用例；审批**不建 span** 由既有守卫继续钉住 |
 | **③** | **G8** 示例 | 起真 server，用 `mcpTools` 连回去跑通一次 `report` |
+
+**三期都已落地**：① = §10 2026-10-12 ⑤（`620ad8c`）；② = ⑥（`01ad279`）；③ = ⑦（`examples/observability-mcp/`，
+17 条 check + 3 条变异各自咬住 + `e2e:examples` 第 10 轮）。
 
 每期都要：**变异验证**（守卫真的会咬）→ `verify-all` 8 步 → 单独 PR。
 

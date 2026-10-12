@@ -1311,6 +1311,7 @@ server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@To
 - **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
 - **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
 - **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
+- **想看一个真用它干活的例子**：`examples/observability-mcp/` 把 `buildRunReport` / `diffTraces` 包成两个只读工具（`report_trace` / `diff_traces`）暴露给任意 MCP 宿主，让 agent 自己查「我上一轮慢在哪」；还带一条**实边界**（工具参数由模型给 ⇒ 只读 trace 根内的文件，realpath 比前缀），以及一条端到端的验收脚本（起真 server ⇐ 出厂连接器 + `mcpTools`）。
 
 ```ts
 import { createMcpServer, jsonlTraceSink } from '@migor/agentia';

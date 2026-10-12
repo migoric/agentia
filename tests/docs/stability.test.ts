@@ -100,6 +100,14 @@ const UNPUBLISHED: Array<{ name: string; pkg: string; entry: string; howTo: stri
     howTo: ['docs/observability.md'],
   },
   {
+    name: '@migor/agentia-observability-mcp',
+    pkg: 'examples/observability-mcp/package.json',
+    entry: 'examples/observability-mcp/README.md',
+    // 与上面那条同族：可观测面的示例包，靠拷目录拿到；「示例一律 `file:../..`」这条约定的家
+    // 在 examples/README.md（与 terminal-bench 同款）。
+    howTo: ['examples/README.md'],
+  },
+  {
     name: '@migor/agentia-eval-gate',
     pkg: 'examples/eval-gate/package.json',
     entry: 'examples/eval-gate/README.md',

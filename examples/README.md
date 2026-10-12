@@ -5,6 +5,7 @@
 | 目录 | 是什么 | 什么时候看 |
 |---|---|---|
 | [`observability/`](./observability/) | 四个现成 sink：按 runId 落库检索 / 日志关联 / 采样 / 脱敏（本地小包 `@migor/agentia-observability`，零依赖） | 要把 trace 送进生产观测栈时 |
+| [`observability-mcp/`](./observability-mcp/) | 把调优报告（`report` / `diff`）包成两个 **MCP 只读工具**（本地小包，复用框架的反向桥）—— agent 自己就能查「我上一轮慢在哪」 | 想让不具备 shell 的 agent 也能读 trace 时 |
 | [`deploy/`](./deploy/) | **最小**可交付服务：HTTP 宿主 + `SqliteTaskStore` + `/healthz` + 优雅停机 + Docker | 想知道「怎么把它跑上线」时 |
 | [`complete/`](./complete/) | **完整**示例：四类能力 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
 | [`patrol/`](./patrol/) | **真干活**的服务：对真目录做只读巡检、产出真报告，改动文件系统的动作走人工审批（挂起 → 人批 → 恢复）；附 `npm run drill` 上线演练，逐条验 `docs/deployment.md` | 想拿一个真任务对拍上线清单，或想看审批挂起/恢复、崩溃续跑怎么接时 |

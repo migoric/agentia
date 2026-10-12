@@ -6336,6 +6336,52 @@ trace 才看得见。
 （对判据的取反免疫）⇒ 补一条「批准」使取反后变 2，才咬住。⚠️ 这正是「全过 ≠ 可靠」的第
 三形态，已写进用例注释留痕。
 
+### 2026-10-12 ⑦：观测面给 agent 消费的入口（G8）—— 这是分发面，不是功能面
+
+**起因**：补缺设计稿 `docs/plans/2026-10-12-observability-g6-g7-g8.md` §4（G6 见 ⑤、G7 见 ⑥）。
+trace 落盘之后，能问「我上一轮慢在哪」的此前只有人和 CLI；本项把那两个问题变成 agent 自己
+能调的**工具**。
+
+**决策**：
+
+- **落点是示例 + 附属包**（`examples/observability-mcp/`，`private: true`），不进核心 ——
+  与「三个 `@migor/*` 附属包不发 npm」同款定位。**核心零改动**（`src/` 一个文件都没动）。
+- **复用反向桥 `createMcpServer`**：`tools/call` 的协议面（含 ④ 刚落地的 `_meta.traceparent`
+  入站缝合）一行都不用重写；两个工具（`report_trace` / `diff_traces`）是 `buildRunReport` /
+  `mergeRunReports` / `diffTraces` 的薄壳，都不做自己的聚合。
+- ⚠️ **它的价值在分发面**（§四：本仓瓶颈是产品面 / 分发面不是工程质量）⇒ 验收标准是
+  「外部客户端接得上」，不是「新增了多少能力」。
+
+**三条实证修正（本项最该记的）**：
+
+1. ⚠️ **断言「错误发生了」不够，要断言「发生的是哪一种」**：删掉只读边界那条变异跑出来时，
+   `isError` 那条断言**照样绿** —— 因为根外那个夹具当时是个**非 trace 的 JSON**，工具仍会报错
+   （理由从「越界」变成「认不出 trace」）。⇒ 夹具换成**合法 trace**（复现病灶的形状：读得到、
+   但不该读），并把断言钉到**拒绝理由**上；复跑变异 ⇒ 那组三条全红。
+2. ⚠️ **夹具会被引擎的默认闸悄悄截断**：`maxIterations` 缺省 40（`engine/run-config.ts`），
+   而截断那组夹具要 45 回合 ⇒ run 在第 40 回合收尾，`spanDiffs` 恰好**等于** `MAX_DIFF_SPANS`
+   ⇒ 「截到了」那条断言看起来过了、实际什么都没验。⇒ 显式 `maxIterations: 60`。
+3. **断言要照实测形状写**：普通 `@Tool` **刻意不建 capability span**（既有口径）⇒「同一位置
+   换了能力」在 diff 里的落点是 `llm.turn` 的**事件体差异**，不存在 `capability:read_file`
+   这种路径。形状是先跑探针（`.workbuddy/probes/g8-diff-shape.ts`）看出来的，不是猜的。
+
+**口径**（写进示例 README 与 `usage-guide.md` §6.5）：
+
+- **只读 trace 根内的文件**（`AGENTIA_TRACE_ROOT`，缺省 cwd）：工具参数由模型给、返回内容直接
+  进模型上下文 ⇒ 不设边界等于发一个「任意文件读取」原语。判据是 **realpath 后比前缀**，不是
+  字符串 `startsWith`（后者挡不住 `../` 与「同前缀的兄弟目录」）。
+- **进模型上下文的东西有天花板**：`diff_traces` 一次最多 40 条差异 span（`SpanDiff.a` / `.b`
+  是**完整 span**，原样返回一次就能顶掉整轮预算），截掉多少在 `truncated` 里如实报出。
+- 读不出就说读不出：一条 trace 都认不出 ⇒ **报错**（不是空表 —— 空表会被读成「零开销」）；
+  成本读不出给 `null`。
+
+**影响面**：`examples/observability-mcp/`（新：4 个源文件 + README）、`tsconfig.tests.json`
+（include 加该目录 ⇒ 示例的 `src/` 按**仓库根**那套严格开关编，含 `exactOptionalPropertyTypes`）、
+`scripts/e2e-examples.ts`（第 10 轮 + `ensureLinks`；本链第 7 步 `npm run e2e` 会跑到它）、
+`examples/README.md`（表行，`examples-table` 守卫双向核）。**验证**：`npm run verify` 17 条
+check（真 HTTP server ⇐ 出厂连接器 + `mcpTools`：report / diff / 缺侧 / 截断 / 越界拒绝）；
+**3 条变异各自咬住预期的断言**；`npm run e2e:examples` 全绿。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
