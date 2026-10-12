@@ -6382,6 +6382,38 @@ trace 落盘之后，能问「我上一轮慢在哪」的此前只有人和 CLI�
 check（真 HTTP server ⇐ 出厂连接器 + `mcpTools`：report / diff / 缺侧 / 截断 / 越界拒绝）；
 **3 条变异各自咬住预期的断言**；`npm run e2e:examples` 全绿。
 
+### 2026-10-12 ⑧：`agentia report` 按 `traceId` 去重（append-only 导出不再翻倍计数）
+
+**起因**：⑤（G6）落地后的审查实测：`FileTaskStore` 是 **append-only**（`src/store/fsStore.ts`，
+每次 save 追加一行），审批流任务的导出里同一棵挂起段 trace 会出现**多行**（挂起 save /
+approve 落库 / 接管再 save，各行的 `result.trace` 是同一份）。`report` 按行计 ⇒
+runs / succeeded / cost 全部翻倍（实测：实际 2 段 0.02 的任务报出 runs=3、succeeded=3、
+cost=0.03）。
+
+**决策**：
+
+- **去重键是 `traceId` 而不是 `taskId`**：一个任务可以跨**多段** run（挂起 → 恢复 → 再挂起），
+  每段是一棵新 trace（`traceId == runId`，§9.1 的 1:1 不变量）。按 `taskId` 去重会把同一任务的
+  **不同段**错并成一条 —— 那正是审批流任务的正常形状（2 段是事实，不是重复）。
+  traceId 读 trace 根的 `traceId` 字段（`TraceLike` 本就有；`Trace.traceId` 是必填）。
+- **取最后一行**：append-only 里后面写的是**新状态**（接管后落库的记录才是终态），
+  留着的是各 traceId 在文件里最后一次出现的位置（保序，输出顺序与直觉一致）。
+- **能力表 / runs 总计 / 会话表共用同一份去重后的输入**：能力表此前就按行翻倍（存量问题，
+  本次一并修）—— 两处各算各的必然漂移。
+- **无 traceId 的行全保留**（手写 trace 无从判同）；去重在解析**之后**统一做，不在解析循环里
+  顺手做（坏行计数 `skippedLines` 会被带歪）。
+- **usage-guide 同步两处口径**：§6.4 的 FileTaskStore 段落点明「`report` 按 traceId 去重」；
+  会话维度段落点名「**挂起计入 ok**」（引擎口径「挂起不是失败」，suspended 的 trace 状态是
+  ok ⇒ 全挂审批上的 10 条 run 会报成功率 100% —— 刻意取舍，但要写出来免得误读）。
+- 顺带补一条此前没钉的用例：**分组键优先级**（`session.id` 与 `taskId` 同带时归会话组）——
+  「对调优先级」的变异此前能活。
+
+**影响面**：`packages/cli/src/report.ts`（+30 行左右，纯解析后过滤）；
+`packages/cli/test/report.test.mjs` +2 条（去重 + 优先级），另有 1 条存量用例的夹具改
+**不同 traceId**（「多条记录按能力合并」此前两行同 traceId，在新口径下本就该被去重）。
+**验证**：`node --test packages/cli/test/` 全绿；**变异 2 条各咬住预期用例**
+（去掉去重 ⇒ 去重用例红；对调优先级 ⇒ 优先级用例红）；`verify-all.sh` 8/8。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
