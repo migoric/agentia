@@ -8,6 +8,11 @@
  * - 裸 Trace（含 `spans`）—— 如 `createOtlpExporter` 之外的本地落盘、或自己 writeFile 的记录；
  * - TaskRecord（含 `result.trace` 或 `trace`）—— 如 `FileTaskStore` / `SqliteTaskStore` 的导出。
  *
+ * ⚠️ TaskRecord 导出是 **append-only**（FileTaskStore 每次 save 追加一行）：审批流里同一棵
+ * 挂起段 trace 会被写多次（挂起 save / approve 落库 / 接管再 save，各行的 `result.trace`
+ * 是同一份）⇒ 按行计会把 runs / 成功率 / 成本全部翻倍。因此解析后按 **`traceId` 去重，
+ * 同一 traceId 只留最后一行**（append-only 里后面的是新状态），能力表与会话表共用这份输入。
+ *
  * 聚合实现**不在这里** —— 复用 `@migor/trace-view` 的 `summarizeTrace`
  * （构建期由 scripts/copy-assets.mjs 拷进 dist/inspector/）。CLI 因此保持零 npm 运行时依赖，
  * 且与 inspector 面板/官网 playground 共用同一份聚合口径（避免两处漂移）。
@@ -59,6 +64,7 @@ export interface SessionRow {
 /** 机器可读输出的形状（`--json`）—— 字段增补是兼容的，改名/删字段是破坏性变更 */
 export interface ReportJson {
   file: string;
+  /** 去重后的 run 数（同一 traceId 多行只算最后一行，见文件头注）；`failed` 同口径 */
   runs: number;
   failed: number;
   skippedLines: number;
@@ -154,8 +160,10 @@ export async function reportCommand(args: string[]): Promise<number> {
     throw new Error(`读不到文件 ${file}（${(e as Error).message}）`);
   }
 
-  // 一条记录 = 一条 run，但要同时留下**外层记录**的任务键（TaskRecord 的 `taskId`）——
-  // 它与 trace 本体不同源（在 wrapper 上，不在 `spans` 里），故在解析处一并取出。
+  // 解析时同时留下**外层记录**的任务键（TaskRecord 的 `taskId`）—— 它与 trace 本体不同源
+  // （在 wrapper 上，不在 `spans` 里），故在解析处一并取出。
+  // ⚠️ 「一行 = 一条 run」对 append-only 导出不成立（同一棵 trace 可能占多行），
+  // 去重在解析**之后**统一做（见下），别在循环里顺手去重 —— 坏行计数会被带歪。
   const entries: Array<{ trace: TraceLike; taskKey: string | null }> = [];
   let badLines = 0;
   for (const line of raw.split('\n')) {
@@ -176,7 +184,26 @@ export async function reportCommand(args: string[]): Promise<number> {
         (badLines > 0 ? `；另有 ${badLines} 行无法解析` : ''),
     );
   }
-  const traces = entries.map((e) => e.trace);
+
+  // **按 traceId 去重，同一 traceId 只留最后一行**。FileTaskStore 是 append-only：审批流里
+  // 同一棵挂起段 trace 会被写多次（挂起 save / approve 落库 / 接管再 save），各行的
+  // `result.trace` 是同一份 —— 不去重则 runs / 成功率 / 成本按行数翻倍。
+  // - 取**最后**一行：append-only 里后面的是新状态（接管后的记录才是终态）；
+  // - 键是 traceId 而不是 taskId：一个任务可以跨**多段** run（挂起 → 恢复 → 再挂起），
+  //   每段一棵新 trace（traceId == runId），按 taskId 去重会把不同段错并成一条；
+  // - 无 traceId 的行（手写 trace）无从判同，全部保留；
+  // - 过滤保序：留下的是各 traceId 在文件里**最后一次出现的位置**，输出顺序与直觉一致。
+  //   能力表、runs 总计、会话表**共用**这份去重后的输入（两处各算各的必然漂移）。
+  const lastByTraceId = new Map<string, number>();
+  entries.forEach((e, i) => {
+    const id = e.trace.traceId;
+    if (typeof id === 'string' && id.length > 0) lastByTraceId.set(id, i);
+  });
+  const deduped = entries.filter((e, i) => {
+    const id = e.trace.traceId;
+    return typeof id !== 'string' || id.length === 0 || lastByTraceId.get(id) === i;
+  });
+  const traces = deduped.map((e) => e.trace);
 
   // 聚合口径与 inspector 面板 / 官网 playground 同源（构建期拷进来的 trace-view 产物）
   // 这份聚合实现由 packages/cli/scripts/copy-assets.mjs 在构建期从 trace-view 产物拷进来。
@@ -216,7 +243,7 @@ export async function reportCommand(args: string[]): Promise<number> {
   // G6：会话 / 任务维度 —— 与上面的能力表**互补**：能力表看单个能力，这里看一整段会话/任务
   // （多轮 run 的合计 + 成功率）。成功率**必须带分母**：只报百分比在小组上是噪声。
   const byGroup = new Map<string, SessionRow>();
-  for (const e of entries) {
+  for (const e of deduped) {
     const key = groupKeyOf(e.trace, e.taskKey);
     let row = byGroup.get(key);
     if (!row) {

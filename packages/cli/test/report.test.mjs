@@ -124,7 +124,8 @@ describe('agentia report', { skip: SKIP }, () => {
   });
 
   it('多条记录按能力合并（calls/total 累加，max 取大）', () => {
-    withFile([JSON.stringify(trace), JSON.stringify(trace)], (file) => {
+    // 两条须是**不同** traceId —— 同 traceId 多行现在是 append-only 重写的形状，会被去重成一条。
+    withFile([JSON.stringify(trace), JSON.stringify({ ...trace, traceId: 'run-2' })], (file) => {
       const out = run(['report', file]);
       assert.match(out, /runs {7}2/);
       assert.match(out, /tool:search\s+2\s+0\s+600ms\s+300ms/);
@@ -301,6 +302,62 @@ describe('agentia report', { skip: SKIP }, () => {
       const out = run(['report', file]);
       assert.match(out, /^session\s+runs\s+ok\s+fail\s+total/m);
       assert.match(out, /^\(无会话\)\s+1\s+1\s+0\s+500ms/m);
+    });
+  });
+
+  it('分组键优先级：session.id 压过 taskId（同一条记录两者都带时归到会话组）', () => {
+    withFile(
+      [
+        JSON.stringify({
+          taskId: 'T-9',
+          result: { trace: runTrace({ traceId: 'p', session: 'S-1' }) },
+        }),
+      ],
+      (file) => {
+        const p = JSON.parse(run(['report', file, '--json']));
+        assert.equal(p.sessions.length, 1);
+        // 对调优先级（先 taskId 后 session.id）这条会拿到 'T-9' —— 钉的就是方向
+        assert.equal(p.sessions[0].session, 'S-1');
+      },
+    );
+  });
+
+  it('append-only 导出按 traceId 去重（取最后一行）：runs / 成本 / 能力计数不翻倍', () => {
+    // 审批流形状：挂起 save → approve 落库（同一棵 trace 再写一遍）→ 接管后第二段（新 traceId）。
+    // 两份 seg-a 内容刻意不同（cost / ms 不同）：钉「取最后一行」而不是「取第一行」。
+    const cap = {
+      spanId: 's9',
+      parentSpanId: 's0',
+      kind: 'capability',
+      name: 'reviewer',
+      startedAt: 0,
+      endedAt: 50,
+      status: 'ok',
+      usage: { inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      attributes: { subagent: 'reviewer' },
+      events: [],
+    };
+    const segA1 = runTrace({ traceId: 'seg-a', cost: 0.01, ms: 100 });
+    const segA2 = runTrace({ traceId: 'seg-a', cost: 0.02, ms: 200 });
+    const segB = runTrace({ traceId: 'seg-b', cost: 0.01, ms: 300 });
+    segA1.spans.push(cap);
+    segA2.spans.push(cap);
+    const rec = (t) => JSON.stringify({ taskId: 'T-1', result: { trace: t } });
+    withFile([rec(segA1), rec(segA2), rec(segB)], (file) => {
+      const p = JSON.parse(run(['report', file, '--json']));
+      // 真实是 2 段；不去重会报 3（审查实测的病灶）
+      assert.equal(p.runs, 2);
+      assert.equal(p.failed, 0);
+      const s = p.sessions[0];
+      assert.equal(s.session, 'T-1');
+      assert.deepEqual([s.runs, s.succeeded, s.failed], [2, 2, 0]);
+      // 取最后一行 ⇒ seg-a 记 0.02，合计 0.03（不去重是 0.04，取第一行是 0.02）
+      assert.equal(s.costUsd, 0.03);
+      // 耗时同理：200 + 300 = 500（不去重 600，取第一行 400）
+      assert.equal(s.totalMs, 500);
+      // 能力表也走同一份去重后的输入：reviewer 只调了 1 次，不是 2 次
+      const row = p.capabilities.find((r) => r.capability === 'subagent:reviewer');
+      assert.equal(row.calls, 1);
     });
   });
 });

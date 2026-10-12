@@ -1080,9 +1080,12 @@ failures, capabilities, sessions, totals }`）、没有人类装饰，适合脚�
 **会话 / 任务维度（`sessions[]`）**：能力排行之外另打一张按**分组键**归组的表 —— 键取 run 根
 span 的 `session.id`（宿主传 `session: { store, id }` 才会写，见 §6.4「提示词版本化与会话标记」），没有就退到记录
 里的 `taskId`（`FileTaskStore` / `SqliteTaskStore` 的导出），再没有落 `(无会话)` 桶。
-每组给 `runs / ok / fail / total / cost / cost-ok` 六列。两条口径值得记住：
+每组给 `runs / ok / fail / total / cost / cost-ok` 六列。三条口径值得记住：
 **成功率一定带分母**（小组上只报百分比是噪声，所以 `runs` 与 `ok` 都单独出列）；
-**成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
+**成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」；
+**挂起计入 `ok`** —— 成败判据与引擎同一条（`trace.status !== 'error'`），而引擎的口径是
+「挂起不是失败」（取消才是 `error`）⇒ 10 条 run 全挂在审批上会报「成功率 100%」。
+这是刻意的取舍，读数时把「等审批」与「跑成了」分开看。
 成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和，**不含** capability 聚合 ⇒
 `@SubAgent` 里套 `@Skill` 时不会把同一批 token 数两遍）。
 
@@ -1105,7 +1108,9 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 吞掉并落 `console.warn`（观测失败不击穿业务，但不再零信号）。
 
 异步宿主更省事：把 `FileTaskStore` 的落盘文件直接喂给它 —— `TaskRecord` 里带 `result.trace`，
-`report` 认这种形态，不用另写 sink。
+`report` 认这种形态，不用另写 sink。⚠️ 它是 **append-only**（每次 save 追加一行）：审批流里
+同一棵挂起段 trace 会出现多行（挂起 / approve / 接管各 save 一次）。`report` 按 **`traceId`
+去重、只留最后一行**（append-only 里后面的是新状态），runs / 成功率 / 成本不会按行数翻倍。
 
 #### 生效配置快照（「这条 run 用了哪套旋钮」）
 

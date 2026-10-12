@@ -1240,6 +1240,20 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   按 choice 登记）；`tests/docs/boundary-table.test.ts` 登记表同步（93 条：pin 57 / choice 11 /
   gap 25）。
 
+### `agentia report` 按 `traceId` 去重：append-only 导出不再翻倍计数（2026-10-12 ⑧）
+
+- **修什么**：`FileTaskStore` 是 append-only（每次 save 追加一行），审批流任务的导出里同一棵
+  挂起段 trace 会出现多行（挂起 / approve / 接管各 save 一次），而 `report` 按行计 ⇒
+  runs / 成功数 / 成本全部翻倍（实测实际 2 段 0.02 的任务报出 runs=3、cost=0.03）。
+  现在按 **`traceId` 去重、只留最后一行**（append-only 里后面的是新状态）；能力表与 runs 总计
+  也走同一份去重后的输入（存量问题一并修）。去重键是 traceId 而不是 taskId：一个任务可跨多段
+  run，每段一棵新 trace —— 按 taskId 去重会把不同段错并成一条。
+- **无破坏性变更**：`ReportJson` 形状未动，只有计数口径修正（同 traceId 的重复行此前本就是
+  同一棵 trace 的重复书写）；无 traceId 的行（手写 trace）照原样全保留。
+- **文档同步**：usage-guide §6.4 的 FileTaskStore 段落点明去重口径；会话维度段落点名
+  「**挂起计入 ok**」（与引擎「挂起不是失败」同口径 ⇒ 全挂审批上会报成功率 100%，刻意取舍
+  但需写明）。决策依据见 `docs/spec.md` §10 2026-10-12 ⑧。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
