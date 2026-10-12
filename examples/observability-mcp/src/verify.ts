@@ -13,7 +13,15 @@
  * （只有 `@Skill` / `@SubAgent` 建）⇒ 换能力在 diff 里落在 llm.turn 的**事件体**上。
  * 形状是先跑探针（`.workbuddy/probes/g8-diff-shape.ts`）看出来的。
  */
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -28,7 +36,7 @@ import {
   scriptedClient,
 } from '@migor/agentia';
 import type { ScriptedStep } from '@migor/agentia';
-import { MAX_DIFF_SPANS } from './traces.js';
+import { MAX_DIFF_SPANS, MAX_SESSION_ROWS, NO_SESSION } from './traces.js';
 import { buildApp } from './tools.js';
 
 let failures = 0;
@@ -50,6 +58,8 @@ const bFile = join(root, 'b.jsonl');
 const cFile = join(root, 'c.jsonl');
 const longAFile = join(root, 'long-a.jsonl');
 const longBFile = join(root, 'long-b.jsonl');
+const tasksFile = join(root, 'tasks.jsonl');
+const manySessionsFile = join(root, 'many-sessions.jsonl');
 
 /* ───────────────── 被观测的「目标 app」：真跑若干条 run（剧本，零网络） ───────────────── */
 
@@ -200,6 +210,48 @@ try {
     // isError 那条断言照样绿 —— 样本没有复现病灶的形状。换成合法 trace 后，删掉边界
     // 就会真的返回一份报告，两条断言同时红。
     copyFileSync(aFile, outside);
+    // §8 的夹具：TaskRecord 形态的 wrapper（顶层 `taskId`）—— FileTaskStore / SqliteTaskStore
+    // 导出的就是这种形状。task-3 那条包的是**带 `session.id` 的 trace**（sessionFile 里真跑出来的），
+    // 用来验「会话优先于任务键」；裸行用来验「无会话桶」。
+    const bareLine = readFileSync(aFile, 'utf8').split('\n')[0] ?? '';
+    const sessionLine = readFileSync(sessionFile, 'utf8').split('\n')[0] ?? '';
+    const bareTrace = JSON.parse(bareLine) as unknown;
+    const sessionTrace = JSON.parse(sessionLine) as unknown;
+    writeFileSync(
+      tasksFile,
+      `${[
+        JSON.stringify({ taskId: 'task-1', status: 'succeeded', result: { trace: bareTrace } }),
+        JSON.stringify({ taskId: 'task-2', status: 'succeeded', result: { trace: bareTrace } }),
+        bareLine,
+        JSON.stringify({ taskId: 'task-3', status: 'succeeded', result: { trace: sessionTrace } }),
+      ].join('\n')}\n`,
+    );
+    // §10 的夹具：45 个不同 `session.id` 的**手写**最小 trace —— 验的是报告聚合与截断，
+    // 不是引擎，所以不必经剧本真跑。`endedAt = i + 1` ⇒ 总耗时随编号递增，
+    // 截断后谁留谁走是确定的（sess-44 最贵，sess-0 最便宜）。
+    writeFileSync(
+      manySessionsFile,
+      `${Array.from({ length: 45 }, (_, i) =>
+        JSON.stringify({
+          traceId: `t${i}`,
+          rootSpanId: 's0',
+          status: 'ok',
+          spans: [
+            {
+              spanId: 's0',
+              parentSpanId: null,
+              kind: 'run',
+              name: 'agent.run',
+              startedAt: 0,
+              endedAt: i + 1,
+              status: 'ok',
+              attributes: { 'session.id': `sess-${i}` },
+              events: [],
+            },
+          ],
+        }),
+      ).join('\n')}\n`,
+    );
     console.log(`  · trace 根 = ${root}`);
   }
 
@@ -340,6 +392,58 @@ try {
     check(
       '拒绝时给出的是解析后的根（符号链接已消解）',
       msg.includes(realpathSync(root).slice(0, 32)),
+    );
+  }
+
+  console.log('\n== 8. report：分组键三级回退（session.id → wrapper taskId → (无会话)） ==');
+  {
+    const r = payloadOf(await reportTool.run({ file: 'tasks.jsonl' }));
+    const sessions = (r.sessions ?? []) as Array<{ session?: unknown }>;
+    const keys = sessions.map((s) => String(s.session));
+    check('四条 run 全数收进报告', r.runs === 4, `runs=${String(r.runs)}`);
+    check(
+      'wrapper 顶层的 taskId 作回退键（task-1 / task-2 各自成组）',
+      keys.includes('task-1') && keys.includes('task-2'),
+      keys.join(', '),
+    );
+    check(
+      'session.id 优先于 taskId（包着 demo-session 的那条归会话组，不落 task-3）',
+      keys.includes('demo-session') && !keys.includes('task-3'),
+      keys.join(', '),
+    );
+    check('裸 Trace 落 (无会话) 桶', keys.includes(NO_SESSION), keys.join(', '));
+  }
+
+  console.log('\n== 9. 边界特判：AGENTIA_TRACE_ROOT=/ 时根下文件不被误拒 ==');
+  // `root + sep` 在 root=/ 时是 "//" ⇒ 不修的话根下**所有**路径都被误拒（方向过紧）。
+  // resolveInsideRoot 每次调用现读环境变量，这里临时换根再换回。
+  process.env.AGENTIA_TRACE_ROOT = '/';
+  try {
+    const r = payloadOf(await reportTool.run({ file: outside }));
+    check('根为 / 时根下的真实 trace 文件正常出报告', r.runs === 1, `runs=${String(r.runs)}`);
+  } finally {
+    process.env.AGENTIA_TRACE_ROOT = root;
+  }
+
+  console.log(`\n== 10. report：45 个不同会话 ⇒ 截断到 ${MAX_SESSION_ROWS} 组并如实报出 ==`);
+  {
+    const r = payloadOf(await reportTool.run({ file: 'many-sessions.jsonl' }));
+    const sessions = (r.sessions ?? []) as Array<{ session?: unknown }>;
+    check(
+      '截断前的真实组数如实报出（45）',
+      r.sessionGroups === 45,
+      `sessionGroups=${String(r.sessionGroups)}`,
+    );
+    check('返回组数正好卡在上限', sessions.length === MAX_SESSION_ROWS, `${sessions.length} 组`);
+    check(
+      '截掉的组数如实报出（不是 0、不是编的）',
+      r.sessionsTruncated === 45 - MAX_SESSION_ROWS,
+      `sessionsTruncated=${String(r.sessionsTruncated)}`,
+    );
+    check(
+      '截断按总耗时降序保留（最贵的 sess-44 还在、最便宜的 sess-0 被截掉）',
+      sessions[0]?.session === 'sess-44' && !sessions.some((s) => s.session === 'sess-0'),
+      `首行=${String(sessions[0]?.session)}`,
     );
   }
 

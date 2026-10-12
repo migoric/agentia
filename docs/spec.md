@@ -6445,6 +6445,39 @@ dev 面板与 summary 同源，同样漏。
 `packages/trace-view/test/summary.test.js` 保留原「首段形状」用例，另补**恢复段形状**
 （decided 在 run 根 ⇒ guardrail 行在场且数值对）与「run 根 + llm.turn 两处都聚」。
 **变异验证**：恢复 kind 限制 ⇒ 两条新用例红；复原复跑绿。
+### 2026-10-12 ⑩：G8 示例的复审收口 —— 分组键三级回退对齐 CLI、root=`/` 特判、sessions 截断
+
+**起因**：f37cce5（⑦）的复审发现三处低危：① `sessionRows` 自称「口径同 CLI」却只做了**两级**
+回退 —— `readTraceFile` 把外层 wrapper 丢了，`TaskRecord.taskId` 那层够不到 ⇒ 对
+FileTaskStore / SqliteTaskStore 导出的记录，CLI 按任务逐条分组、示例全坍进 `(无会话)`；
+② `resolveInsideRoot` 的 `root + sep` 在 root=`/` 时变成 `//` ⇒ 根下所有文件被误拒
+（方向过紧、不泄密，但行为错）；③ `report_trace` 的 `sessions` 无截断天花板 ——
+长寿 trace 文件（几千个不同 `session.id`）会把几千行灌进模型上下文，与 diff 侧
+（`MAX_DIFF_SPANS` + `truncated` 如实报出）不同款。
+
+**决策**：
+
+- **三级回退对齐 CLI**：`readTraceFile` 保留 wrapper 的 `taskId`（`TraceFile.traces` 改
+  `entries: { trace, taskKey }`），`sessionRows` 的分组键换成与 CLI `report.ts` 逐字同体的
+  `groupKeyOf`（`session.id` → `taskKey` → `(无会话)`）。
+- ⚠️ **这份移植不配运行时逐字对拍，配的是源码级双钉**（`tests/observability-mcp-parity.test.ts`）。
+  与前三份（harvest / diffTraces / export）不同款，两个硬约束：① 示例必须可整目录拷走单用
+  （README 明写）⇒ 示例侧不能反向 import `../../packages/cli`；② 示例的 dist 在 `npm test`
+  时未构建（verify-all 步序：build:cli 步 5、示例构建在步 7 的 e2e-examples 里）⇒ CLI 套件
+  import 示例 dist 会在 CI 里永久 skip（真空变绿）。源码级双钉与
+  `tests/transport/http-boundary-guard.test.ts` 同族：三段 canonical 行（分组键回退 /
+  taskId 提取 / 桶名常量）钉成两份源码里逐字都在场；行为面两边各有断言
+  （CLI 侧 `report.test.mjs`、示例侧 verify §8）。
+- **root=`/` 特判**：`root.endsWith(sep) ? root : root + sep`（realpath 只有根才带尾部分隔符；
+  Windows 的 `C:\` 同理被覆盖）。
+- **sessions 截断同档 diff 侧**：`MAX_SESSION_ROWS = 40`（按总耗时降序留头部），`TraceReport`
+  加 `sessionGroups`（截断前真实组数）/ `sessionsTruncated`（截掉的组数）—— 截断必须如实报出，
+  与 `CompactDiff.truncated` 同款纪律。
+
+**影响面**：`examples/observability-mcp/`（traces.ts / verify.ts / README；verify 17 → 26 条
+check、7 → 10 组）、`tests/observability-mcp-parity.test.ts`（新）。**框架与 CLI 零改动**。
+**验证**：3 条变异各咬住预期断言（去掉 taskId 层 ⇒ 双钉红 + verify §8 红；去掉 root=`/` 特判
+⇒ verify §9 红；去掉截断 ⇒ verify §10 三条红）；`npm run e2e:examples` 全绿。
 
 ## 11. 开放项
 
