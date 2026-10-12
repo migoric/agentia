@@ -8,9 +8,10 @@ import {
   parseToolList,
   readMcpResult,
   readMcpText,
+  toolsCallParams,
   withDeadline,
 } from './mcp-protocol.js';
-import type { Guard, McpConnector, McpToolInfo } from './mcp-protocol.js';
+import type { Guard, McpCallOptions, McpConnector, McpToolInfo } from './mcp-protocol.js';
 
 /**
  * MCP **StreamableHTTP 连接器**（内置默认件之一）：一个 endpoint，POST JSON-RPC。
@@ -197,10 +198,17 @@ export function createStreamableHttpMcpConnector(
   const callTool = async (
     name: string,
     args: Record<string, unknown>,
-    callOpts?: { abandoned?: AbortSignal },
+    callOpts?: McpCallOptions,
   ): Promise<unknown> => {
     await ensureReady();
-    const r = await rpc('tools/call', { name, arguments: args }, true, true, callOpts?.abandoned);
+    // `toolsCallParams` 把 SEP-414 的 traceparent 放进 params._meta（裸键）；没有则不留 _meta 键
+    const r = await rpc(
+      'tools/call',
+      toolsCallParams(name, args, callOpts?.traceparent),
+      true,
+      true,
+      callOpts?.abandoned,
+    );
     // 承重同 stdio：协议层 isError 只有连接器看得见（判定与文案在 mcp-protocol.ts）
     assertToolResultNotError(r, name);
     return r;

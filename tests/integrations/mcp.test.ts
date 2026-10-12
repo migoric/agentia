@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { brief, jsonRpcError, mcpTools } from '../../src/integrations/mcp.js';
 import type { McpClientLike, McpToolInfo } from '../../src/integrations/mcp.js';
+import { parseTraceparent, wireSpanId, wireTraceId } from '../../src/core/trace.js';
 import { createApp, runAgent, Tool } from '../../src/index.js';
 import type { CapabilityMiddleware } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
@@ -14,18 +15,26 @@ function fakeMcp(
   }),
 ): {
   client: McpClientLike;
-  calls: Array<{ name: string; args: Record<string, unknown> }>;
+  calls: Array<{
+    name: string;
+    args: Record<string, unknown>;
+    opts: { abandoned?: AbortSignal; traceparent?: string } | undefined;
+  }>;
   listed: () => number;
 } {
-  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const calls: Array<{
+    name: string;
+    args: Record<string, unknown>;
+    opts: { abandoned?: AbortSignal; traceparent?: string } | undefined;
+  }> = [];
   let listed = 0;
   const client: McpClientLike = {
     async listTools() {
       listed++;
       return tools;
     },
-    async callTool(name, args) {
-      calls.push({ name, args });
+    async callTool(name, args, opts) {
+      calls.push({ name, args, opts });
       return call(name, args);
     },
   };
@@ -403,6 +412,58 @@ describe('MCP 桥的健壮性与记账', () => {
     // 键按**菜单名**分（含 server 前缀，全局唯一），值为 server 认识的**原名**
     assert.equal(turn.attributes['mcp.tool.mcp_s_get_time'], 'get-time');
     assert.equal(turn.attributes['mcp.tool.mcp_s_fetch_weather'], 'fetch-weather');
+  });
+});
+
+describe('SEP-414 出站传播（桥把 traceparent 交给连接器）', () => {
+  const W3C = /^00-[0-9a-f]{32}-[0-9a-f]{16}-00$/;
+
+  it('在 run 内调用 ⇒ callTool 的第三参带 traceparent（回合粒度，与 currentTraceparent() 同一投影）', async () => {
+    // 反向验证：摘掉 mcp.ts 里 traceparent 的装配 ⇒ `opts.traceparent` 是 undefined，本用例红。
+    const mcp = fakeMcp([{ name: 'get-time', inputSchema: OBJ }]);
+    const tools = await mcpTools(mcp.client, { server: 'time' });
+    const { client } = mockClient([
+      toolUseMsg('mcp_time_get_time', { tz: 'Asia/Shanghai' }),
+      endTurnMsg('done'),
+    ]);
+    const result = await runAgent({ messages: [{ role: 'user', content: 'go' }], tools, client });
+
+    const tp = mcp.calls[0]?.opts?.traceparent;
+    assert.match(tp ?? '', W3C, 'traceparent 必须是 W3C 形状（flags 恒 00：不替下游声明已采样）');
+    // 逐字还原：它指向**本次 run 的这条 trace** 与**发起调用的那个 llm.turn span**
+    const parsed = parseTraceparent(tp);
+    const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    assert.equal(parsed?.traceId, wireTraceId(result.trace.traceId));
+    assert.equal(parsed?.spanId, wireSpanId(turn.spanId));
+    // 纪律②：trace 上下文绝不进工具签名 —— 交给 server 的 arguments 一个字不被碰
+    assert.deepEqual(mcp.calls[0]?.args, { tz: 'Asia/Shanghai' });
+  });
+
+  it('引擎设了 toolTimeoutMs 的那条路径同样带（两条裁判路径都要过）', async () => {
+    // 反向验证：只往兜底路径装、漏了引擎裁判路径 ⇒ 本用例红（`engineBudget != null` 分支）。
+    const mcp = fakeMcp([{ name: 'get-time', inputSchema: OBJ }]);
+    const tools = await mcpTools(mcp.client, { server: 'time' });
+    const { client } = mockClient([toolUseMsg('mcp_time_get_time', {}), endTurnMsg('done')]);
+    await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      tools,
+      client,
+      toolTimeoutMs: 5000,
+    });
+    assert.match(mcp.calls[0]?.opts?.traceparent ?? '', W3C);
+  });
+
+  it('脱离引擎单用（无 ctx）⇒ 不带 traceparent（没有上下文可传时不造空值）', async () => {
+    // 反向验证：缺上下文时编一个（如全零 trace id）⇒ `in` 判定为真，本用例红（纪律③）。
+    const mcp = fakeMcp([{ name: 'get-time', inputSchema: OBJ }]);
+    const tools = await mcpTools(mcp.client, { server: 'time' });
+    await tools[0]!.run({});
+    const opts = mcp.calls[0]?.opts;
+    assert.equal(
+      opts !== undefined && 'traceparent' in opts,
+      false,
+      '无 ctx ⇒ 不得带 traceparent 键',
+    );
   });
 });
 

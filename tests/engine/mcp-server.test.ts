@@ -562,6 +562,77 @@ describe('createMcpServer —— StreamableHTTP 协议面', () => {
   });
 });
 
+describe('createMcpServer —— SEP-414 入站（`params._meta.traceparent` → run 根 link）', () => {
+  // SEP-414 非规范示例里的那串值（带 `-01` flags —— 解析侧不读 flags，与 W3C 一致）
+  const UPSTREAM = '00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01';
+
+  const rootOf = (t: Trace): Span => t.spans.find((sp) => sp.spanId === t.rootSpanId)!;
+
+  it('合法 traceparent ⇒ run 根记一条指向上游的 link；arguments 一个字节不被碰', async () => {
+    // 反向验证：摘掉 dispatch 里的 metaTraceContext 接线 ⇒ links 缺席，本用例红；
+    // 把 _meta 塞进 arguments ⇒ 探针看到的入参多出键，本用例红（纪律②）。
+    let seenArgs: unknown;
+    const probe: AgentTool = {
+      name: 'probe',
+      description: '记下收到的入参',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
+      run: (input) => {
+        seenArgs = input;
+        return 'ok';
+      },
+    };
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([probe], { sinks: [sink] });
+    const r = await post(
+      s.url as string,
+      rpc(1, 'tools/call', {
+        name: 'probe',
+        arguments: { name: 'MCP' },
+        _meta: { traceparent: UPSTREAM },
+      }),
+    );
+    assert.equal(r.status, 200);
+    assert.equal(r.body!.error, undefined, '合法 _meta 不得改变调用的成败');
+    assert.deepEqual(seenArgs, { name: 'MCP' }, '_meta 绝不进 arguments（模型/工具看不见它）');
+
+    assert.equal(traces.length, 1);
+    assert.deepEqual(rootOf(traces[0]!).links, [
+      { traceId: '0af7651916cd43dd8448eb211c80319c', spanId: '00f067aa0ba902b7' },
+    ]);
+  });
+
+  it('`_meta` 缺失 / 非对象 / traceparent 畸形 ⇒ 与今天逐字一致：孤立根、不报错、调用正常完成', async () => {
+    // 反向验证：解析失败时造一个空 TraceContext / 把坏 _meta 打成 -32602 ⇒
+    // 「孤立根」与「200 无 error」两类断言红（纪律①③）。
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([hello], { sinks: [sink] });
+    const url = s.url as string;
+    const cases: Array<Record<string, unknown>> = [
+      { name: 'say_hello', arguments: { name: '甲' } }, // 无 _meta（既有行为锚）
+      { name: 'say_hello', arguments: { name: '乙' }, _meta: {} }, // 空 _meta
+      { name: 'say_hello', arguments: { name: '丙' }, _meta: 5 }, // _meta 非对象
+      { name: 'say_hello', arguments: { name: '丁' }, _meta: { traceparent: 42 } }, // 非字符串
+      { name: 'say_hello', arguments: { name: '戊' }, _meta: { traceparent: 'garbage' } }, // 畸形
+      // 版本 ff 是 W3C 保留的非法值（parseTraceparent 拒）
+      {
+        name: 'say_hello',
+        arguments: { name: '己' },
+        _meta: { traceparent: 'ff-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01' },
+      },
+    ];
+    for (let i = 0; i < cases.length; i++) {
+      const r = await post(url, rpc(i + 1, 'tools/call', cases[i]));
+      assert.equal(r.status, 200, `case ${i} 不应被拒`);
+      assert.equal(r.body!.error, undefined, `case ${i} 不应回协议错误`);
+    }
+    assert.equal(traces.length, cases.length);
+    for (const [i, t] of traces.entries()) {
+      assert.equal(t.status, 'ok');
+      assert.equal('links' in rootOf(t), false, `case ${i} 的 run 根必须保持孤立根（无 links 键）`);
+    }
+  });
+});
+
 describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @Tool 真装配）', () => {
   it('连接器握手 → listTools → callTool → isError 转抛错；每次调用一棵 trace 落盘', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-mcp-server-'));

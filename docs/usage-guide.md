@@ -875,11 +875,12 @@ capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 
 把它接回上游 —— 触发它的那个 span（网关请求 / 队列消息 / 另一个服务）记在 run 根 span 的 `links` 上，
 OTLP 导出时就是标准的 **span links**，后端能把因果边画出来。
 
-**入站两种给法**：
+**入站三种给法**：
 
 | 场景 | 写法 |
 |---|---|
 | HTTP 宿主（网关 / 消费者通过 HTTP 打过来） | 请求头 `traceparent: 00-<32位trace>-<16位span>-01`（W3C）—— `createHttpHandler` 自动解析，`POST /run` 与 `POST /tasks` 都认；**畸形头静默当作没有上游**，不会打 400 |
+| MCP 反向桥（Claude Code / 别的 agent 框架经 `tools/call` 调你的工具） | 请求 `params._meta.traceparent`（**SEP-414** 定的载体：`_meta` 里的**裸键**，不加前缀）—— `createMcpServer` 自动解析，合法即记成该次 trace run 根的一条 `links`；**缺失 / 畸形静默当作没有上游**（不造空上下文、不影响调用成败） |
 | 程序内直接调 `app.run` / `runner.submit` | `options.traceContext: { traceId, spanId? }` —— 也可写 `parseTraceparent(头值)` 自己解析 |
 
 **队列消费者（Kafka / RabbitMQ / SQS）的形态**：拿消息键当 `idempotencyKey`，把消息里带的
@@ -930,7 +931,11 @@ class OrderTools {
 
 - **粒度**：普通工具与 `@Prompt` **不建 span**，它们的「当前 span」就是发起它们的那次 `llm.turn`；
   `@Skill` / `@SubAgent` 的方法体内则是它自己的 `capability` span。内层覆盖外层。
-- **不自动注入**：框架不创建出站请求，注入那一行是你自己的（同上 `fetch`；gRPC 宿主塞进 metadata）。
+- **不自动注入**（一个例外）：框架不替你创建出站请求，注入那一行是你自己的
+  （同上 `fetch`；gRPC 宿主塞进 metadata）。例外是 **MCP 正向桥**：`tools/call` 的请求由桥自己发，
+  所以在 run 内经 `mcpTools` 调 MCP 工具时，桥自动把当前 span 的 `traceparent` 放进
+  `params._meta`（SEP-414 裸键，**不进 `arguments`**；不在 run 内则不带；对端不认 `_meta`
+  静默忽略 —— 这是观测，不是协议要求）。
 - 与入站同一个格式、同一份 id 投影：`currentTraceparent()` 的输出喂回 `parseTraceparent()` 逐字还原，
   下游 OTLP 里看到的 span id 与本地 collector 里的是**同一个数**（见 §7 已知边界）。
 
@@ -1186,7 +1191,7 @@ class MyMemoryStore implements MemoryStore {
 | API | 说明 |
 |---|---|
 | `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
-| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
+| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args, opts?)`（`opts` 带 `abandoned` 与 SEP-414 的 `traceparent`，均可选）；框架**不 import** MCP SDK |
 | `createStdioMcpConnector` | **出厂 stdio 连接器**：spawn 一个 MCP server 子进程，走换行分隔 JSON-RPC（只用 `node:child_process`） |
 | `createStreamableHttpMcpConnector` | **出厂 StreamableHTTP 连接器**：一个 endpoint POST JSON-RPC；`application/json` 与 `text/event-stream` 两种响应都接（只用全局 `fetch`） |
 | `McpConnector` | 两个连接器的公共面 = `McpClientLike` + `close()`。自己写传输时实现 `McpClientLike` 即可，不必碰它 |
@@ -1200,6 +1205,7 @@ class MyMemoryStore implements MemoryStore {
 - **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
 - **连接器出厂自带，但仍只给缝**：两个连接器只用标准库（`node:child_process` + 全局 `fetch`）⇒ **不新增任何第三方依赖**。要接官方 SDK / 远程 server / 自研传输，实现 `McpClientLike` 两个方法即可（同 `RedisLike` 的形状）。
 - **连接器替你兜住三件只有它能做的事**：① spawn 失败（命令不存在 → `ENOENT`）是**异步 `'error'` 事件**，不接住会把宿主进程带崩；② stdout 的分帧 —— 一条报文可能跨多个 chunk；③ **协议层 `isError: true` 转成抛错**。
+- **trace 上下文（SEP-414）**：在 run 内调用时，桥把当前 span 的 W3C `traceparent` 放进 `tools/call` 的 `params._meta`（**裸键、不加前缀**；两个出厂连接器都做），认出它的 server 就能把这次调用链回你的 trace；不在 run 内（桥脱离引擎单用）则不带 —— 不造空上下文。自己实现 `McpClientLike` 时读 `callTool` 第三参的 `traceparent` 即可对齐（不读也兼容，只是链路断在你的传输上）。
 - **连接器的 `timeoutMs` 只管装配期**（握手 + `tools/list`）：那两步**没有任何别的裁判**，server 卡住会让 `createApp` 永久挂起；`callTool` 的裁判仍是引擎 / 桥（一次调用只有一个）。
 
 ```ts
@@ -1266,6 +1272,7 @@ server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@To
 
 - **两个传输都只用标准库**：stdio = stdin/stdout 换行分隔 JSON-RPC（日志只去 stderr，stdout 是协议面）；http = StreamableHTTP（POST 收报文、应答 `application/json`，简单应答不上 SSE；GET → 405、DELETE → 200）。
 - **trace 叙事不破**：每次 `tools/call` 造一棵 trace —— run 根 `mcp.tools/call` 下挂一个 capability span（name = 工具名），记 `tool.input` / `tool.output` 事件（与引擎同账目形状），收尾投递 `sinks`；`initialize` / `tools/list` 不建 trace。capability span 无 skill/subagent 属性 ⇒ metrics 里以 `capability:<工具名>` 标签进能力指标。
+- **入站 trace 上下文（SEP-414）**：`tools/call` 的 `params._meta.traceparent` 合法时记成那棵 trace run 根的一条 `links`（与 HTTP 宿主认 `traceparent` 头同款缝合）；缺失 / 畸形静默当作孤立根 —— 不报错、不影响调用成败、不造空上下文。对端是 agentia 正向桥（或 MCP Python SDK 等已按 SEP-414 注入的实现）时这条链自动接上。
 - **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
 - **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
 - **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
@@ -1774,7 +1781,7 @@ const callable = {
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
 | 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace **缺省**不记 assistant 文本（opt-in 例外：`traceContent: 'full'`，见 §4）与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
-| 链路关联：入站自动、**出站只给读取器** | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
+| 链路关联：入站自动、出站默认只给读取器（MCP 桥除外） | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。**唯一的例外是 MCP 正向桥**：`tools/call` 的请求由桥自己发，故 run 内经 `mcpTools` 的调用自动带 `params._meta.traceparent`（SEP-414）。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工审批两种形态 | 进程内闸门用 `middleware`（`await` 决策再放行）；跨进程耐久审批用 `@Tool({ approval: 'required' })` + `POST /tasks/:id/approve`（挂起/恢复，见 §6.6「人工审批」） |
 | 审批超时是**惰性**判定 | `approvalTimeoutMs` 不起定时器：`approve` / `poll` / `resumePending` 读到过期挂起任务时才自动全拒并重派 —— 没人读的任务不会自己超时（要定期扫就调 `resumePending()`） |

@@ -6211,6 +6211,49 @@ G2：上游 6 家框架（Mastra / Vercel AI SDK / CrewAI / AutoGen / Google ADK
 这边是「直接当标记」），且 `app.run` 没有 store 可注入、只能给半个会话（有标记无历史）——
 半生效比响亮告警更难排查。
 
+### 2026-10-12 ④：MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键，跨进程链路从「断的」接上）
+
+**起因**：2026-10-12 的可观测深钻评审（observability-deep-dive §1.2 / §3 G1）——
+MCP **SEP-414**（Final，已进 2026-07-28 规范）把跨进程 trace 载体定死在 JSON-RPC 请求的
+`params._meta` **裸键**（`traceparent` / `tracestate` / `baggage`，明说这是 `_meta` DNS 前缀
+惯例的**例外**，加前缀会断跨实现的链），MCP Python SDK 官方实现已在注入；而本仓 MCP 桥
+7 个文件里 `_meta` / `traceparent` **零命中** ⇒ 经 MCP 出/入的调用，trace 链是断的。
+
+**决策**：
+
+- **出站**（本仓当 MCP 客户端）：桥（`integrations/mcp.ts`）在 run 作用域内把
+  `formatTraceparent(ctx.recorder.traceId, ctx.parentSpanId)` 交给连接器的 `callTool` 第三参
+  （新增可选字段 `traceparent`，`McpCallOptions`），两个出厂连接器经共享的
+  `toolsCallParams()`（`mcp-protocol.ts`，形状只许一处）放进 `params._meta.traceparent`。
+  ⚠️ **通路选择是分层逼出来的**：`integrations` 只许依赖 `core`，够不到 engine 的
+  `currentTraceparent()`；但 `ToolRunContext` 里**已经有同一份投影的原料** —— turn.ts 包工具
+  执行的 `withCurrentSpan({ traceId: recorder.traceId, spanId: turnId })` 与
+  `ToolRunContext.parentSpanId = turnId` 是同两个值 ⇒ ctx 投影与 `currentTraceparent()`
+  **同源同格式**（经 core 的 `formatTraceparent` 编出同一个串），一条新边都不用加。
+  粒度因此是**回合级**（指向发起调用的那个 `llm.turn` span），不是 run 级。
+- **入站**（本仓当 MCP 服务端）：`engine/mcp-server.ts` 的 `tools/call` 从
+  `params._meta.traceparent` 提取、`parseTraceparent` 解析，合法则作为这次 trace run 根的
+  一条 `SpanLink`（与 HTTP 宿主认 `traceparent` 头**同款缝合**，形状照 loop.ts 的
+  `traceContext` 接线）。
+- **三条纪律**（评审定的，全部有用例钉住）：① 注入/提取失败**静默降级**（对端不认 `_meta`
+  不能把调用打挂；桥保持无状态、宽容）；② **不改 `arguments`**（trace 上下文绝不进
+  模型可见的工具签名）；③ 缺上下文/解析失败时**不造空 TraceContext**（保持「孤立根」
+  行为 —— MCP Python SDK 的 docstring 理由：空 Context 会把 span 变成孤儿）。
+
+**影响面**：`src/integrations/{mcp,mcp-stdio,mcp-http,mcp-protocol}.ts`、`src/engine/mcp-server.ts`；
+`McpClientLike.callTool` 第三参加一个可选字段（**加法、无破坏性** —— 只实现两参的旧客户端
+照常兼容，只是链路断在它的传输上）。公共导出面（`src/index.ts`）**零变化**
+（`McpCallOptions` / `toolsCallParams` 是 module 级 export，不进公共面）。
+测试：`tests/integrations/mcp-protocol.test.ts`（params 形状单源）/
+`mcp.test.ts`（桥：在 run 内带、引擎裁判路径也带、无 ctx 不带）/
+`mcpConnector.test.ts`（两个传输过真边界；stdio 侧靠夹具新 `echoparams` 模式回读）/
+`tests/engine/mcp-server.test.ts`（入站：合法 → run 根 link；缺失/非对象/非字符串/畸形/
+版本 ff → 孤立根、不报错、调用照常）+ `scripts/e2e-mcp-server.ts` 补「跨进程 link 真出现在
+落盘 trace 里」。**变异验证 6 条全咬住**（摘 `_meta` 展开 / 桥不装配 / stdio / http 各不传
+第三参 / 入站不接线 / 入站跳过解析各红在对应断言）。
+另核过 `npm run e2e:mcp`（真 `uvx mcp-server-time`）：注入 `_meta` 后第三方 server 照常服务
+（纪律① 的真实对端证据）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
