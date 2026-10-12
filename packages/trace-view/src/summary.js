@@ -7,9 +7,11 @@
  * - `capability` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）；
  * - `llm.turn` span 上的 `tool.output` 事件（普通工具不建 span）→ 工具耗时与成败，
  *   读 `body.durationMs` / `body.ok`；
- * - `llm.turn` span 上的 `approval.decided` 事件（**审批不建 span**，G7 护栏）→
- *   `guardrail:<工具名>` 一类的等审批时长与被拒次数，读 `body.tool` / `body.approved` /
- *   `body.waitedMs`。
+ * - `approval.decided` 事件（**审批不建 span**，G7 护栏）→ `guardrail:<工具名>` 一类的
+ *   等审批时长与被拒次数，读 `body.tool` / `body.approved` / `body.waitedMs`。
+ *   扫面**不限 span kind**：落点因段而异（首段 llm.turn、恢复段 run 根 —— 续跑入口把
+ *   run 根 id 当 turnId），限 kind = 真实 HITL 主流程（挂起 → 人批 → 恢复）零产出；
+ *   不双计：记账点只有一处（executeOneTool），一次决定只记一笔。
  *
  * ⚠️ 单条 run 内样本常 < 5，分位没有意义 —— 排行以 total/max 为主，不给 p50/p95
  * （要看分位请用框架的 `buildRunReport` + `mergeRunReports`）。
@@ -62,7 +64,9 @@ export function summarizeTrace(trace) {
       }
       continue;
     }
-    if (span.kind !== 'llm.turn') continue;
+    // approval.decided **不限 span kind**（落点因段而异：首段 llm.turn、恢复段 run 根 ——
+    // 续跑入口把 run 根 id 当 turnId，见头注）；tool.output 只在 llm.turn 上。
+    const isTurn = span.kind === 'llm.turn';
     for (const e of span.events || []) {
       if (e.name === 'approval.decided') {
         // G7 护栏 —— 审批**只是事件**（刻意不建 span），所以它天然不在任何 span 聚合里，
@@ -81,7 +85,7 @@ export function summarizeTrace(trace) {
         addMs(ga, typeof b.waitedMs === 'number' ? b.waitedMs : 0);
         continue;
       }
-      if (e.name !== 'tool.output') continue;
+      if (!isTurn || e.name !== 'tool.output') continue;
       const b = e.body;
       if (!b || typeof b !== 'object' || typeof b.tool !== 'string') continue;
       const a = get(`tool:${b.tool}`);

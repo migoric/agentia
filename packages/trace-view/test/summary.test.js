@@ -227,4 +227,80 @@ describe('trace-view summarizeTrace（G7 护栏行）', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].calls, 1);
   });
+
+  it('恢复段形状（approval.decided 在 **run 根**）也产出 guardrail 行 —— 真实 HITL 主流程的形状', () => {
+    // 真实审批流是「挂起 → 人批 → 带 approvals 恢复」：续跑入口把 run 根 id 当 turnId
+    // 传给 executeTurnTools（loop.ts），恢复段的 approval.requested / approval.decided
+    // 都记在 **run 根** span 上（本段没有对应 llm.turn）。扫面限 llm.turn 时这条主流程
+    // 的护栏行**一行都不产出** —— 这个用例钉的就是它。
+    const t = {
+      traceId: 't-resume',
+      rootSpanId: 's0',
+      status: 'ok',
+      spans: [
+        {
+          spanId: 's0',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'run',
+          startedAt: 0,
+          endedAt: 100,
+          status: 'ok',
+          attributes: { 'agentia.guardrail.name': 'deploy', 'agentia.guardrail.triggered': true },
+          events: [
+            {
+              time: 1,
+              name: 'approval.requested',
+              body: { tool_use_ids: ['u1'], tools: ['deploy'] },
+            },
+            {
+              time: 2,
+              name: 'approval.decided',
+              body: { tool: 'deploy', tool_use_id: 'u1', approved: true, waitedMs: 3600 },
+            },
+            {
+              time: 3,
+              name: 'approval.decided',
+              body: { tool: 'deploy', tool_use_id: 'u2', approved: false, reason: '窗口外' },
+            },
+          ],
+        },
+        // 恢复段解决完未决 tool_use 后进入正常循环，后面仍可能有 llm.turn（不带审批事件）
+        {
+          spanId: 's1',
+          parentSpanId: 's0',
+          kind: 'llm.turn',
+          name: 'm',
+          startedAt: 10,
+          endedAt: 90,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+      ],
+    };
+    const rows = summarizeTrace(t);
+    assert.equal(rows.length, 1, '只有 guardrail 行（llm.turn 上没有 tool.output）');
+    const g = rows[0];
+    assert.equal(g.capability, 'guardrail:deploy');
+    assert.equal(g.calls, 2, 'run 根上的两笔决定都聚到');
+    assert.equal(g.errors, 1, '被拒一次');
+    assert.equal(g.totalMs, 3600, '第二笔缺 waitedMs ⇒ 记 0 不编造');
+    assert.equal(g.maxMs, 3600);
+  });
+
+  it('decided 同时在 run 根与 llm.turn 上时两处都聚（扫面不限 kind 的直接证据）', () => {
+    const t = approvalTrace(); // 三条 decided 在 llm.turn（s1）上
+    t.spans[0].events = [
+      {
+        time: 5,
+        name: 'approval.decided',
+        body: { tool: 'deploy', tool_use_id: 'u4', approved: true, waitedMs: 500 },
+      },
+    ];
+    const g = summarizeTrace(t)[0];
+    assert.equal(g.capability, 'guardrail:deploy');
+    assert.equal(g.calls, 4, 'llm.turn 上 3 笔 + run 根上 1 笔');
+    assert.equal(g.totalMs, 1700);
+  });
 });
