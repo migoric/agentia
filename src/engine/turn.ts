@@ -31,7 +31,7 @@ import type {
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
 import type { SpanError, SpanId } from '../core/trace.js';
-import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
+import { CONTEXT_BUDGET_EVENT, TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
@@ -308,7 +308,7 @@ export async function checkTurnEntry<S extends JsonSchema>(
     }
     if (next && next !== messages) {
       if (args.parentSpanId) {
-        args.recorder.event(args.parentSpanId, 'context.budget', {
+        args.recorder.event(args.parentSpanId, CONTEXT_BUDGET_EVENT, {
           from: messages.length,
           to: next.length,
           model: args.model,
