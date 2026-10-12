@@ -1127,6 +1127,23 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **验证**：`packages/trace-view/test/summary.test.js` 保留首段形状用例、补恢复段形状
   （decided 在 run 根 ⇒ 行在场且数值对）与「两处都聚」；**变异验证**（恢复 kind 限制
   ⇒ 两条新用例红；复原绿）。summary.js 棘轮 126 → 130（净 +4 全是注释，代码行零增长）。
+### observability-mcp 示例复审收口：分组键对齐 CLI、root=`/` 特判、sessions 截断（2026-10-12 ⑩）
+
+- **是什么**：`examples/observability-mcp/` 的三处低危修复（框架与 CLI **零改动**）：
+  ① 会话归组从两级补成**三级回退**（run 根 `session.id` → 外层记录的 `TaskRecord.taskId` →
+  `(无会话)`），与 CLI `agentia report` 逐字同口径 —— 此前 `readTraceFile` 丢掉外层 wrapper，
+  FileTaskStore / SqliteTaskStore 导出的记录在示例侧全坍进 `(无会话)`；
+  ② 只读边界的 root=`/` 特判（`root + sep` 变成 `//` 曾把根下**所有**文件误拒）；
+  ③ `report_trace` 的 `sessions` 加截断天花板（`MAX_SESSION_ROWS = 40`，与 diff 侧同档），
+  新增 `sessionGroups` / `sessionsTruncated` 两个字段如实报出截断（**加法**，兼容）。
+- **守护形态**：这份移植（本仓第四份）配的是**源码级双钉**
+  （`tests/observability-mcp-parity.test.ts`：三段 canonical 行在两份源码里逐字都在场），
+  而不是前三份的运行时逐字对拍 —— 示例必须可整目录拷走单用、且示例 dist 在 `npm test`
+  时未构建，两个对拍落点都不成立（理由见 `docs/spec.md` §10 2026-10-12 ⑩）。
+- **验证**：示例 `npm run verify` 17 → 26 条 check（新增 §8 三级回退 / §9 root=`/` /
+  §10 截断）；**3 条变异各咬住预期断言**（去 taskId 层 / 去特判 / 去截断，各红）。
+  README 边界节补两条如实标注（TOCTOU 时间窗；入站 `traceparent` 缝合是引擎层白得的、
+  本示例未做端到端断言）。
 
 ### 观测面给 agent 的入口：两个 MCP 只读工具（G8）（2026-10-12 ⑦）
 
