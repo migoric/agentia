@@ -366,7 +366,7 @@ agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
-| `sessionId` | 会话**引用**（可序列化）：单次覆盖后**记进 run 根 `session.id`**（引擎侧读它，见 `loop.ts` 的属性写入）。⚠️ 直接 `app.run` 时它**不注入历史** —— 注入要上一行的 `session: { store, id }`；「`sessionId` + runner 的 `sessionStore`」是**异步宿主**那条路（任务里只落 id，store 实例不可序列化） |
+| `sessionId` | 会话**引用**（可序列化）：**只被异步宿主消费** —— 「`sessionId` + runner 的 `sessionStore`」那条路（任务里只落 id，store 实例不可序列化；runner 没配 `sessionStore` 而任务带了它 ⇒ submit 当场报错）。⚠️ 直接 `app.run` 传它**不生效**（不建 `session.id`、不接历史），入口会 `console.warn` 一次指出改用上一行的 `session: { store, id }`；只要 run 根的 `session.id` 标记而不要历史，直连 `executeRun` / `runAgent` 的引擎级 `sessionId`（见 §6.4「提示词版本化与会话标记」） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
 | `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `suspended` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
@@ -1107,7 +1107,7 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 - 单次 `app.run(..., { system })` 覆盖时，版本**跟当次那个 `SystemPrompt` 走**；`system` 传已拼好的 `SystemParam` 则无版本可记（不写空串冒充实有版本）。
 - 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
 - **`@Prompt` 资产版本**：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
-- **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
+- **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` / `executeRun` 时用引擎级选项 `sessionId` 显式给。⚠️ **别把 `sessionId` 传给 `app.run`**：那个字段是异步宿主的可序列化会话引用（见 §4 选项表），`app.run` 不消费它 —— 直传会 `console.warn` 一次且不生效。
 - **菜单签名**：每次 run 落 run 根 span 的 `tools.names`（装配后菜单的名字、按名排序、超长截断带 `…(+N)`）与 `tools.menuHash`（12 位摘要，材料 = 排序后的「名字 + **输入 schema**」规范序列化）—— 与 `prompts.versions` 同动机：质量回归能回答「这两段 run 跑在同一个菜单上吗」。口径：与菜单顺序、schema 键序无关；**`description` 不参与**（润色文案不算菜单变化，代价是「只改描述」看不见 —— 有意）。给了 `tools` 就自动记，无需开关。
 - **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ⑧。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
 

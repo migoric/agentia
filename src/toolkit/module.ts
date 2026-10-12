@@ -478,6 +478,21 @@ export class AgentApp {
     messages: MessageParam[],
     opts: RunAppOptions<S> = {},
   ): Promise<AgentRunOutput<SchemaType<S>>> {
+    // 会话引用的出声闸（2026-10-12 ③）：sessionId 是**异步宿主**的可序列化会话引用
+    //（AsyncRunner 配 sessionStore 时由它在执行前换成 session 注入，见 spec.ts 该字段注释），
+    // 本入口不消费它 —— 此前直传它被**静默丢弃**（run 根没有 session.id、会话历史接不上、
+    // 零信号），与 0.9.5 那批「把静默换成有声」同口径，改为每条 run 告警一次。
+    // 内部链路踩不到它：AsyncRunner 在 buildRunCallOptions 里已把它消费掉、不再透传
+    //（见 transport/run-call-options.ts —— 续跑段不注入 session，若不剥掉会在这里误报）。
+    if (opts.sessionId !== undefined && opts.session === undefined) {
+      console.warn(
+        '[agentia] app.run 收到了 sessionId，但它在这个入口不生效：sessionId 是给异步宿主' +
+          '（AsyncRunner + sessionStore）的可序列化会话引用，程序内的 app.run 不消费它 —— ' +
+          '本次 run 不会带 session.id（OTLP 的 gen_ai.conversation.id），也不接会话历史。' +
+          '要会话维度 + 历史请用 session: { store, id }（见 usage-guide §4 `app.run` 选项表）；' +
+          '只要 trace 标记不要历史，直连 executeRun / runAgent 的引擎级 sessionId。',
+      );
+    }
     const sys = opts.system ?? this.system;
     const system: SystemParam = sys instanceof SystemPrompt ? sys.build({ cache: true }) : sys;
 

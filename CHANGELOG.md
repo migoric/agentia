@@ -1110,6 +1110,19 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### run 级 `sessionId` 的静默失效改成出声（2026-10-12 ③）
+
+- **是什么**：程序内 `app.run(messages, { sessionId })`（不带 `session`）此前**静默丢弃** ——
+  run 根没有 `session.id`（OTLP 的 `gen_ai.conversation.id` 也就不会有）、会话历史接不上、
+  零信号（可观测深钻 §2 行 7）。现在 `AgentApp.run` 入口 `console.warn` 一次，文案指出正确写法：
+  要会话维度 + 历史用 `session: { store, id }`；只要 trace 标记不要历史，直连
+  `executeRun` / `runAgent` 的引擎级 `sessionId`（那一层本就生效）。
+- **内部链路不误伤**：`AsyncRunner` 的续跑段刻意不注入 `session`，`buildRunCallOptions`
+  不再把任务里的 `sessionId` 透传进 `app.run`（它在本层已被消费 —— 换成 `session` 注入，
+  或没配 `sessionStore` 时在 submit 已响亮报错）。
+- **无破坏性变更**：行为面只多一条告警；`sessionId` 的类型与异步宿主语义逐字未变。
+  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ③。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。

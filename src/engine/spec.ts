@@ -133,6 +133,10 @@ export interface RunInvocationOptions {
    *
    * 同步宿主（HTTP `POST /run` / `runSync`）不消费它：那边没有 store 可注入，
    * 会话请走程序内的 `RunAppOptions.session`。
+   *
+   * ⚠️ 程序内直接 `app.run(messages, { sessionId })` 同样**不生效**（`AgentApp.run`
+   * 不消费它）—— 入口会 `console.warn` 一次并指出改用 `session`（2026-10-12 ③；
+   * 此前是静默丢弃：run 根没有 `session.id`、历史接不上、零信号）。
    */
   sessionId?: string;
 }
