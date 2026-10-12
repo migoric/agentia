@@ -1110,6 +1110,49 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### OTLP 导出：三个缓存/压缩 semconv 键 + 可选的 execute_tool span 投影（2026-10-12 ②）
+
+- **G3（additive、双发不替换）**：`llm.turn` 缓存读数 > 0 时另发
+  `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`
+  （0 = 没走缓存 ⇒ 不留键）；父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ 发
+  `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，不设 false）。
+  键名逐字核自 `semantic-conventions-genai @ 6fd0d763` 的 `client-inference.md`。
+- **G2（`OtlpExporterOptions.projectToolSpans`，默认关）**：开启后把 span 上按 `tool_use_id`
+  配对的 `tool.input` / `tool.output` 事件投影成 `execute_tool <工具名>` child span
+  （`gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`；start/end 取两事件的真实记账时刻；
+  `ok:false` → status Error + `error.type`）。**导出侧投影**：engine 记账点不动、本地 trace
+  形状不变、原事件保留在父 span 上；关闭时导出产物与既往一致。孤儿 input
+  （`traceLimits.maxEvents` 截断可造出）→ 不写 `endTimeUnixNano` / status +
+  `agentia.projection.orphan: true`，不编零时长。
+- 顺带：`context.budget` 事件名上移为 `core/trace.ts` 的 `CONTEXT_BUDGET_EVENT` 单源常量
+  （第一次有了跨层消费方）。
+
+### run 级 `sessionId` 的静默失效改成出声（2026-10-12 ③）
+
+- **是什么**：程序内 `app.run(messages, { sessionId })`（不带 `session`）此前**静默丢弃** ——
+  run 根没有 `session.id`（OTLP 的 `gen_ai.conversation.id` 也就不会有）、会话历史接不上、
+  零信号（可观测深钻 §2 行 7）。现在 `AgentApp.run` 入口 `console.warn` 一次，文案指出正确写法：
+  要会话维度 + 历史用 `session: { store, id }`；只要 trace 标记不要历史，直连
+  `executeRun` / `runAgent` 的引擎级 `sessionId`（那一层本就生效）。
+- **内部链路不误伤**：`AsyncRunner` 的续跑段刻意不注入 `session`，`buildRunCallOptions`
+  不再把任务里的 `sessionId` 透传进 `app.run`（它在本层已被消费 —— 换成 `session` 注入，
+  或没配 `sessionStore` 时在 submit 已响亮报错）。
+- **无破坏性变更**：行为面只多一条告警；`sessionId` 的类型与异步宿主语义逐字未变。
+  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ③。
+
+### MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键）（2026-10-12 ④）
+
+- **出站**：run 内经 MCP 桥调 `tools/call` 时，两个出厂连接器自动把当前 span 的 W3C
+  `traceparent` 放进 `params._meta`（SEP-414 定的载体：裸键、不加前缀、**不进 `arguments`**）——
+  认出它的 server（MCP Python SDK、agentia 反向桥等）就能把这次调用链回你的 trace。
+  不在 run 内（桥脱离引擎单用）则不带：不造空上下文。
+- **入站**：`createMcpServer` 认 `tools/call` 的 `params._meta.traceparent`，合法即记成该次
+  trace run 根的一条 `links`（与 HTTP `traceparent` 头同款缝合）；缺失 / 畸形静默当作
+  没有上游 —— 不报错、不影响调用成败。
+- **无破坏性变更**：`McpClientLike.callTool` 第三参新增可选 `traceparent` 字段（鸭子类型，
+  只实现两个参数的旧客户端照常兼容，只是链路断在它的传输上）；公共导出面零变化。
+  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ④。
+
 ### 可观测文档：四条「缝外配方」类缺口收口（2026-10-12）
 
 依据 `docs/reviews/2026-10-12/observability-deep-dive.md` 的 G9 / G10 / G4 / G5，**纯文档**，`src/` 一行未动：

@@ -311,9 +311,14 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    */
   promptVersions?: Record<string, string>;
   /**
-   * 会话标识：写进 run 根 span 的 `session.id` attribute（OTLP 导出时映射
+   * 会话标识（**引擎级**旋钮）：写进 run 根 span 的 `session.id` attribute（OTLP 导出时映射
    * `gen_ai.conversation.id`），多轮对话的 run 由此可按会话聚合（thread 维度）。
    * 走 `AgentApp.run` / `executeRun` 时给了 `session` 就自动带上，不用手填。
+   *
+   * ⚠️ 生效范围只到本层（`runAgent` / `executeRun`）：`AgentApp.run` **不转发**它 ——
+   * `RunAppOptions` 里那个同名字段继承自 `RunInvocationOptions.sessionId`（**异步宿主**的
+   * 可序列化会话引用，语义见 engine/spec.ts），直传给 `app.run` 会 `console.warn` 一次且
+   * 不生效（2026-10-12 ③；此前是静默丢弃）。
    */
   sessionId?: string;
   /**

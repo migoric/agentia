@@ -48,7 +48,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   mcp-server.ts = MCP 反向桥（R8-P5：app 菜单暴露成 MCP server，
 │   │                        #   stdio + StreamableHTTP 只用标准库；落 engine 是因为 integrations 只许
 │   │                        #   依赖 core 装不下 TraceRecorder。每次 tools/call 一棵 trace 进 sinks，
-│   │                        #   抛错 → isError，与正向桥方向对称）。**两个传输各居其文件**
+│   │                        #   抛错 → isError，与正向桥方向对称；入站认 SEP-414 的
+│   │                        #   params._meta.traceparent（合法 → run 根一条 link；缺失/畸形静默当孤立根）。
+│   │                        #   **两个传输各居其文件**
 │   │                        #   （2026-09-28，与正向桥同款排布）：本文件留**协议 + 执行 + 装配**
 │   │                        #   （顶层的 rpcError/rpcResult/dispatch/callTool；createMcpServer 只做装配，
 │   │                        #   441 → 47 行）；传输构造（宿主生命周期）在 mcp-server-stdio.ts /
@@ -121,7 +123,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   buildRunCallOptions 把「按 isResume / sessionId / signal / trace 桥」拼出
 │   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
 │   │                        #   终态采纳」；RunSessionStore 是会话 store 的**结构面单源**（旋钮本身的文档仍在
-│   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态
+│   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态。
+│   │                        #   ⚠️ sessionId 在本层**被消费后不透传**（2026-10-12 ③）：续跑段不注入 session，
+│   │                        #   原样带进去会误踩 app.run 的「直传 sessionId 不生效」告警闸（toolkit/module.ts）
 │   │                        #   run-outcome.ts = 一次 run 的**结果记账**（同日抽，同族的第五件）：
 │   │                        #   readClaimed 收「认领前重读」（读失败不升级成「任务起不来」）；
 │   │                        #   applySuspendedOutcome / applyTerminalOutcome 收挂起与终态两支的**记录映射**。
@@ -131,12 +135,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
 │   │                        #   指标(metricsSink，满足 TraceSink)
-│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（12 helper + 3 常量 + 4 结构类型）：
+│   │                        #   mcp-protocol.ts = 桥与两个连接器**共用**的协议面（13 helper + 3 常量 + 5 结构类型）：
 │   │                        #   2026-09-28 自 mcp.ts 抽出，为断开 `mcp.ts ↔ mcp-stdio.ts` 那条**真实值环**
 │   │                        #   （「层内也运行期无环」现由 tests/architecture/file-cycles.test.ts 钉住）。
 │   │                        #   2026-10-11 再收 7 个（5 → 12）：两个连接器**各自抄了一份**的 JSON-RPC 结果
 │   │                        #   提取 / HTTP 错误包装 / tools 清单校验 / isError 拒绝 / 会话自愈判定 ——
-│   │                        #   同一条错误文案曾存在两份，改一处漏一处**没有任何用例看得见**
+│   │                        #   同一条错误文案曾存在两份，改一处漏一处**没有任何用例看得见**。
+│   │                        #   2026-10-12 再收 2 个（12 → 13 helper、4 → 5 类型）：SEP-414 出站的
+│   │                        #   `McpCallOptions.traceparent` 与 params 装配 `toolsCallParams`
+│   │                        #   （`_meta` 裸键形状只许一处）；traceparent 的值由**桥**（mcp.ts）从
+│   │                        #   ToolRunContext 投影 —— integrations 够不到 engine 的
+│   │                        #   `currentTraceparent`，而 ctx 里的 traceId+parentSpanId 与它同源同格式
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥

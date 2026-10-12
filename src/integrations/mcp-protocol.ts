@@ -31,6 +31,27 @@ export interface McpToolInfo {
 }
 
 /**
+ * `callTool` 的第三参（桥与两个连接器**共用**这一份 —— 2026-10-12 SEP-414 起多了
+ * `traceparent`，形状只许有一处定义）。
+ */
+export interface McpCallOptions {
+  /**
+   * 裁判（引擎 `toolTimeoutMs` / 桥兜底超时）**放弃等待**的通知信号。
+   * 放弃 ≠ 取消 —— 但连接器应借此清掉这次调用的簿记（stdio 的 pending 条目、
+   * HTTP 的在飞 fetch），否则「server 活着但不回包」时每超时一次就泄漏一条。
+   */
+  abandoned?: AbortSignal;
+  /**
+   * 出站传播（SEP-414，Final）：本次调用的 W3C `traceparent`，连接器把它放进
+   * `params._meta.traceparent`（**裸键，不加前缀**；与 `name` / `arguments` 平级，
+   * **绝不进 `arguments`** —— 那是模型可见的工具签名，trace 上下文进去就污染 schema）。
+   * 缺席时 params **不落 `_meta` 键**：「没有上下文可传」与「传一个空上下文」不是一回事。
+   * 不认识该字段的旧客户端忽略即可（可选参数，鸭子类型）。
+   */
+  traceparent?: string;
+}
+
+/**
  * MCP client 的最小结构面：任何实现了 `tools/list` + `tools/call` 的客户端都能接，
  * 无需继承、无需 import 任何 SDK（duck-typed，与 `RedisLike` 同款）。
  *
@@ -40,17 +61,8 @@ export interface McpToolInfo {
  */
 export interface McpClientLike {
   listTools(): Promise<McpToolInfo[]>;
-  /**
-   * `opts.abandoned`：裁判（引擎 `toolTimeoutMs` / 桥兜底超时）**放弃等待**的通知信号。
-   * 放弃 ≠ 取消 —— 但连接器应借此清掉这次调用的簿记（stdio 的 pending 条目、
-   * HTTP 的在飞 fetch），否则「server 活着但不回包」时每超时一次就泄漏一条。
-   * 只实现两个参数的旧客户端依然兼容（可选参数，鸭子类型）。
-   */
-  callTool(
-    name: string,
-    args: Record<string, unknown>,
-    opts?: { abandoned?: AbortSignal },
-  ): Promise<unknown>;
+  /** 选项见 {@link McpCallOptions}；只实现两个参数的旧客户端依然兼容（可选参数，鸭子类型）。 */
+  callTool(name: string, args: Record<string, unknown>, opts?: McpCallOptions): Promise<unknown>;
 }
 
 /**
@@ -291,4 +303,27 @@ export function canSelfHealSession(
   allowReinit: boolean,
 ): boolean {
   return status === 404 && hasSessionId && allowReinit;
+}
+
+/**
+ * 拼 `tools/call` 的 params（**两条连接器共用一份** —— 承载 SEP-414 的 `_meta` 形状
+ * 只许存在一处，否则改一处漏一处没有任何用例看得见）。
+ *
+ * `traceparent`（W3C 串）落在 params 的**兄弟键 `_meta`**：SEP-414 明说这是 `_meta`
+ * DNS 前缀惯例的**例外**（裸键 `traceparent`，不许加成 `io.modelcontextprotocol.traceparent`
+ * —— 加了前缀跨实现的链就断了）。⚠️ **绝不进 `arguments`**：那是模型可见、server 按
+ * inputSchema 校验的工具签名，trace 上下文进去会污染契约（纪律②）。
+ * `traceparent` 缺席时**不落 `_meta` 键**（纪律③：不造空上下文 —— 空 `_meta` 对宽容的
+ * server 无害，但它让「这次到底有没有链路」变得不可判）。
+ */
+export function toolsCallParams(
+  name: string,
+  args: Record<string, unknown>,
+  traceparent: string | undefined,
+): Record<string, unknown> {
+  return {
+    name,
+    arguments: args,
+    ...(traceparent !== undefined ? { _meta: { traceparent } } : {}),
+  };
 }

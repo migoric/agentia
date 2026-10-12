@@ -8,7 +8,7 @@
  *
  * 行为由 env 决定（一个文件覆盖全部分支，免得为每个场景再开一个进程脚本）：
  *
- *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall | rpcerror | hugeline
+ *   FAKE_MCP_MODE      normal | split | logline | noinit | die | iserror | badtools | stubborn | silentcall | rpcerror | hugeline | echoparams
  *     normal    正常握手 + tools/list + tools/call
  *     split     tools/list 响应**分两个 chunk** 下发（间隔 15ms）⇒ 验攒包
  *     logline   tools/list 之前先往 stdout 写一行非 JSON 日志 ⇒ 验忽略它
@@ -21,6 +21,8 @@
  *               pending 簿记被回收，「活着但不回包」的 server 不会造成无界泄漏
  *     rpcerror  tools/call 回 `{ error: {...} }` 形态的 JSON-RPC 错误 ⇒ 验 waiter 走 reject
  *               （区别于 iserror：那是 result 里的协议层失败标记，这是 JSON-RPC 层的错误帧）
+ *     echoparams tools/call 把收到的 **params 原文**回显进结果文本 ⇒ 验 SEP-414 的
+ *               `_meta.traceparent` 真的过了子进程边界（读出参以外的 params 键）
  *     hugeline  往 stdout 写一条**不带换行**的巨型报文（9 MiB > 8 MiB 分帧上限，S6）——
  *               验连接器自己封顶并拒绝在途请求。不做这一条的话，对端吐一个不换行的日志行
  *               就是 `buf` 无界增长（先 OOM 再谈协议）。
@@ -104,6 +106,11 @@ function handle(msg) {
     if (MODE === 'rpcerror') {
       // JSON-RPC 层的错误帧（不是 result 里的 isError）⇒ 连接器 waiter 必须 reject
       send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'server says no' } });
+      return;
+    }
+    if (MODE === 'echoparams') {
+      // 回显 params 原文：测试据此断言 `_meta.traceparent` 等键真的过了进程边界
+      reply(msg.id, { content: [{ type: 'text', text: JSON.stringify(msg.params ?? null) }] });
       return;
     }
     reply(msg.id, { content: [{ type: 'text', text: `called ${msg.params.name}` }] });

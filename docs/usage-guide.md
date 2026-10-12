@@ -366,7 +366,7 @@ agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
 | `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
-| `sessionId` | 会话**引用**（可序列化）：单次覆盖后**记进 run 根 `session.id`**（引擎侧读它，见 `loop.ts` 的属性写入）。⚠️ 直接 `app.run` 时它**不注入历史** —— 注入要上一行的 `session: { store, id }`；「`sessionId` + runner 的 `sessionStore`」是**异步宿主**那条路（任务里只落 id，store 实例不可序列化） |
+| `sessionId` | 会话**引用**（可序列化）：**只被异步宿主消费** —— 「`sessionId` + runner 的 `sessionStore`」那条路（任务里只落 id，store 实例不可序列化；runner 没配 `sessionStore` 而任务带了它 ⇒ submit 当场报错）。⚠️ 直接 `app.run` 传它**不生效**（不建 `session.id`、不接历史），入口会 `console.warn` 一次指出改用上一行的 `session: { store, id }`；只要 run 根的 `session.id` 标记而不要历史，直连 `executeRun` / `runAgent` 的引擎级 `sessionId`（见 §6.4「提示词版本化与会话标记」） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
 | `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `suspended` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
@@ -836,6 +836,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `serviceName` | OTLP resource 的 `service.name`，缺省 `agentia` |
 | `timeoutMs` | 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——裸 `fetch` 没有超时，collector 半开连接会让 run 收尾**永久挂起**；超时按导出失败处理 |
 | `onExportError` | 导出失败回调：给了它，**所有**失败（非 2xx / 超时 / **HTTP 200 但 collector 报部分接收**）都交给它、不再向 `TraceSink` 调用方抛；不给则维持既有行为（抛出，由 `flushSinks` 吞掉并落 `console.warn` —— 观测失败不击穿业务）。存在理由：`TraceSink` 的失败缺省只有一条泛化的 warn，「导出其实少了一半数据」这类**带分类的**消息得有人能收到 |
+| `projectToolSpans` | 把 span 上按 `tool_use_id` 配对的 `tool.input` / `tool.output` 事件**投影**成 `execute_tool` child span，缺省 **false**（关闭时导出产物与既往一致）：name 为 `execute_tool <工具名>`、带 `gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`，start/end 取两事件的真实记账时刻；`ok:false` → status Error + `error.type=errorKind`；孤儿 input（`traceLimits.maxEvents` 截断可造出）→ **不写 `endTimeUnixNano` / status** 并带 `agentia.projection.orphan: true`（不编零时长）。原事件保留在父 span 上，engine 记账点不动 |
 
 导出器的两条线缆口径（都有守卫钉着，别按直觉改）：
 
@@ -856,8 +857,11 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 **OTLP 的 `gen_ai.*` 对齐**（对齐 `open-telemetry/semantic-conventions-genai` @ `6fd0d763`（2026-10-09）—— GenAI 约定自 v1.42（2026-06-12）起移出语义约定主线、该独立仓**无 tag、未版本化**，所以基准钉 commit，**additive** —— 只追加 `gen_ai.*` 键，既有 `usage.*` 等键一律保留）：
 run 根 → `gen_ai.operation.name=invoke_agent` + `gen_ai.agent.name`（attributes 有 `session.id` 时另发 `gen_ai.conversation.id`）；
 `llm.turn` → `gen_ai.operation.name=chat` + `gen_ai.request.model` + `gen_ai.usage.input_tokens` / `output_tokens`；
+缓存读数 > 0 时另发 `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`（上游口径「when applicable」：0 = 没走缓存 ⇒ 不留键，与自有 `usage.cache*` 键双发不替换）；
+父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，**不设 false**）；
 capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 是**裸能力名**）：`subagent` → `invoke_agent` + `gen_ai.agent.name`，`skill` → `execute_tool` + `gen_ai.tool.name`；
 `score` 事件 → `gen_ai.evaluation.result`。映射集中在 `createOtlpExporter` 一处。
+普通 @Tool 只有 `tool.input` / `tool.output` 事件、没有 span（刻意口径）；要上游六家框架同款的 `execute_tool` span，开 `projectToolSpans`（导出侧投影，见上表）。
 从 Tempo / Grafana 按 run 找回 trace 的做法（id 的 hex 投影、run 根按 `invoke_agent` 过滤）见 `docs/observability.md` §2.7。
 
 > **生产落地**（按 runId 落库检索 / 日志关联 / 采样 / 脱敏）见 `docs/observability.md` ——
@@ -871,11 +875,12 @@ capability span 按 **attributes** 分（`subagent` / `skill`；span 的 `name` 
 把它接回上游 —— 触发它的那个 span（网关请求 / 队列消息 / 另一个服务）记在 run 根 span 的 `links` 上，
 OTLP 导出时就是标准的 **span links**，后端能把因果边画出来。
 
-**入站两种给法**：
+**入站三种给法**：
 
 | 场景 | 写法 |
 |---|---|
 | HTTP 宿主（网关 / 消费者通过 HTTP 打过来） | 请求头 `traceparent: 00-<32位trace>-<16位span>-01`（W3C）—— `createHttpHandler` 自动解析，`POST /run` 与 `POST /tasks` 都认；**畸形头静默当作没有上游**，不会打 400 |
+| MCP 反向桥（Claude Code / 别的 agent 框架经 `tools/call` 调你的工具） | 请求 `params._meta.traceparent`（**SEP-414** 定的载体：`_meta` 里的**裸键**，不加前缀）—— `createMcpServer` 自动解析，合法即记成该次 trace run 根的一条 `links`；**缺失 / 畸形静默当作没有上游**（不造空上下文、不影响调用成败） |
 | 程序内直接调 `app.run` / `runner.submit` | `options.traceContext: { traceId, spanId? }` —— 也可写 `parseTraceparent(头值)` 自己解析 |
 
 **队列消费者（Kafka / RabbitMQ / SQS）的形态**：拿消息键当 `idempotencyKey`，把消息里带的
@@ -926,7 +931,11 @@ class OrderTools {
 
 - **粒度**：普通工具与 `@Prompt` **不建 span**，它们的「当前 span」就是发起它们的那次 `llm.turn`；
   `@Skill` / `@SubAgent` 的方法体内则是它自己的 `capability` span。内层覆盖外层。
-- **不自动注入**：框架不创建出站请求，注入那一行是你自己的（同上 `fetch`；gRPC 宿主塞进 metadata）。
+- **不自动注入**（一个例外）：框架不替你创建出站请求，注入那一行是你自己的
+  （同上 `fetch`；gRPC 宿主塞进 metadata）。例外是 **MCP 正向桥**：`tools/call` 的请求由桥自己发，
+  所以在 run 内经 `mcpTools` 调 MCP 工具时，桥自动把当前 span 的 `traceparent` 放进
+  `params._meta`（SEP-414 裸键，**不进 `arguments`**；不在 run 内则不带；对端不认 `_meta`
+  静默忽略 —— 这是观测，不是协议要求）。
 - 与入站同一个格式、同一份 id 投影：`currentTraceparent()` 的输出喂回 `parseTraceparent()` 逐字还原，
   下游 OTLP 里看到的 span id 与本地 collector 里的是**同一个数**（见 §7 已知边界）。
 
@@ -1107,7 +1116,7 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 - 单次 `app.run(..., { system })` 覆盖时，版本**跟当次那个 `SystemPrompt` 走**；`system` 传已拼好的 `SystemParam` 则无版本可记（不写空串冒充实有版本）。
 - 直连 `runAgent` / `executeRun` 时可用引擎级选项 `systemVersion` 显式给。
 - **`@Prompt` 资产版本**：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
-- **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` 时用引擎级选项 `sessionId` 显式给。
+- **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` / `executeRun` 时用引擎级选项 `sessionId` 显式给。⚠️ **别把 `sessionId` 传给 `app.run`**：那个字段是异步宿主的可序列化会话引用（见 §4 选项表），`app.run` 不消费它 —— 直传会 `console.warn` 一次且不生效。
 - **菜单签名**：每次 run 落 run 根 span 的 `tools.names`（装配后菜单的名字、按名排序、超长截断带 `…(+N)`）与 `tools.menuHash`（12 位摘要，材料 = 排序后的「名字 + **输入 schema**」规范序列化）—— 与 `prompts.versions` 同动机：质量回归能回答「这两段 run 跑在同一个菜单上吗」。口径：与菜单顺序、schema 键序无关；**`description` 不参与**（润色文案不算菜单变化，代价是「只改描述」看不见 —— 有意）。给了 `tools` 就自动记，无需开关。
 - **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ⑧。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
 
@@ -1182,7 +1191,7 @@ class MyMemoryStore implements MemoryStore {
 | API | 说明 |
 |---|---|
 | `mcpTools` | 把 MCP server 的 `tools/list` 映射成框架 `AgentTool[]`（进 `createApp({ tools })`） |
-| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args)`；框架**不 import** MCP SDK |
+| `McpClientLike` | 最小结构面：`listTools()` + `callTool(name, args, opts?)`（`opts` 带 `abandoned` 与 SEP-414 的 `traceparent`，均可选）；框架**不 import** MCP SDK |
 | `createStdioMcpConnector` | **出厂 stdio 连接器**：spawn 一个 MCP server 子进程，走换行分隔 JSON-RPC（只用 `node:child_process`） |
 | `createStreamableHttpMcpConnector` | **出厂 StreamableHTTP 连接器**：一个 endpoint POST JSON-RPC；`application/json` 与 `text/event-stream` 两种响应都接（只用全局 `fetch`） |
 | `McpConnector` | 两个连接器的公共面 = `McpClientLike` + `close()`。自己写传输时实现 `McpClientLike` 即可，不必碰它 |
@@ -1196,6 +1205,7 @@ class MyMemoryStore implements MemoryStore {
 - **超时**：**只有一个裁判**。引擎设了 `toolTimeoutMs` 时，桥的 `timeoutMs`（缺省 `MCP_DEFAULT_TIMEOUT_MS` = 60000）**不参与判定**；它只在「桥脱离引擎单用」或「引擎没设 `toolTimeoutMs`」时作为兜底。两条路径共用同一判定（`core/timeout.ts`：**看实测耗时，不看竞速**），超时都记 `errorKind='timeout'` + `is_error` 回模型、**不杀 run**。你自己写的工具要报超时，抛一个 `code === 'timeout'` 的错误即可（不必 import 框架的类）。
 - **连接器出厂自带，但仍只给缝**：两个连接器只用标准库（`node:child_process` + 全局 `fetch`）⇒ **不新增任何第三方依赖**。要接官方 SDK / 远程 server / 自研传输，实现 `McpClientLike` 两个方法即可（同 `RedisLike` 的形状）。
 - **连接器替你兜住三件只有它能做的事**：① spawn 失败（命令不存在 → `ENOENT`）是**异步 `'error'` 事件**，不接住会把宿主进程带崩；② stdout 的分帧 —— 一条报文可能跨多个 chunk；③ **协议层 `isError: true` 转成抛错**。
+- **trace 上下文（SEP-414）**：在 run 内调用时，桥把当前 span 的 W3C `traceparent` 放进 `tools/call` 的 `params._meta`（**裸键、不加前缀**；两个出厂连接器都做），认出它的 server 就能把这次调用链回你的 trace；不在 run 内（桥脱离引擎单用）则不带 —— 不造空上下文。自己实现 `McpClientLike` 时读 `callTool` 第三参的 `traceparent` 即可对齐（不读也兼容，只是链路断在你的传输上）。
 - **连接器的 `timeoutMs` 只管装配期**（握手 + `tools/list`）：那两步**没有任何别的裁判**，server 卡住会让 `createApp` 永久挂起；`callTool` 的裁判仍是引擎 / 桥（一次调用只有一个）。
 
 ```ts
@@ -1262,6 +1272,7 @@ server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@To
 
 - **两个传输都只用标准库**：stdio = stdin/stdout 换行分隔 JSON-RPC（日志只去 stderr，stdout 是协议面）；http = StreamableHTTP（POST 收报文、应答 `application/json`，简单应答不上 SSE；GET → 405、DELETE → 200）。
 - **trace 叙事不破**：每次 `tools/call` 造一棵 trace —— run 根 `mcp.tools/call` 下挂一个 capability span（name = 工具名），记 `tool.input` / `tool.output` 事件（与引擎同账目形状），收尾投递 `sinks`；`initialize` / `tools/list` 不建 trace。capability span 无 skill/subagent 属性 ⇒ metrics 里以 `capability:<工具名>` 标签进能力指标。
+- **入站 trace 上下文（SEP-414）**：`tools/call` 的 `params._meta.traceparent` 合法时记成那棵 trace run 根的一条 `links`（与 HTTP 宿主认 `traceparent` 头同款缝合）；缺失 / 畸形静默当作孤立根 —— 不报错、不影响调用成败、不造空上下文。对端是 agentia 正向桥（或 MCP Python SDK 等已按 SEP-414 注入的实现）时这条链自动接上。
 - **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
 - **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
 - **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
@@ -1771,7 +1782,7 @@ const callable = {
 | `agentia harvest` 的产物是轨迹骨架 | trace **不记 assistant 文本**（llm.turn 只记 usage/事件），故 harvest 用例脚本里的 text 块是占位、预填 `expect` 是从原 trace 抄录的实际轨迹 —— 脚手架不是成品，人工核对后再进 CI（见 §6「线上 trace 回流」） |
 | 分叉重放不是续跑 | `forkMessages` 与 `traceToMessages` / harvest **同源有损**：trace **缺省**不记 assistant 文本（opt-in 例外：`traceContent: 'full'`，见 §4）与 run 原始输入（重放里 assistant 是标注占位、首尾 user 是合成），也不记 blackboard（分叉种子经 `RunInvocationOptions.blackboard` 自带）；它产出喂回 `app.run` 的 messages、起的是**新 run**，不是接着原 run 的循环位置跑 |
 | 评分来自 run 之外 | `Score` 走 run 根 `score` **事件**而非 span 字段（评分通常在 run 跑完后才产生）；`attachScore` 找不到根 span 时静默忽略，多次调用即多条事件（不同维度各记各的） |
-| 链路关联：入站自动、**出站只给读取器** | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
+| 链路关联：入站自动、出站默认只给读取器（MCP 桥除外） | `traceContext` / `traceparent` 头把**上游**接进来（run 根的 `links`）；出站方向给 `currentTraceparent()`（当前 span 的 W3C 串，回合 / 能力调用粒度），但框架**不替你做注入** —— 它不创建出站请求，那一行由宿主的 `fetch` / metadata 自己写。**唯一的例外是 MCP 正向桥**：`tools/call` 的请求由桥自己发，故 run 内经 `mcpTools` 的调用自动带 `params._meta.traceparent`（SEP-414）。两个边界：① `run` 根 span 由 `runAgent` 打开 ⇒ 更早的 `contextInit` / 记忆水合取到 `undefined`（那时确实没有 span）；② flags 恒 `00`（本框架不采样）。id 宽度经**同一份投影**压到 16 位（与 OTLP 导出共用，单一真源）—— 故下游收到的 span id 与 collector 里的是同一个数。另：link 只落在 run 根（子 span 不散），且**一进程内**不跨进程自动传播 —— 队列场景要自己把 `traceContext` 传下去（HTTP 头带走，或随 `TaskRecord.spec.options` 落库） |
 | 配额不是框架子系统 | 只给缝（middleware + TraceSink + BudgetGuard），计数放哪（内存 / Redis / DB）与超限怎么办都是你的策略 |
 | 人工审批两种形态 | 进程内闸门用 `middleware`（`await` 决策再放行）；跨进程耐久审批用 `@Tool({ approval: 'required' })` + `POST /tasks/:id/approve`（挂起/恢复，见 §6.6「人工审批」） |
 | 审批超时是**惰性**判定 | `approvalTimeoutMs` 不起定时器：`approve` / `poll` / `resumePending` 读到过期挂起任务时才自动全拒并重派 —— 没人读的任务不会自己超时（要定期扫就调 `resumePending()`） |

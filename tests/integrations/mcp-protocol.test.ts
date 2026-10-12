@@ -6,6 +6,7 @@ import {
   brief,
   isJsonRpcResponse,
   jsonRpcError,
+  toolsCallParams,
   unwrap,
   withDeadline,
 } from '../../src/integrations/mcp-protocol.js';
@@ -132,5 +133,29 @@ describe('协议常量 —— 口径不许漂', () => {
     // 谁想「顺手修好这个 0.0.0」，先看 mcp-protocol.ts 那条注释。
     assert.equal(DEFAULT_CLIENT_INFO.name, 'agentia');
     assert.equal(DEFAULT_CLIENT_INFO.version, '0.0.0');
+  });
+});
+
+describe('toolsCallParams —— tools/call 的 params（SEP-414 的 `_meta` 形状单源）', () => {
+  const TP = '00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01';
+
+  it('带 traceparent ⇒ params 多一个**裸键** `_meta.traceparent`；`arguments` 是同一引用（一个字节不被碰）', () => {
+    // 反向验证：摘掉 `_meta` 展开 ⇒ 第一条断言红；把 traceparent 挪进 `arguments` ⇒
+    // 「同一引用」与深比较两条都红（纪律②：trace 上下文绝不进工具签名）。
+    const args = { tz: 'UTC' };
+    const params = toolsCallParams('get-time', args, TP);
+    assert.deepEqual(params, { name: 'get-time', arguments: args, _meta: { traceparent: TP } });
+    assert.equal(
+      params.arguments,
+      args,
+      'arguments 必须原样透传（同一引用），trace 上下文不许进工具签名',
+    );
+  });
+
+  it('不带 traceparent ⇒ **不落 `_meta` 键**（不是空对象：「没有上下文」≠「空上下文」）', () => {
+    // 反向验证：恒落 `_meta: {}` ⇒ `'_meta' in params` 为真，本用例红（纪律③：不造空上下文）。
+    const params = toolsCallParams('get-time', {}, undefined);
+    assert.deepEqual(params, { name: 'get-time', arguments: {} });
+    assert.equal('_meta' in params, false, '没有 traceparent 时不许落 _meta 键');
   });
 });

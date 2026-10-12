@@ -7,10 +7,11 @@ import {
   assertToolResultNotError,
   isJsonRpcResponse,
   parseToolList,
+  toolsCallParams,
   unwrap,
   withDeadline,
 } from './mcp-protocol.js';
-import type { Guard, McpConnector, McpToolInfo } from './mcp-protocol.js';
+import type { Guard, McpCallOptions, McpConnector, McpToolInfo } from './mcp-protocol.js';
 import { abortError } from '../core/timeout.js';
 import { frameLimitText, MAX_FRAME_CHARS } from '../core/line-framing.js';
 
@@ -311,9 +312,14 @@ export function createStdioMcpConnector(
   const callTool = async (
     name: string,
     args: Record<string, unknown>,
-    callOpts?: { abandoned?: AbortSignal },
+    callOpts?: McpCallOptions,
   ): Promise<unknown> => {
-    const r = await request('tools/call', { name, arguments: args }, callOpts?.abandoned);
+    // `toolsCallParams` 把 SEP-414 的 traceparent 放进 params._meta（裸键）；没有则不留 _meta 键
+    const r = await request(
+      'tools/call',
+      toolsCallParams(name, args, callOpts?.traceparent),
+      callOpts?.abandoned,
+    );
     // 承重：协议层 isError 只有连接器看得见（见函数头第 3 条；判定与文案在 mcp-protocol.ts）
     assertToolResultNotError(r, name);
     return r;

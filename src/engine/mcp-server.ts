@@ -4,8 +4,8 @@ import { stringifySafe } from '../core/json.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, ModelClient, ToolRunContext } from '../core/tool.js';
-import type { SpanError, TraceSink } from '../core/trace.js';
-import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
+import type { SpanError, TraceContext, TraceSink } from '../core/trace.js';
+import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT, parseTraceparent } from '../core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../integrations/mcp.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import { classifyError } from './errors.js';
@@ -49,6 +49,8 @@ import { TraceRecorder } from './tracer.js';
  * metrics 的 `capabilityKindOf` 把它归为 `capability:<name>` 标签，自动进能力指标），
  * 并按 `tool-events.ts` 的口径记同名 `tool.input` / `tool.output` 事件（账目形状与引擎
  * 一致）；收尾 snapshot 投递 `opts.sinks`（sink 抛错吞掉 + `console.warn`，观测不击穿业务）。
+ * 入站链路（SEP-414）：`params._meta.traceparent` 合法时记成 run 根的一条 `links`
+ * （与 HTTP 宿主的 `traceparent` 头同款缝合；缺失 / 畸形静默当作孤立根）。
  * `tools/list` / `initialize` 不建 trace。
  *
  * **不做（YAGNI，与正向桥同款清单）**：resources / prompts / sampling（server 反向请求模型）/
@@ -169,6 +171,22 @@ interface DispatchDeps extends CallDeps {
 }
 
 /**
+ * 入站链路（SEP-414）：从 `tools/call` 的 params 里取 `_meta.traceparent` 并解析。
+ *
+ * 纪律（与 HTTP 宿主的 `traceparent` 头同款，见 transport/http-endpoints.ts）：
+ * `_meta` 缺失 / 非对象、`traceparent` 非字符串或畸形，一律**静默当作「没有上游上下文」**
+ * —— 链路到不到是观测行为，不该因为一个坏 `_meta` 把一次工具调用打成协议错误；
+ * 也**不造空 TraceContext**（空上下文会把 span 变成孤儿 —— MCP Python SDK 的
+ * `extract_trace_context` docstring 给的就是这个理由）。
+ */
+function metaTraceContext(params: object): TraceContext | undefined {
+  const meta = (params as { _meta?: unknown })._meta;
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return undefined;
+  const tp = (meta as { traceparent?: unknown }).traceparent;
+  return typeof tp === 'string' ? parseTraceparent(tp) : undefined;
+}
+
+/**
  * 执行一次 `tools/call`：造一棵 trace（run 根 + capability span + tool.input/tool.output
  * 事件），收尾投递 sinks，然后把结果映射成 MCP 形状。
  *
@@ -180,10 +198,20 @@ async function callTool(
   args: Record<string, unknown>,
   signal: AbortSignal,
   deps: CallDeps,
+  /** 入站链路（SEP-414）：调用方经 `params._meta.traceparent` 带来的上游 span；undefined = 孤立根 */
+  link: TraceContext | undefined,
 ): Promise<Record<string, unknown>> {
   const { sinks, toolTimeoutMs } = deps;
   const recorder = new TraceRecorder();
   const rootId = recorder.begin('run', 'mcp.tools/call', null);
+  // 与引擎 run 入口（loop.ts 的 traceContext）同形状：上游被**链接**而不是被继承成
+  // 父 span —— 这棵 trace 永远自洽（`traceId == runId` 不变），因果关系仍然可查
+  if (link) {
+    recorder.addLink(rootId, {
+      traceId: link.traceId,
+      ...(link.spanId ? { spanId: link.spanId } : {}),
+    });
+  }
   const capId = recorder.begin('capability', tool.name, rootId);
   // tool_use_id 与引擎同义（同名工具并行时靠 id 配对入参/出参事件）
   const use = { type: 'tool_use' as const, id: randomUUID(), name: tool.name, input: args };
@@ -342,7 +370,13 @@ async function dispatch(
       }
       return rpcResult(
         id,
-        await callTool(tool, (rawArgs ?? {}) as Record<string, unknown>, signal, deps),
+        await callTool(
+          tool,
+          (rawArgs ?? {}) as Record<string, unknown>,
+          signal,
+          deps,
+          metaTraceContext(params),
+        ),
       );
     }
     default:

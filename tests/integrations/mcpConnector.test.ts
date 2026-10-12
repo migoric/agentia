@@ -360,7 +360,7 @@ interface Recorded {
   url: string;
   method: string;
   headers: Record<string, string>;
-  msg: { id?: number; method?: string } | null;
+  msg: { id?: number; method?: string; params?: Record<string, unknown> } | null;
 }
 
 /**
@@ -909,6 +909,66 @@ describe('StreamableHTTP：响应形态防御（与 stdio 侧同款，HTTP 侧�
     });
     open.push(connector);
     await assert.rejects(() => connector.callTool('get-time', {}), /不是合法 JSON/);
+  });
+});
+
+describe('SEP-414 出站：`_meta.traceparent` 过传输边界', () => {
+  const TP = '00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01';
+
+  it('stdio（真子进程回读）：带 traceparent ⇒ params 带 `_meta` 裸键；不带 ⇒ 无 `_meta` 键', async () => {
+    // 反向验证：连接器漏掉 `toolsCallParams` 的第三参 ⇒ `_meta` 缺席，第一条断言红；
+    // 恒落 `_meta` ⇒ 「不带 ⇒ 无键」那条红。
+    const c = stdio('echoparams');
+    const readParams = async (
+      args: Record<string, unknown>,
+      opts?: { traceparent?: string },
+    ): Promise<Record<string, unknown>> => {
+      const r = (await c.callTool('get-time', args, opts)) as {
+        content: Array<{ text: string }>;
+      };
+      return JSON.parse(r.content[0]!.text) as Record<string, unknown>;
+    };
+
+    const withTp = await readParams({ tz: 'UTC' }, { traceparent: TP });
+    assert.deepEqual(
+      withTp._meta,
+      { traceparent: TP },
+      'SEP-414：裸键 traceparent 进 params._meta',
+    );
+    assert.deepEqual(withTp.name, 'get-time');
+    assert.deepEqual(
+      withTp.arguments,
+      { tz: 'UTC' },
+      'arguments 一个字节不被碰（纪律②：trace 上下文不进工具签名）',
+    );
+
+    const without = await readParams({});
+    assert.equal('_meta' in without, false, '没有上下文 ⇒ 不落 _meta 键（纪律③）');
+  });
+
+  it('StreamableHTTP：同上形状；握手与 tools/list 的 params 不受影响', async () => {
+    const { connector, requests } = http();
+    await connector.listTools();
+    await connector.callTool('get-time', { tz: 'UTC' }, { traceparent: TP });
+    await connector.callTool('get-time', {});
+
+    const paramsOf = (method: string) =>
+      requests.filter((r) => r.msg?.method === method).map((r) => r.msg?.params);
+    const [withTp, without] = paramsOf('tools/call');
+    assert.deepEqual(withTp, {
+      name: 'get-time',
+      arguments: { tz: 'UTC' },
+      _meta: { traceparent: TP },
+    });
+    assert.equal(
+      without !== undefined && '_meta' in without,
+      false,
+      '无 traceparent 不落 _meta 键',
+    );
+    // 只有 tools/call 会带：握手 / 菜单查询的 params 保持原样
+    for (const p of [...paramsOf('initialize'), ...paramsOf('tools/list')]) {
+      assert.equal(p !== undefined && '_meta' in p, false, `${JSON.stringify(p)} 不应有 _meta`);
+    }
   });
 });
 

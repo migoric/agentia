@@ -539,7 +539,9 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/integrations/metrics.test.ts',
   },
   {
-    key: '链路关联：入站自动、**出站只给读取器**',
+    // 2026-10-12：SEP-414 落地后「出站只给读取器」多了 MCP 桥这个例外（桥自己发 tools/call
+    // 请求 ⇒ 它能注入 params._meta.traceparent）—— 首列措辞与登记 key 同步改过。
+    key: '链路关联：入站自动、出站默认只给读取器（MCP 桥除外）',
     pin: {
       file: 'tests/engine/traceLink.test.ts',
       marker: '不给 traceContext：run 根**没有** links 字段（不是空数组）',
