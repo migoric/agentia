@@ -46,13 +46,15 @@
 | task 级 | `TaskRecord`（`result.trace`）额外带任务标识时用任务键；与 session 二选一，不混排 |
 | 成功 | `trace.status !== 'error'`（与现有 `okRuns` **同一个判据**，不新造） |
 | 成功率 | `成功 run 数 / 该组 run 数` —— ⚠️ **必须给分母**：只报百分比在小组上是噪声 |
-| 成本 | 该组各 run 的 capability 行 `costUsd` 之和（现成的 `summarizeTrace` 产物，不另算） |
+| 成本 | ~~该组各 run 的 capability 行 `costUsd` 之和（现成的 `summarizeTrace` 产物，不另算）~~ ⚠️ **落地时改掉了**：用 run 的 `totalUsage.costEstimate` —— 能力行相加在「`@SubAgent` 套 `@Skill`」这个形状上**重复计数**（capability span 的 usage 是子孙 `llm.turn` 的聚合）。理由见 `docs/spec.md` §10 2026-10-12 ⑤ |
 | 每成功任务成本 | `成本 / 成功 run 数`；成功数为 0 时输出 `-`（**不是 0**，别把「除不了」伪装成 0） |
 
 **输出**：`ReportJson` 增 `sessions: SessionRow[]`（字段增补是兼容的，改名/删字段才是破坏性）。
 人类可读输出加一区块，`--json` 同步。
 
-**体量**：预计 +60~90 行（含注释），棘轮账按实测补。
+**体量**：预计 +60~90 行（含注释）。**实测 194 → 339（+145，超了估算）** —— 逐块与「为什么
+不省」记在 `packages/cli/test/structure.test.mjs` 的 `report.ts` 基线条目里（大头是注，以及
+下述成本口径修正那段）。
 
 ## 3. G7：交接 / 护栏 —— 约定 + 视图（additive 属性）
 

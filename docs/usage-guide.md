@@ -1074,8 +1074,17 @@ console.log(renderRunReport(report));
 CLI 侧有薄壳：`agentia report <trace.jsonl>` —— 每行一个 JSON（裸 Trace，或含 `result.trace` /
 `trace` 的 TaskRecord，如 `FileTaskStore` 的导出），跨行按能力合并后打印排行。
 加 `--json` 得到机器可读输出：stdout 只有一个 JSON 文档（`{ file, runs, failed, skippedLines,
-failures, capabilities, totals }`）、没有人类装饰，适合脚本与 CI 断言；出错仍走 stderr
+failures, capabilities, sessions, totals }`）、没有人类装饰，适合脚本与 CI 断言；出错仍走 stderr
 （`错误：…`）并把退出码置 1、stdout 保持为空 —— 脚本据此区分「有结果」与「没跑成」。
+
+**会话 / 任务维度（`sessions[]`）**：能力排行之外另打一张按**分组键**归组的表 —— 键取 run 根
+span 的 `session.id`（宿主传 `session: { store, id }` 才会写，见 §6.4「提示词版本化与会话标记」），没有就退到记录
+里的 `taskId`（`FileTaskStore` / `SqliteTaskStore` 的导出），再没有落 `(无会话)` 桶。
+每组给 `runs / ok / fail / total / cost / cost-ok` 六列。两条口径值得记住：
+**成功率一定带分母**（小组上只报百分比是噪声，所以 `runs` 与 `ok` 都单独出列）；
+**成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
+成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和，**不含** capability 聚合 ⇒
+`@SubAgent` 里套 `@Skill` 时不会把同一批 token 数两遍）。
 
 > ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。

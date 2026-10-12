@@ -28,6 +28,32 @@ interface TraceLike {
   traceId?: string;
   status?: string;
   spans?: unknown[];
+  /**
+   * run 汇总用量（框架侧 `Trace.totalUsage`）。会话/任务维度的成本口径取它的
+   * `costEstimate` —— 那是**各 `llm.turn` 之和**，且**不含** capability 聚合，所以天然不重复计数。
+   */
+  totalUsage?: { costEstimate?: number } | undefined;
+}
+
+/** 会话 / 任务维度的一行（G6）—— 「同一批 trace 里，哪一组跑得贵、哪一组爱失败」 */
+export interface SessionRow {
+  /**
+   * 分组键，按优先级三选一：
+   * 1. run 根 span 的 `session.id` —— 多轮会话的锚点（宿主传 `session: { store, id }` 才写）；
+   * 2. 记录里 TaskRecord 的 `taskId` —— 逐任务落库、没开会话时用它；
+   * 3. 都没有 ⇒ `(无会话)`。
+   * ⚠️ 会话**一般**聚多条 run，而 `TaskRecord.taskId` **逐任务唯一** ⇒ 后一路通常一组一条，
+   * 它是「单任务批跑里逐条标成本」，不是多轮聚合。两者不混排（一条 run 只进一个组）。
+   */
+  session: string;
+  runs: number;
+  succeeded: number;
+  failed: number;
+  totalMs: number;
+  /** 该组各 run 的 `totalUsage.costEstimate` 之和；**全读不出时为 null**（渲染成 `-`） */
+  costUsd: number | null;
+  /** `costUsd / succeeded`；`succeeded === 0` 时 **null** —— 「除不了」不是 0 */
+  costPerSuccess: number | null;
 }
 
 /** 机器可读输出的形状（`--json`）—— 字段增补是兼容的，改名/删字段是破坏性变更 */
@@ -38,6 +64,8 @@ export interface ReportJson {
   skippedLines: number;
   failures: Array<{ traceId: string | null; message: string | null }>;
   capabilities: SummaryRow[];
+  /** G6：会话 / 任务维度（按分组键归组，与能力表互补） */
+  sessions: SessionRow[];
   totals: { totalMs: number; errors: number; capabilities: number };
 }
 
@@ -52,6 +80,55 @@ export function extractTrace(v: unknown): TraceLike | null {
   const trace = o.trace as Record<string, unknown> | undefined;
   if (trace && Array.isArray(trace.spans)) return trace as TraceLike;
   return null;
+}
+
+/** TaskRecord 的任务键（`FileTaskStore` / `SqliteTaskStore` 导出的顶层 `taskId`）。裸 Trace 没有它。 */
+function taskKeyOf(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return null;
+  const id = (v as Record<string, unknown>).taskId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+/**
+ * run 根 span —— 优先 `kind === 'run'`，跑挂的 trace 没有就退到第一个 span。
+ * 与 `inspector-routes.ts` 的 `summarize` 同款取法（两处都在读 run 根的 attribute，口径要一致）。
+ */
+function rootSpanOf(t: TraceLike): Record<string, unknown> | null {
+  const spans = (t.spans ?? []) as Array<Record<string, unknown> | undefined>;
+  return spans.find((s) => s?.kind === 'run') ?? spans[0] ?? null;
+}
+
+/** 「没有会话」桶的名字 —— 常量而非字面量：断言与渲染必须指同一个东西 */
+export const NO_SESSION = '(无会话)';
+
+/** 分组键：会话优先，其次任务，最后落「无会话」桶 */
+function groupKeyOf(t: TraceLike, taskKey: string | null): string {
+  const attrs = rootSpanOf(t)?.attributes as Record<string, unknown> | undefined;
+  const sid = attrs?.['session.id'];
+  if (typeof sid === 'string' && sid.length > 0) return sid;
+  return taskKey ?? NO_SESSION;
+}
+
+/** 单条 run 的根 span 耗时（`endedAt - startedAt`）；读不出计 0 */
+function runMs(t: TraceLike): number {
+  const root = rootSpanOf(t);
+  const s = Number(root?.startedAt);
+  const e = Number(root?.endedAt);
+  return Number.isFinite(s) && Number.isFinite(e) && e >= s ? e - s : 0;
+}
+
+/**
+ * 单条 run 的成本（美元）。
+ *
+ * ⚠️ **刻意不把 `summarizeTrace` 的能力行 `costUsd` 相加**（设计稿初稿那么写过）：capability
+ * span 的 usage 是**其子孙 `llm.turn` 的聚合**，嵌套时（`@SubAgent` 里套 `@Skill`）两者都带
+ * 同一批 token ⇒ 相加**重复计数**。`Trace.totalUsage` 的注释写明它刻意不含 capability 聚合，
+ * 正是为免重（`src/core/trace.ts`）。读不出（手工写的 trace / 未定价模型）⇒ null（渲染成 `-`），
+ * **不伪装成 0**。
+ */
+function runCostUsd(t: TraceLike): number | null {
+  const c = t.totalUsage?.costEstimate;
+  return typeof c === 'number' && Number.isFinite(c) ? c : null;
 }
 
 /** 打印一张按总耗时降序的能力排行（跨多行记录时按能力合并） */
@@ -77,25 +154,29 @@ export async function reportCommand(args: string[]): Promise<number> {
     throw new Error(`读不到文件 ${file}（${(e as Error).message}）`);
   }
 
-  const traces: TraceLike[] = [];
+  // 一条记录 = 一条 run，但要同时留下**外层记录**的任务键（TaskRecord 的 `taskId`）——
+  // 它与 trace 本体不同源（在 wrapper 上，不在 `spans` 里），故在解析处一并取出。
+  const entries: Array<{ trace: TraceLike; taskKey: string | null }> = [];
   let badLines = 0;
   for (const line of raw.split('\n')) {
     const s = line.trim();
     if (!s) continue;
     try {
-      const t = extractTrace(JSON.parse(s));
-      if (t) traces.push(t);
+      const v = JSON.parse(s);
+      const t = extractTrace(v);
+      if (t) entries.push({ trace: t, taskKey: taskKeyOf(v) });
       else badLines += 1;
     } catch {
       badLines += 1;
     }
   }
-  if (traces.length === 0) {
+  if (entries.length === 0) {
     throw new Error(
       `${file} 里没有可识别的 trace（支持裸 Trace 或含 result.trace / trace 的记录）` +
         (badLines > 0 ? `；另有 ${badLines} 行无法解析` : ''),
     );
   }
+  const traces = entries.map((e) => e.trace);
 
   // 聚合口径与 inspector 面板 / 官网 playground 同源（构建期拷进来的 trace-view 产物）
   // 这份聚合实现由 packages/cli/scripts/copy-assets.mjs 在构建期从 trace-view 产物拷进来。
@@ -132,6 +213,42 @@ export async function reportCommand(args: string[]): Promise<number> {
   }
   const rows = [...merged.values()].sort((a, b) => b.totalMs - a.totalMs || b.calls - a.calls);
 
+  // G6：会话 / 任务维度 —— 与上面的能力表**互补**：能力表看单个能力，这里看一整段会话/任务
+  // （多轮 run 的合计 + 成功率）。成功率**必须带分母**：只报百分比在小组上是噪声。
+  const byGroup = new Map<string, SessionRow>();
+  for (const e of entries) {
+    const key = groupKeyOf(e.trace, e.taskKey);
+    let row = byGroup.get(key);
+    if (!row) {
+      row = {
+        session: key,
+        runs: 0,
+        succeeded: 0,
+        failed: 0,
+        totalMs: 0,
+        costUsd: null,
+        costPerSuccess: null,
+      };
+      byGroup.set(key, row);
+    }
+    row.runs += 1;
+    // 成败判据与上面的 `okRuns` **同一条**（`status !== 'error'`）—— 两处各写一份会漂移。
+    if (e.trace.status !== 'error') row.succeeded += 1;
+    else row.failed += 1;
+    row.totalMs += runMs(e.trace);
+    const c = runCostUsd(e.trace);
+    if (c != null) row.costUsd = (row.costUsd ?? 0) + c;
+  }
+  for (const row of byGroup.values()) {
+    // ⚠️ 成功数为 0 ⇒ null（渲染成 `-`）。写成 0 是把「除不了」伪装成「每个成功任务不花钱」，
+    // 正好说反 —— 这正是本项要防的那笔假账。
+    row.costPerSuccess =
+      row.costUsd != null && row.succeeded > 0 ? row.costUsd / row.succeeded : null;
+  }
+  const sessions = [...byGroup.values()].sort(
+    (a, b) => b.totalMs - a.totalMs || b.runs - a.runs || a.session.localeCompare(b.session),
+  );
+
   const failRows = traces
     .filter((t) => t.status === 'error')
     .map((t) => {
@@ -152,13 +269,25 @@ export async function reportCommand(args: string[]): Promise<number> {
       skippedLines: badLines,
       failures: failRows,
       capabilities: rows,
+      sessions,
       totals: { totalMs, errors: errTotal, capabilities: rows.length },
     };
     console.log(JSON.stringify(payload, null, 2));
     return 0;
   }
 
-  const pad = (s: string, n: number): string => (s.length >= n ? s : s + ' '.repeat(n - s.length));
+  // 按**显示宽度**补齐：`(无会话)` 里的汉字占 2 列而 `String.length` 只算 1 ⇒ 用字符数补齐
+  // 会把那一行整体右推 3 格。而它偏偏是「宿主没开会话」时的**唯一**一行，歪得很显眼。
+  // 判据是启发式（≥ U+2E80 记 2 列）：覆盖 CJK 与全角标点；`…`（U+2026）等仍是 1 列。
+  const dispWidth = (s: string): number => {
+    let w = 0;
+    for (const ch of s) w += (ch.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1;
+    return w;
+  };
+  const pad = (s: string, n: number): string => {
+    const w = dispWidth(s);
+    return w >= n ? s : s + ' '.repeat(n - w);
+  };
   const fmtMs = (ms: number): string => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`);
   console.log(`trace 文件  ${file}`);
   console.log(
@@ -170,6 +299,22 @@ export async function reportCommand(args: string[]): Promise<number> {
     console.log(`  ✗ ${f.traceId ?? '(无 traceId)'}${f.message ? `  ${f.message}` : ''}`);
   }
   if (failRows.length > 3) console.log(`  …另有 ${failRows.length - 3} 条失败 run`);
+  console.log('');
+  // G6 区块：**无论有没有会话都打**。没配 `session: { store, id }` 时只会有一行
+  // `(无会话)` —— 那是**如实呈现**（说明宿主没开会话），不是缺陷（见设计稿 §6）。
+  console.log(
+    `${pad('session', 34)} ${pad('runs', 6)} ${pad('ok', 5)} ${pad('fail', 6)} ${pad('total', 9)} ${pad('cost', 12)} ${pad('cost/ok', 12)}`,
+  );
+  for (const r of sessions) {
+    console.log(
+      `${pad(r.session, 34)} ${pad(String(r.runs), 6)} ${pad(String(r.succeeded), 5)} ` +
+        `${pad(String(r.failed), 6)} ${pad(fmtMs(r.totalMs), 9)} ` +
+        `${pad(r.costUsd != null ? r.costUsd.toFixed(6) : '-', 12)} ` +
+        // `costPerSuccess` 为 null 有两种来路（没成本 / 没成功），两者都只能给 `-` ——
+        // 区别在 ok 列上写着（ok = 0 时就是后者）。
+        `${pad(r.costPerSuccess != null ? r.costPerSuccess.toFixed(6) : '-', 12)}`,
+    );
+  }
   console.log('');
   if (rows.length === 0) {
     console.log(

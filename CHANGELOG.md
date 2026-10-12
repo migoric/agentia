@@ -1110,6 +1110,27 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### CLI `agentia report` 加会话 / 任务维度（G6）（2026-10-12 ⑤）
+
+- **是什么**：`agentia report` 此前只有**能力维度**（`capabilities[]`）+ run 级**计数**
+  （`runs` / `failed`），而 `failed` 是**次数不是分母** ⇒ 「这一段跑得好不好」的第一问
+  （成功率）在输出上**根本算不出来**。现在另打一张按**分组键**归组的表，`--json` 里是
+  `sessions: SessionRow[]`（**加法**，兼容）。
+- **分组键三选一、不混排**（一条 run 只进一个组）：run 根 span 的 `session.id`
+  （宿主传 `session: { store, id }` 才写）→ 记录里的 `TaskRecord.taskId` → `(无会话)` 桶。
+  ⚠️ 会话一般聚多条 run，而 `taskId` **逐任务唯一** ⇒ 后一路通常是「一组一条」，它是给单任务
+  批跑逐条标成本，**不是**多轮聚合。
+- **口径**：`runs` / `ok` / `fail` 三个数**一起出列**（只报百分比在小组成上是噪声）；
+  ⚠️ **成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
+  成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和、**不含** capability 聚合
+  ⇒ `@SubAgent` 里套 `@Skill` 不会把同一批 token 数两遍）。⚠️ 设计稿原写「该组各能力行
+  `costUsd` 相加」，落地时**改掉**了 —— 理由见 `docs/spec.md` §10 2026-10-12 ⑤。
+- **影响面**：`packages/cli/src/report.ts`（194 → 339 行，棘轮账 LINE/TOTAL 同步）；
+  `docs/usage-guide.md` §6.4 的 `--json` 形状列表加 `sessions`。**框架侧 `src/` 零改动。**
+- **验证**：`report.test.mjs` +6 条（归组 / `(无会话)` 桶 / `taskId` 回退键 / 降序 /
+  **「成功数为 0 ⇒ `-`」的反向断言** / 成本读不出 ⇒ `-`）；**变异 4 条各咬住预期的那一条**
+  （`> 0` → `>= 0` / 丢掉 `taskId` 回退 / 把「读不出」写成 `0` / `session.id` 读成 `sessionId`）。
+
 ### OTLP 导出：三个缓存/压缩 semconv 键 + 可选的 execute_tool span 投影（2026-10-12 ②）
 
 - **G3（additive、双发不替换）**：`llm.turn` 缓存读数 > 0 时另发
