@@ -1129,6 +1129,32 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 - **菜单签名**：每次 run 落 run 根 span 的 `tools.names`（装配后菜单的名字、按名排序、超长截断带 `…(+N)`）与 `tools.menuHash`（12 位摘要，材料 = 排序后的「名字 + **输入 schema**」规范序列化）—— 与 `prompts.versions` 同动机：质量回归能回答「这两段 run 跑在同一个菜单上吗」。口径：与菜单顺序、schema 键序无关；**`description` 不参与**（润色文案不算菜单变化，代价是「只改描述」看不见 —— 有意）。给了 `tools` 就自动记，无需开关。
 - **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ⑧。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
 
+#### 交接与护栏（`agentia.handoff.*` / `agentia.guardrail.*`）
+
+**交接**（agent → agent）与**护栏**（审批）在这个框架里都不是 span：前者就是一条 `capability`
+span 本身（`attributes.subagent`），后者**只是事件**（`approval.requested` / `approval.decided`）。
+这两样对外部 OTLP 消费者都等于「要解析才看得见」⇒ 各补一个 additive 属性当入口：
+
+| 键 | 值 | 写在哪 | 何时 |
+|---|---|---|---|
+| `agentia.handoff.from` | **调用方** agent 名 | 被调 `@SubAgent` 的 capability span | 该 span 由另一个 agent 的回合发起时 |
+| `agentia.handoff.to` | **被调** agent 名 | 同上 | 同上 |
+| `agentia.guardrail.name` | 待决的**首个**工具名 | 发起它的 `llm.turn` span | 记 `approval.requested` 时 |
+| `agentia.guardrail.triggered` | `true` | 同上 | 同上 |
+
+- 名字从哪来：run 根用 `runName`（默认 `agent.run`，与 OTLP 的 `gen_ai.agent.name` 同源），
+  子 agent 用它注册的 `name`。嵌套交接会**逐层换名**（内层 `from` 是外层子 agent，不是应用）。
+- ⚠️ **刻意不做**：不把审批**升级成 span**。它现在是事件、与「普通 `@Tool` 只发
+  `tool.input` / `tool.output`」同形；升级会动引擎记账点，且下游已能按事件消费。
+- ⚠️ 两处**只发一半**是口径不是遗漏：`guardrail.*` **只在触发时发**，不设 `false`
+  （与 `gen_ai.conversation.compacted` 同款）；`handoff.*` 拿不到调用方身份时（宿主手搓
+  `recorder` + `ctx` 直调 `subagentToTool`）**两个键都不发** —— 编不出来就不编。
+- **视图**：`@migor/trace-view` 的 summary（`agentia report` 与 `agentia dev` 面板同源）把
+  `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、
+  `err` = **被拒**次数（护栏真挡下的）、`total` / `max` = 等审批时长（事件的 `waitedMs`；
+  宿主没回填 `requestedAt` 时记 0，**不编造**）。⚠️ 只有 `approval.requested` 而始终没恢复的
+  挂起**不产出行**：它没有结论也没有时长。
+
 ### 6.5 集成
 
 换模型 / 接 MCP / 离线 eval / prompt 与模型的 A-B。

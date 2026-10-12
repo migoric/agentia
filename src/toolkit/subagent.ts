@@ -7,7 +7,7 @@ import type { SystemParam, SystemTextBlock } from '../engine/types.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgentScoped } from '../engine/loop.js';
 import { forwardToolContext } from '../engine/forwarded.js';
-import { withCurrentSpan } from '../engine/span-scope.js';
+import { currentSpan, withCurrentSpan } from '../engine/span-scope.js';
 import { classifyError } from '../engine/errors.js';
 import { SystemPrompt } from '../runtime/systemPrompt.js';
 
@@ -120,6 +120,17 @@ export function subagentToTool(
       const recorder = ctx.recorder;
       const capabilityId = recorder.begin('capability', name, ctx.parentSpanId);
       recorder.setAttribute(capabilityId, 'subagent', name);
+      // G7 交接：这条 capability span 就是「agent → agent 的交接」本身，故把两端都写上
+      // （`agentia.handoff.from` / `.to`）。调用方名字只能从**当前调用期作用域**拿 ——
+      // 手上其余的东西（`recorder` 只写不读、`ctx.parentSpanId` 是个查不出名字的 id）
+      // 都推不出它，见 `engine/span-scope.ts` 的 `SpanScope.agentName`。
+      // ⚠️ 必须在进入自己的 capability 作用域**之前**读：之后 currentSpan() 指向的就是自己了。
+      // 作用域里没有 agentName（如宿主手搓 recorder 直调）⇒ **不发这两个键**，不编造。
+      const callerAgent = currentSpan()?.agentName;
+      if (callerAgent !== undefined) {
+        recorder.setAttribute(capabilityId, 'agentia.handoff.from', callerAgent);
+        recorder.setAttribute(capabilityId, 'agentia.handoff.to', name);
+      }
       let closed = false;
       const close = (patch: { status: 'ok' | 'error'; error?: SpanError }): void => {
         if (closed) return;
@@ -150,13 +161,15 @@ export function subagentToTool(
         // 调用期 span 作用域（spec §9.2 出站传播）：子 agent 自己的东西都算在它的
         // capability span 下 —— `system` 若是函数形态，那次调用也是**用户代码**，同样在域内。
         const system = await withCurrentSpan(
-          { traceId: recorder.traceId, spanId: capabilityId },
+          { traceId: recorder.traceId, spanId: capabilityId, agentName: name },
           () => resolveSubSystem(spec.system, task),
         );
         const tools = spec.tools?.length ? resolveTools() : [];
 
         const loop = await withCurrentSpan(
-          { traceId: recorder.traceId, spanId: capabilityId },
+          // `agentName` 换成自己（G7 交接）：这之后所有内层调用（含它再拉起子 agent）
+          // 读到的「调用方」都是**本子 agent**，正是交接关系该有的样子。
+          { traceId: recorder.traceId, spanId: capabilityId, agentName: name },
           () =>
             runAgentScoped({
               // 七个「必须往下交」的旋钮一次取自单源（见 engine/forwarded.ts）——

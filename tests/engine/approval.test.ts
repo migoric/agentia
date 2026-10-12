@@ -100,6 +100,45 @@ describe('HITL 审批（引擎）', () => {
     assert.equal(eventsOf(result.trace.spans, 'tool.output').length, 0);
   });
 
+  it('G7 护栏属性：挂起时在发起回合的 span 上写 name/triggered；不需要审批的回合两个键都不出现', async () => {
+    // 在场态：审批闸拦下 ⇒ 同一条 turn span 上除事件外还多了两个 additive 属性
+    const spy = { calls: [] as unknown[], ctxs: [] as unknown[] };
+    const { client } = mockClient([toolUseMsg('danger', {}, 'tu1')]);
+    const suspended = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      tools: [approvalTool(spy)],
+    });
+    const gTurn = suspended.result.trace.spans.find((s) => s.kind === 'llm.turn')!;
+    assert.equal(gTurn.attributes['agentia.guardrail.name'], 'danger');
+    assert.equal(gTurn.attributes['agentia.guardrail.triggered'], true);
+    // 属性是「入口」、事件是权威明细：待决 id 列表只在事件里
+    assert.deepEqual(suspended.result.pendingApprovals, ['tu1']);
+    // 「审批不建 span」这条既有口径继续钉住：整条 trace 只有 run + llm.turn
+    assert.deepEqual([...new Set(suspended.result.trace.spans.map((s) => s.kind))].sort(), [
+      'llm.turn',
+      'run',
+    ]);
+
+    // 不在场态：同一批工具、模型没点名那个要审批的 ⇒ 两个键**一个都不发**（不设 false）
+    const spy2 = { calls: [] as unknown[], ctxs: [] as unknown[] };
+    const ok = mockClient([toolUseMsg('safe', {}, 'tu2'), endTurnMsg('done')]);
+    const ran = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client: ok.client,
+      tools: [approvalTool(spy2), normalTool(spy2)],
+    });
+    assert.equal(ran.result.stopReason, 'end_turn');
+    for (const s of ran.result.trace.spans) {
+      assert.equal('agentia.guardrail.name' in s.attributes, false, `${s.kind} 不该带护栏名`);
+      assert.equal(
+        'agentia.guardrail.triggered' in s.attributes,
+        false,
+        `${s.kind} 不该带 triggered`,
+      );
+    }
+  });
+
   it('挂起照常 flushSinks（挂起段的 trace 必须可观测）；但记忆/会话维持「只成功才写」', async () => {
     const spy = { calls: [] as unknown[], ctxs: [] as unknown[] };
     const { client } = mockClient([toolUseMsg('danger', {}, 'tu1')]);

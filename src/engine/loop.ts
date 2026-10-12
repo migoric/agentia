@@ -341,7 +341,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   options: RunAgentOptions<S>,
 ): Promise<AgentRunResult<SchemaType<S>>> {
   const recorder = options.recorder ?? new TraceRecorder();
-  const rootId = recorder.begin('run', options.runName ?? 'agent.run', null);
+  const rootName = options.runName ?? 'agent.run';
+  const rootId = recorder.begin('run', rootName, null);
   recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
   // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
   if (options.systemVersion) recorder.setAttribute(rootId, 'system.version', options.systemVersion);
@@ -399,36 +400,40 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   try {
     // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到
     // 「我正处在哪个 span」—— 更内层的作用域由 turn / skill / subagent 逐层收窄。
-    result = await withCurrentSpan({ traceId: recorder.traceId, spanId: rootId }, () =>
-      agentLoop<S>({
-        client,
-        model,
-        modelChain,
-        maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-        maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
-        system: options.system,
-        messages: options.messages,
-        tools: options.tools ?? [],
-        recorder,
-        parentSpanId: rootId,
-        onText: options.onText,
-        signal: options.signal,
-        retry: options.retry,
-        // 按 run 分叉策略实例：per-run 状态（滞回/计数缓存）不跨 run 泄漏
-        contextPolicy: forkPolicyPerRun(options.contextPolicy),
-        resultSchema: options.resultSchema,
-        progress,
-        maxTotalTokens: options.maxTotalTokens,
-        maxCostUsd: options.maxCostUsd,
-        toolTimeoutMs: options.toolTimeoutMs,
-        maxToolConcurrency: options.maxToolConcurrency,
-        maxEventChars: options.maxEventChars,
-        traceContent: options.traceContent,
-        priceOverrides: options.priceOverrides,
-        onUnpricedModel: options.onUnpricedModel,
-        approvals: options.approvals,
-        events: options.events,
-      }),
+    // `agentName` 一并登记（G7 交接）：run 根 = 应用名，是「调用方是主 agent」时
+    // `agentia.handoff.from` 的值（子 agent 会在自己的 capability 作用域里换掉它）。
+    result = await withCurrentSpan(
+      { traceId: recorder.traceId, spanId: rootId, agentName: rootName },
+      () =>
+        agentLoop<S>({
+          client,
+          model,
+          modelChain,
+          maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+          maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+          system: options.system,
+          messages: options.messages,
+          tools: options.tools ?? [],
+          recorder,
+          parentSpanId: rootId,
+          onText: options.onText,
+          signal: options.signal,
+          retry: options.retry,
+          // 按 run 分叉策略实例：per-run 状态（滞回/计数缓存）不跨 run 泄漏
+          contextPolicy: forkPolicyPerRun(options.contextPolicy),
+          resultSchema: options.resultSchema,
+          progress,
+          maxTotalTokens: options.maxTotalTokens,
+          maxCostUsd: options.maxCostUsd,
+          toolTimeoutMs: options.toolTimeoutMs,
+          maxToolConcurrency: options.maxToolConcurrency,
+          maxEventChars: options.maxEventChars,
+          traceContent: options.traceContent,
+          priceOverrides: options.priceOverrides,
+          onUnpricedModel: options.onUnpricedModel,
+          approvals: options.approvals,
+          events: options.events,
+        }),
     );
   } catch (e) {
     // 硬写 0 会把「第 3 回合请求失败」报成「一次模型都没调」——按实际进度报

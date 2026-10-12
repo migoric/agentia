@@ -69,14 +69,18 @@ Record<string, string|number|boolean>`（`core/trace.ts:202`）现成的自由 K
 |---|---|---|---|
 | `agentia.handoff.from` | 调用方 agent 名 | 被调 `@SubAgent` 的 capability span | 该 span 由另一个 agent 的回合发起时 |
 | `agentia.handoff.to` | 被调 agent 名 | 同上 | 同上 |
-| `agentia.guardrail.name` | 护栏名（审批策略名） | 发起它的 `llm.turn` span | 记 `approval.requested` 时 |
+| `agentia.guardrail.name` | ~~护栏名（审批策略名）~~ ⚠️ **落地时改掉了**：待决的**首个工具名** —— 本仓**没有「策略名」这个概念**（审批由工具自己的 `approval: 'required'` 触发，`turn.ts` 的 `pending` 过滤），唯一可查的名就是工具名。为什么不发整个清单见 `docs/spec.md` §10 2026-10-12 ⑥ | 发起它的 `llm.turn` span | 记 `approval.requested` 时 |
 | `agentia.guardrail.triggered` | `true` | 同上 | 同上（**只在触发时发**，不设 `false` —— 与 `gen_ai.conversation.compacted` 同款口径） |
 
 ⚠️ **刻意不做**：不把审批**升级成 span**。`approval.*` 现在是事件、与「普通 `@Tool` 只发事件」
 同形；升级会动 engine 记账点，且下游已能按事件消费（§2 行 13/14 的既有口径）。
 
 **视图**：`packages/trace-view` 的 summary 行加 `guardrail:<名>` 一类聚合（与现有 `tool:<名>`
-同构）；CLI `report` 复用（G6 的同一张表）。
+同构）；CLI `report` 复用（G6 的同一张表）—— ✅ **落地确认**：`report.ts:201` 就是逐 trace 调
+`summarizeTrace` 再合并，护栏行**自动**进 `capabilities[]`，不用改 CLI 一行。⚠️ 它消费的是
+**构建期拷进 CLI 的 trace-view 产物**（`copy-assets.mjs`）⇒ 改了 `summary.js` 要**重建**才看得见；
+且该脚本只在 trace-view `dist/` **不存在**时才补跑它的构建 ⇒ 本地必须先 `npm run build` 再
+`npm run build:cli`（`verify-all` 的第 2 / 第 5 步就是这个顺序）。
 
 ## 4. G8：观测面给 agent 消费的入口
 
