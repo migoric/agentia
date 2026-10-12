@@ -64,9 +64,13 @@ export interface RunCallOptionsInput {
  */
 export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions {
   const { rec, isResume, sessionStore, client, signal, bridgeTraceEvents } = input;
-  const sessionId = rec.spec.options?.sessionId;
+  // sessionId 在本层**已被消费**（下面换成 session 注入；没配 sessionStore 的在 submit /
+  // 派发处已响亮失败），**不随选项透传**：续跑段刻意不注入 session（见下），若让它原样
+  // 进 app.run，会撞上那边「程序内直传 sessionId 不生效」的告警 —— 那是给外部调用方的
+  // 出声闸（toolkit/module.ts），内部路径不该踩。
+  const { sessionId, ...restOptions } = rec.spec.options ?? {};
   return {
-    ...(rec.spec.options ?? {}),
+    ...restOptions,
     // HITL 恢复段**不注入 session**（2026-09-20，spec §10 当日条）：恢复段的
     // rec.spec.messages 是挂起段落库的 suspendedMessages —— 已含 loadSession
     // 拼入的完整会话历史，再注入会让 run 层把 store 历史**再 prepend 一遍**
