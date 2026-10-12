@@ -1,0 +1,21 @@
+{
+  "name": "@migor/agentia-observability-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "把 trace 调优报告（report / diff）包成 MCP 只读工具 —— 让 agent 自己查「我上一轮慢在哪」",
+  "scripts": {
+    "start": "node dist/main.js",
+    "stdio": "node dist/main.js --stdio",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify": "node dist/verify.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}

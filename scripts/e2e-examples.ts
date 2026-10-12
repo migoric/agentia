@@ -34,6 +34,7 @@ const exampleDir = join(repoRoot, 'examples', 'complete');
 const obsPkgDir = join(repoRoot, 'examples', 'observability');
 const codeReviewDir = join(repoRoot, 'examples', 'code-review');
 const evalGateDir = join(repoRoot, 'examples', 'eval-gate');
+const obsMcpDir = join(repoRoot, 'examples', 'observability-mcp');
 
 /** 假 OpenAI 兼容端点的记录（断言「能力真的被执行」靠它，而不是靠自己读响应文本） */
 interface FakeProviderObserved {
@@ -171,6 +172,7 @@ function ensureLinks(): void {
     [join(exampleDir, 'node_modules', '@migor', 'agentia-observability'), obsPkgDir],
     [join(codeReviewDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     [join(evalGateDir, 'node_modules', '@migor', 'agentia'), repoRoot],
+    [join(obsMcpDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     // 本地小包**自己也要能构建** —— CI 上没有它的 node_modules，不建的话 `tsc -p` 会
     // 报「Cannot find module '@migor/agentia'」+「Cannot find name 'process'」
     // （@types/node 沿目录树上溯到仓库根即可解析，只有 @migor 需要这一步）
@@ -530,6 +532,60 @@ function verifyEvalGate(): Record<string, unknown> {
   }
 }
 
+/**
+ * `examples/observability-mcp` 的验证（G8）—— 「分发面」的验收：**起真 server，用出厂的
+ * MCP 客户端连回去**跑通 `report` / `diff` / 越界拒绝。
+ *
+ * 为什么值得进 e2e：这个示例的全部价值就是「外部 MCP 客户端接得上」，而那条链路
+ * （握手 → `tools/list` → `tools/call` → 边界拒绝）**单测覆盖不到** —— 它是两个进程 + HTTP
+ * 才活起来的东西。走示例自己的 `npm run build` / `npm run verify`（不另算一份等价输入，
+ * 同 eval-gate 的纪律：测产物用产物自己的命令）。
+ *
+ * 也顺带进了门禁：示例的 `src/` 在 `tsconfig.tests.json` 的 include 里，`typecheck:tests`
+ * 会按**仓库根**那套严格开关（含 `exactOptionalPropertyTypes`）编它。
+ */
+function verifyObservabilityMcp(): Record<string, unknown> {
+  const npmRun = (script: string): { code: number; out: string } => {
+    const r = spawnSync('npm', ['run', script], {
+      cwd: obsMcpDir,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  const built = npmRun('build');
+  assert(
+    built.code === 0,
+    `示例自己的 npm run build 应成功，实际 ${String(built.code)}：\n${built.out}`,
+  );
+
+  const verified = npmRun('verify');
+  assert(
+    verified.code === 0,
+    `npm run verify 应 exit 0，实际 ${String(verified.code)}：\n${verified.out}`,
+  );
+  assert(
+    verified.out.includes('G8 验收通过'),
+    `verify 应打印通过结论，实际尾部：\n${verified.out.slice(-400)}`,
+  );
+  // ⚠️ 除退出码外还要数**失败标记**：verify 内部是一条条 check，退出码只反映最后统计，
+  //    而「统计写错 / 提前 process.exit」这类坏法会让 exit 0 与失败断言并存（本仓纪律：
+  //    结论行与失败标记都要看，别只看一个）。
+  const failed = (verified.out.match(/✗/g) ?? []).length;
+  assert(failed === 0, `不应有失败断言，实际 ${failed} 条：\n${verified.out}`);
+  assert(
+    verified.out.includes('mcpTools 握手拿到两个只读工具'),
+    '应真的走了 MCP 协议握手（tools/list），而不是绕过协议直接调工具',
+  );
+  const passed = (verified.out.match(/✓/g) ?? []).length;
+  return {
+    buildExit: built.code,
+    verifyExit: verified.code,
+    checks: passed,
+    boundaryRefused: verified.out.includes('越界路径被拒'),
+  };
+}
+
 const fake = await startFakeProvider();
 let example: Awaited<ReturnType<typeof startExample>> | undefined;
 try {
@@ -647,9 +703,11 @@ try {
 
   // —— 8) code-review 示例：离线 demo 真跑 + 产物断言（见 verifyCodeReview）——
   const codeReview = verifyCodeReview();
-
   // —— 9) eval-gate 示例：闸门真跑 + 三份被改坏的基线（见 verifyEvalGate）——
   const evalGate = verifyEvalGate();
+
+  // —— 10) observability-mcp 示例：起真 server + 出厂 MCP 客户端连回去（见 verifyObservabilityMcp）——
+  const obsMcp = verifyObservabilityMcp();
 
   console.log('E2E-EXAMPLES PASS');
   console.log(
@@ -666,6 +724,7 @@ try {
         shutdownExitCode: code,
         codeReview,
         evalGate,
+        obsMcp,
       },
       null,
       2,
