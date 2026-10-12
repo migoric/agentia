@@ -123,7 +123,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   buildRunCallOptions 把「按 isResume / sessionId / signal / trace 桥」拼出
 │   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
 │   │                        #   终态采纳」；RunSessionStore 是会话 store 的**结构面单源**（旋钮本身的文档仍在
-│   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态
+│   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态。
+│   │                        #   ⚠️ sessionId 在本层**被消费后不透传**（2026-10-12 ③）：续跑段不注入 session，
+│   │                        #   原样带进去会误踩 app.run 的「直传 sessionId 不生效」告警闸（toolkit/module.ts）
 │   │                        #   run-outcome.ts = 一次 run 的**结果记账**（同日抽，同族的第五件）：
 │   │                        #   readClaimed 收「认领前重读」（读失败不升级成「任务起不来」）；
 │   │                        #   applySuspendedOutcome / applyTerminalOutcome 收挂起与终态两支的**记录映射**。

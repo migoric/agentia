@@ -6147,6 +6147,70 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
 **零行为变更** —— 只动注释与散文，`genAiAttributes` / `mapEvent` 的映射逐字未动，
 `tests/integrations/otlp.test.ts` 无需改动。
 
+### 2026-10-12 ②：OTLP 导出侧投影 execute_tool + 三个缓存/压缩 semconv 键
+
+**起因**：同一天的生态对拍深评（`docs/reviews/2026-10-12/observability-deep-dive.md` §3）
+发现两个缺口 —— G3：三个「本仓已有信号、只是没以 semconv 键名发出去」的 Recommended 键
+（每次 run 都算出了缓存 token、每次压缩都记了 `context.budget` 事件，但只发自有键）；
+G2：上游 6 家框架（Mastra / Vercel AI SDK / CrewAI / AutoGen / Google ADK / Semantic Kernel，
+**六中六**，逐家检索源码核过）都把 `execute_tool` 当一等 span，而本仓普通 @Tool 只有事件没有 span。
+
+**键名拼写以钉 commit 的上游原文为准**（`semantic-conventions-genai @ 6fd0d763` 的
+`client-inference.md` 属性表逐字核）：`gen_ai.usage.cache_read.input_tokens` ←
+`Usage.cacheReadTokens`、`gen_ai.usage.cache_write.input_tokens` ← `Usage.cacheCreationTokens`、
+`gen_ai.conversation.compacted` ← `context.budget` 事件。三条都是 additive、双发不替换。
+
+**三个刻意口径**：
+
+1. **投影放导出侧，engine 一行不动**。普通 @Tool 不建 span 是记账侧的刻意 trade-off
+   （core/trace.ts 的 SpanKind 注释），生态变了也不必推翻它：OTLP 导出器吃的是按 span 分好组的
+   `span.events`，父 span 隐含、配对键是 `tool_use_id`（不是名字 ⇒ 同名并行不配错）、
+   `tool.output` 带真实 `durationMs` / `ok` / `errorKind` ⇒ **导出侧投影**即可让
+   「按 span 查工具」的后端正常工作，本地 trace 形状与体量闸都不参与。事件本体保留在父 span
+   上（投影是**多**出来的 span，不是搬走）。
+2. **`projectToolSpans` 默认关**。与「不改既有产物、不悄悄改变导出体积」同款纪律：关闭时
+   导出与既往一致（有「缺省 ≡ 显式 false 逐字节相等」的用例钉着）。
+3. **孤儿 input 不编账**。开 `traceLimits.maxEvents` 后实测存在「只有 `tool.input` 没有
+   `tool.output`」的对（超限停记丢的是后记那条）—— 投影成**无 `endTimeUnixNano`、无 status**
+   的 span + `agentia.projection.orphan: true`（「开始了、没等到结束」，编零时长或编成败都是编账）。
+   反方向的孤儿 output 记账侧不可达，防御口径是跳过（没有诚实的 start）。
+   start/end 取两条事件各自的记账时刻（都是真实时刻，`durationMs` 与二者之差同源，不另发）。
+
+**顺带一处单源**：`context.budget` 事件名此前是 turn.ts 里的字面量，本轮第一次有了跨层消费方
+（otlp.ts）⇒ 按 E8 同款教训（跨 engine → integrations 的名字各写一份就是静默归零）上移到
+`core/trace.ts` 的 `CONTEXT_BUDGET_EVENT`。
+
+### 2026-10-12 ③：run 级 `sessionId` 的静默失效改成出声（`app.run` 入口告警 + 内部链路剥字段）
+
+**起因**：可观测深钻（`docs/reviews/2026-10-12/observability-deep-dive.md` §2 行 7）记录了一处
+静默失效 —— 会话维度（run 根 `session.id` attribute → OTLP `gen_ai.conversation.id`）的触发条件
+是 `session: { store, id }`；而类型上还存在 run 级的 `sessionId` 字段，直传它不生效也不报错。
+
+**调查结论（它决定修法）**：`sessionId` **不是死字段**，且有两个各自成立的语义 ——
+① 引擎级（`RunAgentOptions.sessionId`）：`loop.ts` 真读它写 `session.id`，直连
+`runAgent` / `executeRun` 时**生效**；② 契约级（`RunInvocationOptions.sessionId`）：
+异步宿主的**可序列化会话引用**，`AsyncRunner` 在执行前把它换成 `session: { store, id }` 注入
+（没配 `sessionStore` 而任务带了它 ⇒ submit 当场 `TaskInputError`，这条早已是响亮失败）。
+**真正的静默点只有一处**：`RunAppOptions` 继承了 `RunInvocationOptions.sessionId`，而
+`AgentApp.run` 的转发清单里没有它 —— 程序内 `app.run(messages, { sessionId })` 被静默丢弃。
+
+**处置**（与 0.9.5 那批「把静默换成有声」同口径）：
+1. `AgentApp.run` 入口：`sessionId` 在场而 `session` 不在场 ⇒ `console.warn` 一次
+   （每条 run 一次，不是每回合刷），文案指出改用 `session: { store, id }`
+   （要历史 + 维度）或引擎级 `sessionId`（直连 `executeRun` / `runAgent`，只要 trace 标记）。
+2. **内部链路不能误伤**：`AsyncRunner` 的续跑段刻意不注入 `session`（防历史翻倍），
+   若 `spec.options` 里的 `sessionId` 原样透传进 `app.run` 就会误踩闸 —— 所以
+   `buildRunCallOptions` 把它**剥掉**（它在本层已被消费：换成了 `session` 注入 /
+   或在 submit 时已响亮失败；`run-outcome.ts` 读的是 `rec.spec.options` 原文，不受影响）。
+3. 文档对齐：`usage-guide.md` §4 选项表的 `sessionId` 行原先写「记进 run 根 `session.id`」
+   —— 那只对引擎层成立，对 `app.run` 是错的，已按本条的口径改写。
+
+**为什么不是「让 `app.run` 转发 `sessionId`」**（另一种修法：让静默失效变成生效）：
+`RunInvocationOptions.sessionId` 的既定语义是「异步宿主的可序列化引用，由 runner 换 store
+注入」；让 `app.run` 消费它等于给同一字段在相邻两层安两个语义（那边是「引用，待注入」，
+这边是「直接当标记」），且 `app.run` 没有 store 可注入、只能给半个会话（有标记无历史）——
+半生效比响亮告警更难排查。
+
 ### 2026-10-12 ④：MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键，跨进程链路从「断的」接上）
 
 **起因**：2026-10-12 的可观测深钻评审（observability-deep-dive §1.2 / §3 G1）——
