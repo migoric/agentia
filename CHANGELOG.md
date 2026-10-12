@@ -1110,6 +1110,24 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 可观测文档：四条「缝外配方」类缺口收口（2026-10-12）
+
+依据 `docs/reviews/2026-10-12/observability-deep-dive.md` 的 G9 / G10 / G4 / G5，**纯文档**，`src/` 一行未动：
+
+- `docs/observability.md` 新增四节：**§6 投递纪律**（sink 内攒批 + 定时 flush 的骨架、关停时
+  先 `handler.drain()` 再 `sink.drain()`、后端不可达就丢遥测不丢可用性；并明说**为什么不把
+  `flushSinks` 改成 fire-and-forget** —— sink 的语义是「有兜底、会投递」，改了等于删掉一条
+  已有承诺）；**§7 OTLP 只发 JSON ⇒ 直打 Phoenix 会 415**（已知边界 + collector 转码配方，
+  含最小可用配置；为什么不内建 protobuf 编码器）；**§8 步数与环**（纯 trace 函数配方：
+  数 `llm.turn` span、按回合归属成本、`tool_use_id` 配对、识别「同一工具同参数连调 N 次」）；
+  **§9 轨迹评测**（确定性检查优先 —— 签名相等 / 步数上限，`agentia diff` / `harvest` /
+  `defineEval` 拼合，LLM-judge 殿后）。
+- **顺带订正一处事实错误**：§2.6 原把 Arize Phoenix 列进「平台支持 OTLP ⇒ 用内置导出器即可」
+  —— Phoenix 只收 `application/x-protobuf`，内置导出器（只发 `application/json`）打不进去。
+- `docs/usage-guide.md` §7 已知边界表新增一行（OTLP trace 导出只发 JSON ⇒ 直打 Phoenix 会 415，
+  按 choice 登记）；`tests/docs/boundary-table.test.ts` 登记表同步（93 条：pin 57 / choice 11 /
+  gap 25）。
+
 ## [0.9.5] - 2026-09-29
 
 > 本版主题（窗口 `0.9.4 → 0.9.5`）：**外部深评 P2 表的最后三条收口（K5 / T4 / K2）+ 两处「报告的判据要订正」**。
