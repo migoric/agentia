@@ -1110,6 +1110,24 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
+
+- **病灶**：真实审批流是「挂起 → 人批 → 带 approvals 恢复」；恢复段的工具执行走续跑入口
+  （`loop.ts` 把 **run 根 id 当 turnId**），`approval.decided` 记在 **run 根** span 上。
+  而 summary 聚它时只扫 `kind === 'llm.turn'` ⇒ 所有真实审批用法下 `guardrail:*` 行
+  **一行都没有**，只有「首段同步带 approvals」（基本只有测试这么干）才出行。
+  CLI `agentia report` 与 `agentia dev` 面板与 summary 同源，同样漏。
+- **修法**：`approval.decided` 的聚合**不限 span kind**（`tool.output` 仍限 `llm.turn`）。
+  落点因段而异是记账事实不是缺陷（与 `tool.input` / `tool.output` 同一纪律），事件体自带
+  `tool`；**一次决定只记一笔**（记账点只有 `executeOneTool` 一处，跨段是另一条 trace），
+  扫面放大不会双计。引擎行为不动。
+- **顺带订正文档口径**：`usage-guide.md` 的 `agentia.guardrail.*` 属性表原写「发起它的
+  `llm.turn` span」⇒ 与续跑再挂起场景矛盾，改为「与 `approval.requested` 同 span：首段
+  `llm.turn`、续跑段 run 根」。依据与「为什么不该限 kind」见 `docs/spec.md` §10 ⑨。
+- **验证**：`packages/trace-view/test/summary.test.js` 保留首段形状用例、补恢复段形状
+  （decided 在 run 根 ⇒ 行在场且数值对）与「两处都聚」；**变异验证**（恢复 kind 限制
+  ⇒ 两条新用例红；复原绿）。summary.js 棘轮 126 → 130（净 +4 全是注释，代码行零增长）。
+
 ### 观测面给 agent 的入口：两个 MCP 只读工具（G8）（2026-10-12 ⑦）
 
 - **是什么**：新示例 `examples/observability-mcp/`（本地小包，`private`）用现成的反向桥

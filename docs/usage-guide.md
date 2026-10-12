@@ -1144,7 +1144,7 @@ span 本身（`attributes.subagent`），后者**只是事件**（`approval.requ
 |---|---|---|---|
 | `agentia.handoff.from` | **调用方** agent 名 | 被调 `@SubAgent` 的 capability span | 该 span 由另一个 agent 的回合发起时 |
 | `agentia.handoff.to` | **被调** agent 名 | 同上 | 同上 |
-| `agentia.guardrail.name` | 待决的**首个**工具名 | 发起它的 `llm.turn` span | 记 `approval.requested` 时 |
+| `agentia.guardrail.name` | 待决的**首个**工具名 | 与 `approval.requested` **同一个 span**：首段是发起回合的 `llm.turn`；**续跑段再挂起时是 run 根**（续跑入口把 run 根 id 当 turnId，本段没有对应 `llm.turn`） | 记 `approval.requested` 时 |
 | `agentia.guardrail.triggered` | `true` | 同上 | 同上 |
 
 - 名字从哪来：run 根用 `runName`（默认 `agent.run`，与 OTLP 的 `gen_ai.agent.name` 同源），
@@ -1157,7 +1157,8 @@ span 本身（`attributes.subagent`），后者**只是事件**（`approval.requ
 - **视图**：`@migor/trace-view` 的 summary（`agentia report` 与 `agentia dev` 面板同源）把
   `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、
   `err` = **被拒**次数（护栏真挡下的）、`total` / `max` = 等审批时长（事件的 `waitedMs`；
-  宿主没回填 `requestedAt` 时记 0，**不编造**）。⚠️ 只有 `approval.requested` 而始终没恢复的
+  宿主没回填 `requestedAt` 时记 0，**不编造**）。聚合**不限 span kind**（首段的决定记在
+  `llm.turn`、恢复段的记在 run 根，两处都聚）。⚠️ 只有 `approval.requested` 而始终没恢复的
   挂起**不产出行**：它没有结论也没有时长。
 
 ### 6.5 集成

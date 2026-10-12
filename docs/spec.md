@@ -6413,6 +6413,38 @@ cost=0.03）。
 **不同 traceId**（「多条记录按能力合并」此前两行同 traceId，在新口径下本就该被去重）。
 **验证**：`node --test packages/cli/test/` 全绿；**变异 2 条各咬住预期用例**
 （去掉去重 ⇒ 去重用例红；对调优先级 ⇒ 优先级用例红）；`verify-all.sh` 8/8。
+### 2026-10-12 ⑨：护栏行在真实 HITL 主流程零产出 —— `approval.decided` 的扫面不该限 span kind
+
+**起因**：⑥ 的评审发现主 bug —— 真实审批流是「挂起 → 人批 → 带 `approvals` 恢复」，
+而恢复段的工具执行走 `loop.ts` 的续跑入口：那里把 **run 根 id 当 turnId** 传给
+`executeTurnTools`（被恢复的回合属于挂起段的旧 trace，本段没有对应 `llm.turn`），于是
+恢复段的 `approval.requested` / `approval.decided` 与两个 `agentia.guardrail.*` 属性
+**都记在 run 根 span 上**。但 trace-view 的 summary 聚 `approval.decided` 时只扫
+`kind === 'llm.turn'` 的 span ⇒ 所有真实审批用法下 `guardrail:*` 行**一行都没有**；
+只有「首段同步带 approvals」（基本只有测试这么干）才出行。CLI `agentia report` 与
+dev 面板与 summary 同源，同样漏。
+
+**决策**：
+
+- **扫面放宽为不限 span kind**（`tool.output` 仍限 `llm.turn`，那条没变）。理由分两层：
+  ① **落点因段而异本来就是对的** —— `approval.decided` 记在「执行该工具的那个调用点
+  收到的 turnId」上，与 `tool.input` / `tool.output` 同一纪律（`turn.ts` 头注：工具事件
+  记在本回合 span 上）；首段是 `llm.turn`、恢复段没有 `llm.turn` 就落 run 根，这不是
+  记账缺陷而是分段结构的事实。事件体自带 `tool`，聚合不需要靠 span kind 定位。
+  ② **放大扫面不会双计**：`approval.decided` 的记账点只有一处（`executeOneTool`），
+  一次决定只记一笔 —— 同段内审批闸是**全有或全无**（决定不齐就一个工具都不执行、
+  一笔 decided 都不记），跨段则是**另一条 trace**（每次 `runAgent` 一个新 recorder），
+  不存在「同一笔 decided 出现在两个 span」的形状。
+- **引擎行为不改**：`guardrail.*` 属性跟随 `approval.requested` 的落点（首段 `llm.turn`、
+  续跑段 run 根）是内部一致的；⑥ 与 `usage-guide.md` 属性表原写「发起它的 `llm.turn`
+  span」⇒ 与续跑场景矛盾，**文档口径订正**为「与 `approval.requested` 同 span」。
+
+**影响面**：`packages/trace-view/src/summary.js`（棘轮 126 → 130，净 +4 全是注释，
+代码行数零增长 —— `const isTurn` 换掉 `if (kind !== 'llm.turn') continue;`，工具分支
+判据内移）、`docs/usage-guide.md`（属性表 + 视图条目）。测试：
+`packages/trace-view/test/summary.test.js` 保留原「首段形状」用例，另补**恢复段形状**
+（decided 在 run 根 ⇒ guardrail 行在场且数值对）与「run 根 + llm.turn 两处都聚」。
+**变异验证**：恢复 kind 限制 ⇒ 两条新用例红；复原复跑绿。
 
 ## 11. 开放项
 
