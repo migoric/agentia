@@ -1110,6 +1110,35 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 交接与护栏：四个 `agentia.*` 属性 + 护栏进能力排行（G7）（2026-10-12 ⑥）
+
+- **是什么**：交接（agent → agent）在这个框架里就是一条 capability span 本身，护栏（审批）则
+  **只是事件**（`approval.requested` / `approval.decided`）—— 两者对外部 OTLP 消费者都要解析
+  trace 才看得见。现在各补一个 additive 属性当入口（**不造 span kind**，核心零改动）：
+  `agentia.handoff.from` / `.to` 写在被调 `@SubAgent` 的 capability span 上；
+  `agentia.guardrail.name`（待决的**首个**工具名）/ `.triggered`（`true`）写在发起审批的
+  `llm.turn` span 上。名字来源：run 根用 `runName`（与 OTLP 的 `gen_ai.agent.name` 同源）、
+  子 agent 用它注册的 `name`；嵌套交接**逐层换名**。
+- **视图**：`@migor/trace-view` 的 summary（CLI `agentia report` 与 `agentia dev` 面板同源）把
+  `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、`err` =
+  **被拒**次数、`total` / `max` = 等审批时长。此前「哪个工具卡在审批上、被拒了几次」在排行上
+  **完全看不见**。
+- ⚠️ **只发一半是口径不是遗漏**：`guardrail.*` **只在触发时发**，不设 `false`（与
+  `gen_ai.conversation.compacted` 同款）；`handoff.*` 拿不到调用方身份时（宿主手搓 recorder +
+  ctx 直调 `subagentToTool`）**两个键都不发**。⚠️ 护栏行**只聚 `decided`**：只有
+  `approval.requested` 而始终没恢复的挂起不产出行；缺 `waitedMs` 记 0 不编造。
+- ⭐ **一处实现上的补空（设计稿没说清）**：「调用方 agent 名」在调用点**拿不到** ——
+  `RecorderBackend` **只写不读**（查不了 span 树）、`ctx.parentSpanId` 反查不出名字。唯一来源是
+  「当前调用期」作用域 ⇒ `SpanScope` 加可选 `agentName`，并把 `withCurrentSpan` 从**整条替换**
+  改成**合并**（夹在中间的 `llm.turn` 谁都不知道身份，替换会把名字抹掉）。收窄语义逐字不变。
+- **影响面**：`src/engine/{span-scope,loop,turn}.ts`、`src/toolkit/subagent.ts`、
+  `packages/trace-view/src/summary.js`（棘轮 106 → 126）。公共导出面 `src/index.ts` **零变化**。
+  约定与读法写进 `docs/usage-guide.md` §6.4「交接与护栏」。
+- **验证**：`tests/toolkit/subagent.test.ts`（嵌套逐层换名 / 无作用域时不发）、
+  `tests/engine/approval.test.ts`（在场 + 不在场两态）、`packages/trace-view/test/summary.test.js`
+  （护栏行三态）。**变异 4 条：3 条当场咬住，第 4 条先没咬住 → 抓出的是我自己的自证样本**
+  （`approved` 一真一假时，把判据取反仍是 1）⇒ 补样本后才咬住，已写进用例注释。
+
 ### CLI `agentia report` 加会话 / 任务维度（G6）（2026-10-12 ⑤）
 
 - **是什么**：`agentia report` 此前只有**能力维度**（`capabilities[]`）+ run 级**计数**

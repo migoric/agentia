@@ -6291,6 +6291,51 @@ MCP **SEP-414**（Final，已进 2026-07-28 规范）把跨进程 trace 载体�
 （`> 0` → `>= 0` ⇒ 反向断言那条例外变 `Infinity`；丢掉 `taskId` 回退；把「读不出」写成 `0`；
 `session.id` 读成 `sessionId`）。
 
+### 2026-10-12 ⑥：G7 交接 / 护栏 —— 两个「不是 span 的东西」各补一个入口
+
+**起因**：补缺设计稿 `docs/plans/2026-10-12-observability-g6-g7-g8.md` §3（G6 见上一条）。病灶是
+**可发现性**：交接（agent → agent）在这个框架里就是一条 capability span 本身；护栏（审批）则
+**只是事件**（`approval.requested` / `approval.decided`）。对外部 OTLP 消费者，两者都要解析
+trace 才看得见。
+
+**决策**：
+
+- **加 additive 属性，不造 span kind**。上游这两格本就很小（OpenAI Agents SDK 的
+  `HandoffSpanData` 只有 `from_agent` / `to_agent`，`GuardrailSpanData` 只有 `name` / `triggered`），
+  造 span 等于往核心词汇表加词；而 `Span.attributes` 是现成的自由 KV ⇒ **核心零改动**。
+  四个键：`agentia.handoff.from` / `.to`（被调 `@SubAgent` 的 capability span）、
+  `agentia.guardrail.name` / `.triggered`（发起审批的 `llm.turn` span）。约定写进
+  `docs/usage-guide.md` §6.4「交接与护栏」。
+- ⚠️ **审批不升级成 span**（现在是事件，与「普通 `@Tool` 只发事件」同形）；`guardrail.*`
+  **只在触发时发**，不设 `false`（与 `gen_ai.conversation.compacted` 同款口径）；
+  `handoff.*` 拿不到调用方身份时**两个键都不发**。
+- ⭐ **落地时对设计稿的一处补空（本条最该记的）**：设计稿只写「`from` = 调用方 agent 名」，
+  **没说它从哪来**。查下来调用点手上只有 `recorder`（`RecorderBackend` **只写不读**，没有任何
+  查 span 树的口子）与 `ctx.parentSpanId`（一个反查不出名字的 id）⇒ 唯一拿得到它的地方是
+  「当前调用期」作用域。于是给 `SpanScope` 加可选 `agentName`，并把 `withCurrentSpan` 从
+  **整条替换**改成**合并**（内层同名键覆盖外层）—— 夹在中间的 `llm.turn` **谁都不知道身份**，
+  用替换的话它每次包工具执行都会把 run 根写的名字抹掉。`traceId` / `spanId` 仍由每个写入点
+  显式给 ⇒ 收窄语义逐字不变（`tests/engine/spanScope.test.ts` 继续钉住「并行链互不干扰、
+  内层不外泄」）。
+- **视图**：`@migor/trace-view` 的 summary（CLI `agentia report` 与 `agentia dev` 面板同源）把
+  `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、`errors` =
+  **被拒**次数、`total` / `max` = 等审批时长（`waitedMs`）。⚠️ **只聚 `decided`**：只有
+  `approval.requested` 而始终没恢复的挂起**不产出行**（没有结论也没有时长，硬记一格等于编账）；
+  缺 `waitedMs`（宿主没回填 `requestedAt`）记 0 而**不编造**。
+
+**影响面**：`src/engine/span-scope.ts`（+`agentName`、`withCurrentSpan` 改合并）、
+`src/engine/loop.ts`（run 根登记应用名）、`src/engine/turn.ts`（审批处两个属性）、
+`src/toolkit/subagent.ts`（交接两个属性 + 子循环作用域换名）、
+`packages/trace-view/src/summary.js`（`guardrail:` 聚合，棘轮 106 → 126）。公共导出面
+`src/index.ts` **零变化**（`SpanScope` 是 module 级 export，不进公共面）。
+测试：`tests/toolkit/subagent.test.ts`（嵌套交接逐层换名 / 无作用域时不发）、
+`tests/engine/approval.test.ts`（在场 + 不在场两态，顺带钉住「审批不建 span」）、
+`packages/trace-view/test/summary.test.js`（护栏行三态：正常 / 只有 requested / 畸形 body）。
+**变异验证 4 条，3 条当场咬住；第 4 条先没咬住 —— 抓出的是我自己的自证样本**：
+`approved === false` 取反成 `=== true` 时，那个「一真一假」的 fixture 两边都得 **1**
+（对判据的取反免疫）⇒ 补一条「批准」使取反后变 2，才咬住。⚠️ 这正是「全过 ≠ 可靠」的第
+三形态，已写进用例注释留痕。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

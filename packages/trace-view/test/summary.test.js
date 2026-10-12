@@ -138,3 +138,93 @@ describe('trace-view summarizeTrace（G2 能力排行）', () => {
     assert.equal(/undefined/.test(html), false);
   });
 });
+
+describe('trace-view summarizeTrace（G7 护栏行）', () => {
+  /** 一条带审批决定的 llm.turn —— 审批**不建 span**，所以只能从事件聚 */
+  function approvalTrace() {
+    return {
+      traceId: 't-g',
+      rootSpanId: 's0',
+      status: 'ok',
+      spans: [
+        {
+          spanId: 's0',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'run',
+          startedAt: 0,
+          endedAt: 100,
+          status: 'ok',
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: 's1',
+          parentSpanId: 's0',
+          kind: 'llm.turn',
+          name: 'm',
+          startedAt: 0,
+          endedAt: 100,
+          status: 'ok',
+          attributes: {},
+          events: [
+            {
+              time: 1,
+              name: 'approval.requested',
+              body: { tool_use_ids: ['u1'], tools: ['deploy'] },
+            },
+            {
+              time: 2,
+              name: 'approval.decided',
+              body: { tool: 'deploy', tool_use_id: 'u1', approved: true, waitedMs: 1200 },
+            },
+            {
+              time: 3,
+              name: 'approval.decided',
+              body: { tool: 'deploy', tool_use_id: 'u2', approved: false },
+            },
+            // ⚠️ 这一条是**反例样本**，不能删：只有「一真一假」时，把判据写成
+            // `approved === true` 会得到**同样的 1** ⇒ 断言对判据的取反免疫（变异验证实测
+            // 第一版就是这么漏的）。再加一条「批准」，取反后才会变成 2 而咬住。
+            {
+              time: 4,
+              name: 'approval.decided',
+              body: { tool: 'deploy', tool_use_id: 'u3', approved: true },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('审批只出 `guardrail:<工具>` 行：calls=决定次数、errors=被拒次数、total=等审批时长（缺 waitedMs 记 0）', () => {
+    const rows = summarizeTrace(approvalTrace());
+    assert.equal(rows.length, 1, '护栏不与工具行混排（前缀不同、各聚各的）');
+    const g = rows[0];
+    assert.equal(g.capability, 'guardrail:deploy');
+    assert.equal(g.calls, 3);
+    assert.equal(g.errors, 1, '被拒一次（另两次是批准）—— 不是系统错误，但那次工具确实没执行');
+    assert.equal(g.totalMs, 1200, '后两次没有 waitedMs ⇒ 各记 0，不编造');
+    assert.equal(g.maxMs, 1200);
+    assert.equal(g.tokens, null, '护栏没有 token 语义');
+    assert.equal(g.costUsd, null);
+  });
+
+  it('只有 `approval.requested` 而没有决定不产出行（没结论、也没时长，硬记一格等于编账）', () => {
+    const t = approvalTrace();
+    t.spans[1].events = [t.spans[1].events[0]];
+    assert.deepEqual(summarizeTrace(t), []);
+  });
+
+  it('畸形 body（null / 缺 tool）跳过，不炸', () => {
+    const t = approvalTrace();
+    t.spans[1].events = [
+      { time: 1, name: 'approval.decided', body: null },
+      { time: 2, name: 'approval.decided', body: { approved: true } },
+      { time: 3, name: 'approval.decided', body: { tool: 'deploy', approved: true } },
+    ];
+    const rows = summarizeTrace(t);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].calls, 1);
+  });
+});

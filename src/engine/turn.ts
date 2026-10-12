@@ -544,6 +544,15 @@ export async function executeTurnTools<S extends JsonSchema>(
         tool_use_ids: pending.map((u) => u.id),
         tools: pending.map((u) => u.name),
       });
+      // G7 护栏：审批在 trace 里**只是事件**（刻意不建 span —— 上游 `GuardrailSpanData`
+      // 只有 name / triggered 两个字段，造 span kind 等于往核心词汇表里加词）。但事件只有
+      // 解析 trace 才看得见，对外部 OTLP 消费者等于不存在 ⇒ 在**发起它的回合 span** 上再写
+      // 两个 additive 属性当「一眼可见的入口」，语义对齐上游那对字段。
+      // ⚠️ 两处**刻意的不对称**：① 只取**首个**待决工具名 —— 属性是标量，完整清单在事件的
+      // `tools[]` 里（属性是入口、事件是权威明细）；② **只发 `true`，不设 `false`**
+      // （与 `gen_ai.conversation.compacted` 同款口径：没发生就根本不发这个键）。
+      args.recorder.setAttribute(turnId, 'agentia.guardrail.name', pending[0]!.name);
+      args.recorder.setAttribute(turnId, 'agentia.guardrail.triggered', true);
       return { kind: 'suspended', pending: pending.map((u) => u.id) };
     }
   }

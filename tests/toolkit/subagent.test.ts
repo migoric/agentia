@@ -420,3 +420,58 @@ describe('子 agent 防御分支', () => {
     assert.match(capability.error?.message ?? '', /suspended/);
   });
 });
+
+describe('G7 交接属性（agentia.handoff.from / .to）', () => {
+  /** 造一个最小子 agent 能力（可选带自己的菜单） */
+  const subCap = (name: string, tools: string[] = []): SubAgentCapability => ({
+    name,
+    description: name,
+    inputSchema: TASK_SCHEMA,
+    spec: {
+      description: name,
+      schema: TASK_SCHEMA,
+      system: `你是 ${name}。`,
+      ...(tools.length > 0 ? { tools } : {}),
+    },
+  });
+
+  it('嵌套交接：外层 from = 应用名，内层 from = 外层子 agent（作用域逐层换名）', async () => {
+    const inner = subagentToTool(subCap('inner'), () => []);
+    const outer = subagentToTool(subCap('outer', ['inner']), () => [inner]);
+    const { client } = mockClient([
+      toolUseMsg('outer', { task: 'a' }) as never,
+      toolUseMsg('inner', { task: 'b' }) as never,
+      endTurnMsg('inner 完成') as never,
+      endTurnMsg('outer 完成') as never,
+      endTurnMsg('主完成') as never,
+    ]);
+
+    const result = await runAgent({
+      client,
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [outer],
+      runName: 'my-app',
+    });
+
+    const caps = result.trace.spans.filter((s) => s.kind === 'capability');
+    const outerSpan = caps.find((s) => s.name === 'outer')!;
+    const innerSpan = caps.find((s) => s.name === 'inner')!;
+    // 外层：调用方是主 agent —— 名字取 run 根的 `runName`（与 OTLP 的 gen_ai.agent.name 同源）
+    assert.equal(outerSpan.attributes['agentia.handoff.from'], 'my-app');
+    assert.equal(outerSpan.attributes['agentia.handoff.to'], 'outer');
+    // 内层：调用方是**外层子 agent**，不是应用 —— 这一条正是「作用域逐层换名」的判据；
+    // 若 withCurrentSpan 是整条替换而不是合并，这里会退化成 undefined（拿不到名字）。
+    assert.equal(innerSpan.attributes['agentia.handoff.from'], 'outer');
+    assert.equal(innerSpan.attributes['agentia.handoff.to'], 'inner');
+  });
+
+  it('不在场：没有调用期作用域（宿主手搓 recorder + ctx 直调）⇒ 两个键都不写，不编造', async () => {
+    const { client } = mockClient([endTurnMsg('结论') as never]);
+    const { ctx, recorder } = makeCtx(client);
+    await subagentToTool(subCap('researcher'), () => []).run({ task: 'go' }, ctx);
+
+    const span = recorder.snapshot('ok').spans.find((s) => s.kind === 'capability')!;
+    assert.equal('agentia.handoff.from' in span.attributes, false);
+    assert.equal('agentia.handoff.to' in span.attributes, false);
+  });
+});

@@ -15,6 +15,9 @@ import { type SpanId, formatTraceparent } from '../core/trace.js';
  *   它们的「当前 span」就是发起它的那个回合，与 `ToolRunContext.parentSpanId` 同一个值）；
  * - `capability` —— `toolkit/skill.ts` / `toolkit/subagent.ts` 包住自己的方法体 / 子循环。
  *
+ * 三层各自登记自己的 `agentName`（run 根 = 应用名、capability = 子 agent 名）；夹在中间的
+ * `llm.turn` **不知道身份**，靠 `withCurrentSpan` 的**继承**把上一层的值留住（见该函数注释）。
+ *
  * 边界（如实）：`run` 根 span 由 `runAgent` 打开，故 `executeRun` 里更早的 `contextInit` /
  * 记忆水合**没有**作用域 —— 那时确实还没有 span 可指，`currentTraceparent()` 返回 `undefined`。
  */
@@ -23,6 +26,18 @@ import { type SpanId, formatTraceparent } from '../core/trace.js';
 export interface SpanScope {
   traceId: string;
   spanId: SpanId;
+  /**
+   * 当前正在跑的是**哪个 agent**（run 根 = 应用名；子 agent 的 capability span = 该 subagent 名）。
+   *
+   * 为什么需要它（2026-10-12 G7 交接）：`@SubAgent` 的 capability span 上要写
+   * `agentia.handoff.from` —— 值是**调用方** agent 名，而调用点手上只有 `recorder`
+   * （**只写不读**，`RecorderBackend` 没有任何查 span 树的口子）与 `ctx.parentSpanId`
+   * （一个 id，反查不出名字）。唯一拿得到它的地方就是「当前调用期」，即这里。
+   *
+   * ⚠️ 值是**人读的名字**（run 根用 `runName`、子 agent 用它注册的 `name`），不是 span id、
+   * 也不是 `<类型>:<名>` 那种展示串 —— 它要直接写进 `agentia.handoff.from` 给外部消费。
+   */
+  agentName?: string;
 }
 
 const store = new AsyncLocalStorage<SpanScope>();
@@ -36,7 +51,14 @@ const store = new AsyncLocalStorage<SpanScope>();
 export function withCurrentSpan<T>(scope: SpanScope, fn: () => Promise<T>): Promise<T>;
 export function withCurrentSpan<T>(scope: SpanScope, fn: () => T): T;
 export function withCurrentSpan<T>(scope: SpanScope, fn: () => T | Promise<T>): T | Promise<T> {
-  return store.run(scope, fn);
+  // ⚠️ 是**合并**（内层同名键覆盖外层），不是整条替换 —— `agentName` 是**跨层不变的身份**，
+  // 而三个写入点各自只知道「自己这一层的 span id」：run 根（loop.ts）知道应用名、capability
+  // （skill/subagent）知道子 agent 名，夹在中间的 `llm.turn`（turn.ts）**两个都不知道**。
+  // 用整条替换的话，turn.ts 每次包工具执行都会把 run 根写下的 agent 名抹成 undefined ⇒
+  // 交接属性永远拿不到值。`traceId` / `spanId` 仍由每个写入点显式给 ⇒ 收窄语义逐字不变
+  // （`tests/engine/spanScope.test.ts` 的「并行链互不干扰、内层不外泄」继续钉着这一条）。
+  const outer = store.getStore();
+  return store.run({ ...outer, ...scope }, fn);
 }
 
 /** 当前调用期的 span 作用域；不在任何 run / 调用内时 undefined。 */

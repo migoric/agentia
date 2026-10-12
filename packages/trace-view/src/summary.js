@@ -6,7 +6,10 @@
  * 数据来源（与框架侧的具名约定一致）：
  * - `capability` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）；
  * - `llm.turn` span 上的 `tool.output` 事件（普通工具不建 span）→ 工具耗时与成败，
- *   读 `body.durationMs` / `body.ok`。
+ *   读 `body.durationMs` / `body.ok`；
+ * - `llm.turn` span 上的 `approval.decided` 事件（**审批不建 span**，G7 护栏）→
+ *   `guardrail:<工具名>` 一类的等审批时长与被拒次数，读 `body.tool` / `body.approved` /
+ *   `body.waitedMs`。
  *
  * ⚠️ 单条 run 内样本常 < 5，分位没有意义 —— 排行以 total/max 为主，不给 p50/p95
  * （要看分位请用框架的 `buildRunReport` + `mergeRunReports`）。
@@ -61,6 +64,23 @@ export function summarizeTrace(trace) {
     }
     if (span.kind !== 'llm.turn') continue;
     for (const e of span.events || []) {
+      if (e.name === 'approval.decided') {
+        // G7 护栏 —— 审批**只是事件**（刻意不建 span），所以它天然不在任何 span 聚合里，
+        // 此前「哪个工具卡在审批上、被拒了几次」在排行上完全看不见。这一类补上它：
+        //   calls     = 走到「决定」这一步的次数（批准或被拒都算）；
+        //   errors    = **被拒**次数（护栏真挡下了几次 —— 它不是系统错误，但那次工具确实没跑）；
+        //   total/max = 等审批时长（事件的 `waitedMs`）。⚠️ 只有宿主回填了 `requestedAt`
+        //               才有这个数 ⇒ 缺就记 0，**不编造**（框架侧刻意不记「没数据」的 0）。
+        // ⚠️ 口径边界：只聚 `approval.decided`。只有 `approval.requested` 而始终没恢复的
+        //   挂起**不产出** guardrail 行 —— 它没有结论、也没有时长，硬记一格等于编账。
+        const b = e.body;
+        if (!b || typeof b !== 'object' || typeof b.tool !== 'string') continue;
+        const ga = get(`guardrail:${b.tool}`);
+        ga.calls += 1;
+        if (b.approved === false) ga.errors += 1;
+        addMs(ga, typeof b.waitedMs === 'number' ? b.waitedMs : 0);
+        continue;
+      }
       if (e.name !== 'tool.output') continue;
       const b = e.body;
       if (!b || typeof b !== 'object' || typeof b.tool !== 'string') continue;
