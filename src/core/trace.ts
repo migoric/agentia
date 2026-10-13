@@ -181,7 +181,11 @@ export interface Span {
   traceId: TraceId;
   parentSpanId: SpanId | null;
   kind: SpanKind;
-  name: string; // capability: `${capabilityType}:${capabilityName}`；llm.turn: model id
+  // capability 的 name 是**裸能力名**（如 `researcher`，无 `subagent:` 前缀 —— 三个生产点
+  // toolkit/subagent.ts、skill.ts、engine/mcp-server.ts 都是 `begin('capability', name, …)`；
+  // 区分 skill/subagent 看 attributes，见 capabilityKindOf。otlp.ts 曾按前缀判，生产上一条
+  // gen_ai.* 都没发出去）。llm.turn 的 name 是模型 id。
+  name: string;
   startedAt: number;
   endedAt?: number;
   status: SpanStatus;

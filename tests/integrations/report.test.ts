@@ -141,31 +141,37 @@ describe('G1 buildRunReport', () => {
 describe('G1 mergeRunReports', () => {
   it('跨 run 累加 calls/errors/durations，并按新的总耗时重排', () => {
     const a = buildRunReport(
-      traceWith([
-        span({
-          spanId: 't',
-          kind: 'llm.turn',
-          name: 'm',
-          usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
-          events: [
-            { time: 1, name: 'tool.output', body: { tool: 'slow', ok: true, durationMs: 300 } },
-          ],
-        }),
-      ]),
+      traceWith(
+        [
+          span({
+            spanId: 't',
+            kind: 'llm.turn',
+            name: 'm',
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+            events: [
+              { time: 1, name: 'tool.output', body: { tool: 'slow', ok: true, durationMs: 300 } },
+            ],
+          }),
+        ],
+        { traceId: 't-a' },
+      ),
     );
     const b = buildRunReport(
-      traceWith([
-        span({
-          spanId: 't',
-          kind: 'llm.turn',
-          name: 'm',
-          usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
-          events: [
-            { time: 1, name: 'tool.output', body: { tool: 'slow', ok: false, durationMs: 50 } },
-            { time: 2, name: 'tool.output', body: { tool: 'fast', ok: true, durationMs: 1 } },
-          ],
-        }),
-      ]),
+      traceWith(
+        [
+          span({
+            spanId: 't',
+            kind: 'llm.turn',
+            name: 'm',
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+            events: [
+              { time: 1, name: 'tool.output', body: { tool: 'slow', ok: false, durationMs: 50 } },
+              { time: 2, name: 'tool.output', body: { tool: 'fast', ok: true, durationMs: 1 } },
+            ],
+          }),
+        ],
+        { traceId: 't-b' },
+      ),
     );
     const merged = mergeRunReports([a, b]);
     assert.equal(merged.runs, 2);
@@ -181,21 +187,60 @@ describe('G1 mergeRunReports', () => {
   });
 
   it('任一 run 失败 → 合并报告 status=error；未定价模型取并集', () => {
-    const ok = buildRunReport(traceWith([]));
-    const bad = buildRunReport(traceWith([], { status: 'error' }));
+    const ok = buildRunReport(traceWith([], { traceId: 't-ok' }));
+    const bad = buildRunReport(traceWith([], { traceId: 't-bad', status: 'error' }));
     const unpriced = buildRunReport(
-      traceWith([
-        span({
-          spanId: 't',
-          kind: 'llm.turn',
-          name: 'x',
-          usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-        }),
-      ]),
+      traceWith(
+        [
+          span({
+            spanId: 't',
+            kind: 'llm.turn',
+            name: 'x',
+            usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          }),
+        ],
+        { traceId: 't-unpriced' },
+      ),
     );
     const merged = mergeRunReports([ok, bad, unpriced]);
     assert.equal(merged.status, 'error');
     assert.deepEqual(merged.unpricedModels, ['x']);
+  });
+
+  it('按 traceId 去重、只留最后一份（append-only 导出里同一棵 trace 占多行）', () => {
+    // FileTaskStore 是 append-only：挂起 save / approve 落库 / 接管再 save 写出同一棵 trace
+    // 多份 ⇒ 按行计会把 runs / 成本翻倍（CLI report 已于 2026-10-12 ⑧ 修，本用例钉框架侧同口径）
+    const mk = (turns: number) =>
+      buildRunReport(
+        traceWith(
+          Array.from({ length: turns }, (_, i) =>
+            span({
+              spanId: `t-${i}`,
+              kind: 'llm.turn',
+              name: 'm',
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+              },
+            }),
+          ),
+          { traceId: 'same-trace' },
+        ),
+      );
+    const merged = mergeRunReports([mk(1), mk(1), mk(1)]);
+    assert.equal(merged.runs, 1, '同一 traceId 三份只算一份');
+    assert.equal(merged.traceId, 'merged(1 runs)');
+    assert.equal(merged.models[0]!.turns, 1, '模型 turn 数不翻倍（留下的是最后一份）');
+  });
+
+  it('合并报告自身不参与去重（merged(...) 是合成 id 不是身份）', () => {
+    const a = mergeRunReports([buildRunReport(traceWith([], { traceId: 't-1' }))]);
+    const b = mergeRunReports([buildRunReport(traceWith([], { traceId: 't-1' }))]);
+    const merged = mergeRunReports([a, b]);
+    assert.equal(a.traceId, 'merged(1 runs)');
+    assert.equal(merged.runs, 2, '两个 merged(1 runs) 报告撞 id 也不得互相吞掉');
   });
 
   it('空数组 → 空报告（runs=0，不抛错）', () => {
@@ -256,8 +301,8 @@ describe('G1 mergeRunReports：capability 的 tokens 合并分支（report.ts 27
           costEstimate: cost,
         },
       });
-    const a = buildRunReport(traceWith([cap(10, 5, 0.001)]));
-    const b = buildRunReport(traceWith([cap(20, 7, 0.002)]));
+    const a = buildRunReport(traceWith([cap(10, 5, 0.001)], { traceId: 't-a' }));
+    const b = buildRunReport(traceWith([cap(20, 7, 0.002)], { traceId: 't-b' }));
 
     const merged = mergeRunReports([a, b]);
     const writer = merged.capabilities.find((c) => c.capability === 'skill:writer')!;
@@ -307,8 +352,8 @@ describe('S2：上游没回报 usage 的 turn 单独计数（与 unpriced 分开
 
   it('mergeRunReports：跨 run 累加、模型取并集', () => {
     const merged = mergeRunReports([
-      buildRunReport(traceWith([missingSpan()])),
-      buildRunReport(traceWith([missingSpan()])),
+      buildRunReport(traceWith([missingSpan()], { traceId: 't-a' })),
+      buildRunReport(traceWith([missingSpan()], { traceId: 't-b' })),
     ]);
     assert.equal(merged.models.find((x) => x.model === 'm-unreported')!.usageMissingTurns, 2);
     assert.deepEqual(merged.usageMissingModels, ['m-unreported']);

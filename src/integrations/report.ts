@@ -236,25 +236,40 @@ export function buildRunReport(trace: Trace): RunReport {
   };
 }
 
-/** 汇总多条报告（跨 run 的能力排行才有统计意义）。空数组 → 空报告。 */
+/**
+ * 汇总多条报告（跨 run 的能力排行才有统计意义）。空数组 → 空报告。
+ *
+ * **按 `traceId` 去重、同一 traceId 只留最后一份**（与 CLI `agentia report` 同口径，
+ * 依据见 docs/spec.md §10 2026-10-12 ⑧）：append-only 的 trace 落盘（FileTaskStore 每次
+ * save 追加一行）会把同一棵挂起段 trace 写多次，不去重则 runs / 成本按行数翻倍。
+ * `merged(n runs)` 是合并报告的合成 id（不是身份），不参与去重。
+ */
 export function mergeRunReports(reports: readonly RunReport[]): RunReport {
+  // 各 traceId 在输入里最后一次出现的位置；过滤保序（输出顺序与直觉一致）
+  const lastByTraceId = new Map<string, number>();
+  reports.forEach((r, i) => {
+    if (!r.traceId.startsWith('merged(')) lastByTraceId.set(r.traceId, i);
+  });
+  const deduped = reports.filter(
+    (r, i) => r.traceId.startsWith('merged(') || lastByTraceId.get(r.traceId) === i,
+  );
   const total: RunReport = {
-    traceId: `merged(${reports.length} runs)`,
-    status: reports.some((r) => r.status === 'error') ? 'error' : 'ok',
+    traceId: `merged(${deduped.length} runs)`,
+    status: deduped.some((r) => r.status === 'error') ? 'error' : 'ok',
     durationMs: 0,
     totalUsage: emptyUsage(),
     models: [],
     capabilities: [],
     unpricedModels: [],
     usageMissingModels: [],
-    runs: reports.length,
+    runs: deduped.length,
   };
   const capabilities = new Map<string, CapabilityAcc>();
   const models = new Map<string, ModelReport>();
   const unpriced = new Set<string>();
   const usageMissing = new Set<string>();
 
-  for (const r of reports) {
+  for (const r of deduped) {
     total.durationMs += r.durationMs;
     addUsage(total.totalUsage, r.totalUsage);
     for (const m of r.models) {

@@ -43,10 +43,10 @@ const EMPTY_SCHEMA: JsonSchema = {
   additionalProperties: false,
 };
 
-/** 方法装饰器（实例或 static 均可）：登记 prompt spec。返回值 = 资产文本。 */
+/** 方法装饰器（实例或 static 均可 —— 唯一支持静态的能力类）：登记 prompt spec。返回值 = 资产文本。 */
 export function Prompt(spec: PromptSpec) {
   return (value: Function, context: CapabilityDecoratorContext): void => {
-    assertMethodTarget(context, '@Prompt');
+    assertMethodTarget(context, '@Prompt', { allowStatic: true });
     promptSpecs.set(value, spec);
   };
 }

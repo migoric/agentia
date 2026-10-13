@@ -77,7 +77,7 @@ export interface MetricsSinkOptions {
    * 的 run 收尾永久挂起。超时按导出失败处理（交 onExportError）——观测失败不击穿业务。
    */
   timeoutMs?: number;
-  /** 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） */
+  /** 导出失败回调（缺省每次失败落一条 console.warn —— 与 traces 侧 flushSinks 同款；失败不抛出，观测不得击穿业务） */
   onExportError?: (err: unknown) => void;
   /**
    * 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）。

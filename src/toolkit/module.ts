@@ -54,6 +54,67 @@ export function registerDefaultTraceSink(sink: TraceSink): void {
   defaultSinks.push(sink);
 }
 
+/**
+ * 子菜单重名查重（2026-10-13，装配期纯件，与 capability-cycles.ts 同款纪律）：
+ * @SubAgent / @Skill 的 `tools` 引用展开结果与主菜单受同一条「模型 API 要求工具名唯一」
+ * 约束 —— 主菜单查重只管 sources 合并后的主菜单，子菜单是运行期展开的，两个 provider
+ * 各有同名能力被同一能力整片引用时，不在这里拦就会以 API 400 在运行期显形。
+ *
+ * 逐引用片展开（不调 resolveRefTools 的整体 thunk）：报错要带**引用片**来源，
+ * 整体展开会把来源信息丢掉。同一 provider 内部的重名（两个方法同显式 name、且该
+ * provider 被 toolSources 收窄逃过主菜单查重）同样被网住（报成「来自 "p" + "p"」）。
+ *
+ * `sliceOf` = 「token → 中间件包装后的该 provider 菜单」（wrappedByToken 的读法）。
+ */
+function assertNoSubmenuDuplicate(
+  providers: readonly Provider[],
+  collectedByToken: ReadonlyMap<Token, CollectedByKind>,
+  sliceOf: (token: Token) => AgentTool[],
+): void {
+  for (const p of providers) {
+    const collected = collectedByToken.get(p.provide);
+    if (collected === undefined) continue;
+    const nestedOwners: Array<{ label: string; refs: string[] }> = [
+      ...collected.subagent.map((c) => ({
+        label: `@SubAgent "${c.name}"`,
+        refs: c.spec.tools ?? [],
+      })),
+      ...collected.skill.map((c) => ({
+        label: `@Skill "${c.name}"`,
+        refs: c.spec.tools ?? [],
+      })),
+    ];
+    for (const { label, refs } of nestedOwners) {
+      if (refs.length === 0) continue;
+      // 能力名 → 提供它的引用片（同一 ref 写重也算，那同样是重名进菜单）
+      const originsByName = new Map<string, string[]>();
+      for (const ref of refs) {
+        const slash = ref.indexOf('/');
+        const token = slash === -1 ? ref : ref.slice(0, slash);
+        const refName = slash === -1 ? undefined : ref.slice(slash + 1);
+        const wrapped = sliceOf(token);
+        const slice = refName === undefined ? wrapped : wrapped.filter((t) => t.name === refName);
+        for (const t of slice) {
+          const origins = originsByName.get(t.name);
+          if (origins === undefined) originsByName.set(t.name, [ref]);
+          else origins.push(ref);
+        }
+      }
+      const dups = [...originsByName.entries()].filter(([, origins]) => origins.length > 1);
+      if (dups.length > 0) {
+        const detail = dups
+          .map(([n, origins]) => `"${n}"（来自 ${origins.map((r) => `"${r}"`).join(' + ')}）`)
+          .join(', ');
+        throw new Error(
+          `子菜单能力重名：${label} 的 tools 引用展开后 ${detail} —— ` +
+            '子 agent / skill 的菜单与主菜单受同一条「模型 API 要求工具名唯一」约束；' +
+            '请改用能力级路径（<token>/<能力名>）收窄引用，或给能力改名',
+        );
+      }
+    }
+  }
+}
+
 export interface AppOptions {
   /** 应用名；同时作为 run 名写入 trace */
   name?: string;
@@ -365,6 +426,17 @@ export class AgentApp {
     for (const p of providerList) {
       wrappedByToken.set(p.provide, wrap(buildSlice(p.provide)));
     }
+
+    // ── 子菜单重名查重（2026-10-13）──────────────────────────────────────────────
+    // @SubAgent / @Skill 的 tools 引用是**运行期**展开的（resolveTools thunk）：两个 provider
+    // 各有同名能力被同一能力整片引用时，主菜单查重（下方）看不见它 —— 装配全绿，
+    // 第一次模型调用才由 API 400（tool names must be unique）暴露。
+    // 实现是模块级纯件 assertNoSubmenuDuplicate（与成环检测同款的装配期纯件纪律）。
+    assertNoSubmenuDuplicate(
+      providerList,
+      collectedByToken,
+      (token) => wrappedByToken.get(token) ?? [],
+    );
 
     // ── 能力引用图成环检测（2026-09-28）────────────────────────────────────────────
     // 上面那次切片已经把**引用存在性**校验完了（未注册 provider / 不存在的能力名都在

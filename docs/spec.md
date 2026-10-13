@@ -6525,6 +6525,80 @@ sink 的 trace 是 `status='error'` 而根 span 是 ok、无 endedAt、无结构
 **影响面**：`src/engine/loop.ts`（入口段 try/catch）；`tests/engine/loop.test.ts` +1 条
 （labels 空键 / 空壳 fallback client 两个真实触发点，断言根 span error + endedAt +
 结构化 error 且模型请求零发出）。**验证**：去掉 catch 里的收尾 ⇒ 该用例红。
+### 2026-10-13 ③：@Tool/@SubAgent/@Skill 装饰期拒**静态方法**（与私有方法守卫同款）
+
+**起因**（五路深评 C1）：三类能力装饰器的目标守卫 `assertMethodTarget` 只拦
+`context.private` 不拦 `context.static`，而收集器 `scanDecoratedMethods` 只扫**实例原型链**
+—— 静态方法挂在构造函数上永远扫不到。于是装饰器正常登记、装配零报错、菜单里就是没有
+（四类里只有 `@Prompt` 扫构造函数链，那是它的显式支持形态）。
+
+**决策**：选「装饰期拒 static、响亮报错」，**不选**收静态 —— 静态方法没有实例 `this`，
+@Tool 的调用语义（`Reflect.apply(inst[key], instance, …)`）不成立，收下必然是错的。
+实现是 `assertMethodTarget(context, kind, { allowStatic })` 加第三参，`@Prompt` 传
+`allowStatic: true`（纯文本资产、无实例上下文需求，静态收集是它的文档化形态，不动）。
+报错文案明说「@Prompt 是唯一支持静态的能力类」，免得作者对着报错猜哪类能用。
+
+**影响面**：`src/toolkit/collect.ts`（守卫 + `CapabilityDecoratorContext.static`）、
+`src/toolkit/prompt.ts`（传 allowStatic）、`tests/toolkit/collect.test.ts`
+（改「含静态照常登记」旧断言 + 三类拒绝用例 + 真实装饰器路径一条）、`docs/usage-guide.md` §3。
+存量代码零命中（全仓没有静态 @Tool/@SubAgent/@Skill），非破坏性变更（此前静态装饰本就是
+死资产）。
+
+### 2026-10-13 ④：子菜单重名查重（@SubAgent/@Skill 的 tools 引用展开结果也查）
+
+**起因**（五路深评 C2）：装配期的「菜单能力重名」查重只跑**主菜单**（sources 合并 + 裸工具），
+而 @SubAgent/@Skill 的 `tools` 引用是**运行期**展开的（resolveTools 是延迟 thunk）——
+两个 provider 各有同名能力被同一能力整片引用时装配全绿，第一次模型调用才由 API 400
+（tool names must be unique）暴露。
+
+**决策**：装配期在 `wrappedByToken` 填齐后、成环检测之前，对每个 subagent/skill 能力
+**逐引用片**展开查重（不调用 resolveRefTools 的整体 thunk —— 报错要带引用片来源）。
+报错文案指到「哪个能力的哪几片引用」：`子菜单能力重名：@SubAgent "x" 的 tools 引用展开后
+"search"（来自 "a" + "b"）`。同一 provider 内部的重名（两个方法同显式 name、toolSources
+收窄后逃过主菜单查重的那条缝）同样被这条网住（报成「来自 "p" + "p"」）。
+修法引导写进文案：能力级路径 `<token>/<能力名>` 收窄引用，或改名。
+
+**影响面**：`src/toolkit/module.ts`（+45 行装配期校验）、`tests/toolkit/capability-refs.test.ts`
++3 条（整片叠整片 / 能力级路径叠整片 / 收窄后放行的反向对照 + 运行时菜单断言）、
+`docs/usage-guide.md`（§4 `tools` 行与 §8 常见错误行的「重名查重」口径补「主菜单+子菜单」）。
+
+### 2026-10-13 ⑤：`mergeRunReports` 去重下沉到框架公共面
+
+**起因**（五路深评 低等项）：2026-10-12 ⑧ 给 CLI `agentia report` 加了按 traceId 去重，
+但去重落在 CLI 层（对原始 trace 行做）；框架公共 API `mergeRunReports(reports)` 喂同样的
+append-only 导出照样翻倍计数。
+
+**决策**：去重下沉到 `mergeRunReports` 本身，口径与 CLI 完全一致（按 `traceId`、同一 traceId
+只留**最后一份**、保序）。⚠️ 一个刻意的例外：`merged(n runs)` 是合并报告的**合成 id 不是
+身份**，不参与去重 —— 两个「merged(1 runs)」撞 id 也不得互相吞掉（合并报告的合并是合法操作）。
+**CLI 侧不动**：CLI 的去重作用在**原始 trace 行**上（它不经过 `mergeRunReports`，
+走 trace-view 的 `summarizeTrace`），两层不是同一份代码、不存在「因此冗余」；
+`packages/cli/src/report.ts` 不是框架 `src/integrations/report.ts` 的移植副本
+（逐字对拍守护只管 harvest / diffTraces / exportRun 三份），本次无需两边同步。
+
+**影响面**：`src/integrations/report.ts`、`tests/integrations/report.test.ts`
+（存量 4 条 merge 用例夹具改**不同 traceId** —— 同 traceId 多份在新口径下本就该被去重；
++2 条：同 traceId 只留最后一份 / merged 报告不参与去重）、`docs/usage-guide.md` §6 速查行。
+
+### 2026-10-13 ⑥：两处「缺省零信号 / 簿记残留」收口（stdio 握手超时、metrics OTLP 导出失败）
+
+**起因**（五路深评两条低等项）：
+① stdio 连接器的 `guard` 超时只是「放弃等待」，`ensureReady` 的 initialize（以及
+`tools/list`）没带 `abandoned` 信号 ⇒ 超时的握手条目永远留在 `pending` 里
+（server「活着但不回包」时每超时一次泄漏一条，直到进程死 / close）；
+② `flushOtlpMetrics` 的失败在无 `onExportError` 时被 `?.` 吞掉连 warn 都没有 ——
+traces 侧缺省至少落 `console.warn`（flushSinks），metrics 侧是零信号。
+
+**决策**：
+① 握手与 `tools/list` 各自持一个 `AbortController`，`guard` 失败分支 `abort()` 之 ——
+复用 `send` 里既有的 abandoned 清理纪律（删 pending 条目 + reject；已 settle 时是 no-op）。
+② 缺省回调 = 每次失败落一条 `console.warn('[agentia] OTLP metrics 导出失败:', …)`，
+与 traces 侧 flushSinks 同款（每次都打，不做一次性降噪 —— flushSinks 就是每次）。
+
+**影响面**：`src/integrations/mcp-stdio.ts`、`src/integrations/metrics-otlp.ts`、
+`src/integrations/metrics.ts`（选项注释）、`tests/integrations/mcpConnector.test.ts` +1
+（变异验证：摘掉 abort ⇒ 新用例红）、`tests/integrations/metrics.test.ts` +1、
+`docs/usage-guide.md`（metricsSink `onExportError` 行与已知边界行）。
 
 ## 11. 开放项
 
