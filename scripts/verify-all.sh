@@ -87,6 +87,7 @@ if [ $fail -eq 0 ]; then
   ci_only=(
     'lint|lint（Biome）—— 命令与第 1 步相同，本地全绿即已覆盖'
     'e2e-mcp|e2e:mcp —— 本机跑：npm run e2e:mcp'
+    'e2e-mcp-server|e2e:mcp:server —— 本机跑：npm run e2e:mcp:server（离线零网络，CI 与本机同一条路）'
     'import-floor|导入下限（Node 18 / 20）—— 本机跑：npx node@18 scripts/check-import-floor.mjs'
   )
   echo "ℹ 分支保护共 $(( ${#ci_only[@]} + 1 )) 个必需检查 —— 本链 = verify，另有 ${#ci_only[@]} 个："

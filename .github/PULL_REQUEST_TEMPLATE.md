@@ -1,6 +1,6 @@
 <!--
 提交 PR 前请确认：
-- `bash scripts/verify-all.sh` 8/8 全绿；改过 mcp.ts 另跑 `npm run e2e:mcp`
+- `bash scripts/verify-all.sh` 8/8 全绿；改过 mcp.ts 另跑 `npm run e2e:mcp`，改过 mcp-server.ts 另跑 `npm run e2e:mcp:server`
 - 新行为带了测试；语义变更同步了 `docs/spec.md` §10
 - 改了 `docs/usage-guide.md` 时已重建派生物（dist/AGENTS.md、llms.txt）
 - 新增公共导出已同步官网 api.html

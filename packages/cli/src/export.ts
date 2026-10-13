@@ -50,10 +50,10 @@ function stringifySafe(x: unknown): string {
 
 interface ToolIoEvent {
   tool: string;
-  toolUseId?: string;
-  input?: string;
-  ok?: boolean;
-  content?: string;
+  toolUseId: string | undefined;
+  input: string | undefined;
+  ok: boolean | undefined;
+  content: string | undefined;
 }
 
 function toolEvents(turn: SpanLike, name: 'tool.input' | 'tool.output'): ToolIoEvent[] {
@@ -89,10 +89,10 @@ function parseToolInput(raw: string | undefined): Record<string, unknown> {
 }
 
 interface ExportRecordMeta {
-  traceId?: string;
-  model?: string;
-  stopReason?: string;
-  status?: string;
+  traceId: string;
+  model: string | undefined;
+  stopReason: string | undefined;
+  status: string;
   scores: Array<{ name: string; value: number }>;
   nestedTurns: number;
   droppedOutputs: number;

@@ -1160,6 +1160,25 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `${capabilityType}:${capabilityName}` 口径曾让 otlp.ts 按前缀判、生产上一条 gen_ai.* 都没发出去。
 - **依据**：`docs/spec.md` §10 2026-10-13 ⑤⑥；usage-guide（metricsSink `onExportError` 行 /
   已知边界行 / §6 `mergeRunReports` 速查行）同步。
+### 守卫射程轮：CLI 纳入 exactOptionalPropertyTypes、e2e:mcp:server 进 CI、三处货架补齐（2026-10-13 ⑦）
+
+- **D2（CLI 类型收紧）**：`packages/cli` 的 `tsconfig.json` 与 `tsconfig.templates.json`
+  此前**没开** `exactOptionalPropertyTypes`（根包 2026-09-18 起就开着），「显式 undefined
+  覆盖缺省」那类防线在 CLI 代码上无声缺位。现两份配置（连同发给用户的模板
+  `templates/tsconfig.json`）全部开启，并修掉暴露的 6 处类型错：结果记录型
+  （`SpanDiff` / `ToolIoEvent` / `ExportRecordMeta`）改必填 `T | undefined`（与框架侧
+  移植真源逐字对齐）、内部管道 `HarvestRow.messages` 改 `?: T | undefined`、公共入参
+  `harvestEvalCase` 签名不动、调用点条件展开。`tsconfig-strictness` 守卫射程扩到四份配置。
+- **D1（e2e:mcp:server 进 CI）**：MCP 反向桥端到端此前全仓零自动化；现为 CI 独立
+  **必需检查** job `e2e-mcp-server`（离线零网络、不需要 uv），并登记进 `verify-all.sh`
+  的 `ci_only` 与 CONTRIBUTING / AGENTS.md 的对应抄写。verify-all 仍是 8 步（不加第 9 步）。
+- **E2（inspector 白名单门禁）**：新增 W5 守卫 —— `dist/inspector` 里每个 `.js`/`.css`
+  都必须在 STATIC 白名单里（双向集合相等），trace-view 拆出新文件而白名单没跟上时
+  构建即红（此前表现为面板 404 白屏）。白名单本身保持显式人批。
+- **低等三项**：CI 各 job 补 `timeout-minutes`；guards-registry 货架补 `tests/scripts`；
+  `layering.test.ts` 的 import 解析改走 `lib/source-scan.ts` 遮蔽器（注释 / 模板里的
+  `from './x.js'` 不再造假依赖边）。
+- 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ⑦。
 
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 

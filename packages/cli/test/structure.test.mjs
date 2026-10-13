@@ -94,7 +94,10 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
     'dev-runner.ts': 599,
     'diff.ts': 443,
-    'harvest.ts': 389,
+    // 2026-10-13（D2 守卫射程 —— **缺陷修复前置**：CLI 两份 tsconfig 开
+    //   exactOptionalPropertyTypes，见 spec §10 2026-10-13 ③）：389 → 390（+1 =
+    //   harvestEvalCase 调用点的条件展开（公共入参纪律：签名不动）替换直传 `messages`）。
+    'harvest.ts': 390,
     // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
     'dev-protocol.ts': 337,
@@ -268,7 +271,10 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // 补账（2026-10-12 同日 ⑧，append-only 导出按 traceId 去重 —— **缺陷修复**）：
   //   9461 → 9488（+27，**全在 `report.ts`**，逐块构成见上方该文件的基线条目）。
   //   带 2 条新用例（去重 / 分组键优先级），两条变异各自咬住预期的那一条。
-  const TOTAL_BUDGET = 9488;
+  // 补账（2026-10-13，D2 守卫射程 —— CLI 开 exactOptionalPropertyTypes 的连带）：
+  //   9488 → 9489（+1，**全在 `harvest.ts`**，构成见上方该文件的基线条目）。
+  //   同批改的是 diff.ts / export.ts 的类型标注（对齐框架侧 `| undefined`），行数不变。
+  const TOTAL_BUDGET = 9489;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
@@ -337,6 +343,49 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
         `dist/${name}.js 带有 re-export —— 同上`,
       );
     }
+  });
+
+  // ---------- W5：STATIC 白名单 ↔ dist/inspector 实际文件 ----------
+  // 为什么这条存在：copy-assets 是**整树递归**拷贝 trace-view 的 dist，而
+  // inspector-routes.ts 的 STATIC 白名单是**硬编码**文件名 —— trace-view 拆出一个新模块
+  // （比如 index.js 多分一个文件）时，拷贝会带上它、白名单却没有 ⇒ 浏览器 import 它时
+  // 404、面板白屏，而 node 侧单测照样全绿（它们 import 的是 TS 源，不受白名单约束）。
+  // 白名单本身保持显式（要批谁进面板是安全决定，不该由目录内容自动放行），
+  // 但「dist/inspector 里的每个 .js/.css 都在白名单里」可以机器核 —— 计数算出来，不写死。
+  const DIST_INSPECTOR_URL = new URL('inspector/', DIST_URL);
+  const inspectorDistMissing = !existsSync(DIST_INSPECTOR_URL);
+  if (inspectorDistMissing) {
+    distReadyOrLoud(fileURLToPath(new URL('index.js', DIST_INSPECTOR_URL)), 'CLI 构建产物');
+  }
+  it('W5 dist/inspector 的每个 .js/.css 都在 STATIC 白名单里（双向集合相等）', {
+    skip: inspectorDistMissing,
+  }, () => {
+    const shipped = readdirSync(DIST_INSPECTOR_URL).filter(
+      (f) => f.endsWith('.js') || f.endsWith('.css'),
+    );
+    // 从源码的 STATIC 字面量里抽出「映射进 ASSETS 目录」的键（panel-logic/markdown
+    // 在 dist 根、不在 dist/inspector，不属于本断言的集合）
+    const routes = readFileSync(new URL('../src/inspector-routes.ts', import.meta.url), 'utf8');
+    const whitelisted = [...routes.matchAll(/\['([^']+)', join\(ASSETS, '([^']+)'\)\]/g)].map(
+      (m) => {
+        assert.equal(
+          m[1],
+          m[2],
+          `STATIC 里 '${m[1]}' 映射到 '${m[2]}' —— URL 名与磁盘名不一致，排查 404 时要多绕一层`,
+        );
+        return m[1];
+      },
+    );
+    assert.ok(
+      whitelisted.length >= 3,
+      `只解析到 ${whitelisted.length} 条 ASSETS 白名单条目 —— 解析锚点大概率失效了（本守卫在空转）`,
+    );
+    assert.deepEqual(
+      [...whitelisted].sort(),
+      [...shipped].sort(),
+      'dist/inspector 的实际文件与 STATIC 白名单不一致 —— ' +
+        'trace-view 拆/并了模块文件？拷贝是整树递归的，白名单必须同步（漏了 = 浏览器 404 白屏）',
+    );
   });
 
   // ---------- W4：并排态的状态与 DOM 必须同源 ----------

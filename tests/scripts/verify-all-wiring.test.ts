@@ -72,7 +72,14 @@ const workflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 
 const readRel = (rel: string): string => readFileSync(join(repoRoot, rel), 'utf8');
 
 /** `AGENTS.md` 把 job 写成 npm script 的拼法（`e2e:mcp`），核之前统一成 id 拼法。 */
-const norm = (s: string): string => s.replace(/e2e:mcp/g, 'e2e-mcp');
+const norm = (s: string): string =>
+  s.replace(/e2e:mcp:server/g, 'e2e-mcp-server').replace(/e2e:mcp/g, 'e2e-mcp');
+
+/**
+ * 按 job id 点名：边界要排除连字符延续（`(?<![\w-])` / `(?![\w-])`），不能只靠 `\b` ——
+ * `\b` 把 `-` 当边界，`e2e-mcp` 会匹配进 `e2e-mcp-server` 里（一个 job 被数成两个）。
+ */
+const idRe = (id: string): RegExp => new RegExp(`(?<![\\w-])${id}(?![\\w-])`);
 
 /**
  * 仓库里的 markdown：**已入库的 ∪ 未入库但未被 `.gitignore` 的**。
@@ -495,7 +502,7 @@ describe('「本链几步 / 必需检查是哪些」的每一处抄写都要与�
       .find((l) => l.includes('本地过了') && l.includes('CI 挂了'));
     assert.ok(row, 'CONTRIBUTING.md 里找不到「本地过了但 CI 挂了」那行（坑表的第一道分流）');
     const t = norm(row);
-    const missing = [...ciOnlyIds].filter((id) => !new RegExp(`\\b${id}\\b`).test(t));
+    const missing = [...ciOnlyIds].filter((id) => !idRe(id).test(t));
     assert.deepEqual(
       missing,
       [],
@@ -530,7 +537,7 @@ describe('「本链几步 / 必需检查是哪些」的每一处抄写都要与�
       `AGENTS.md 的 CI 段落列了 ${marks} 项，而 ci.yml 有 ${jobs.length} 个 job —— ` +
         'AGENTS.md 是 agent 读的那份说明，数字过期会直接误导自动读者',
     );
-    const missing = jobs.map((j) => j.id).filter((id) => !new RegExp(`\\b${id}\\b`).test(para));
+    const missing = jobs.map((j) => j.id).filter((id) => !idRe(id).test(para));
     assert.deepEqual(missing, [], `AGENTS.md 的 CI 段落没点名这些 job：${missing.join(' · ')}`);
   });
 
@@ -554,7 +561,7 @@ describe('「本链几步 / 必需检查是哪些」的每一处抄写都要与�
     const suspects = markdownInTree().filter((f) => {
       if (registered.has(f) || EXEMPT.some((e) => e.re.test(f))) return false;
       const t = norm(readRel(f));
-      return jobs.filter((j) => new RegExp(`\\b${j.id}\\b`).test(t)).length >= 3;
+      return jobs.filter((j) => idRe(j.id).test(t)).length >= 3;
     });
     assert.deepEqual(
       suspects,
