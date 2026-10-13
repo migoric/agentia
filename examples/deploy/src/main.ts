@@ -23,7 +23,17 @@ import {
 } from '@migor/agentia';
 import { providers } from './registry.js';
 
-const PORT = Number(process.env.PORT ?? 3000);
+// `PORT=`（空串）不是「用缺省」的写法，但 `Number('')` 恰好是 0 ⇒ 静默变成**随机端口**
+// （没人知道的端口 = 看起来就是起不来）。这里把空串显式当缺省，并对非整数 / 越界响亮报错。
+// ⚠️ 别改成 `Number(process.env.PORT) || 3000` —— 那会把 `PORT=0`（由 OS 分配端口，
+//    e2e 正是靠它拿随机端口）一起吃掉。与脚手架模板 templates/src/main.ts 同款判据。
+const rawPort = process.env.PORT;
+const PORT = rawPort === undefined || rawPort.trim() === '' ? 3000 : Number(rawPort);
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
+  throw new Error(
+    `PORT 必须是 0–65535 的整数（0 = 由操作系统分配），实际：${JSON.stringify(rawPort)}`,
+  );
+}
 const DB_PATH = process.env.AGENTIA_DB ?? 'agentia.db';
 
 if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });

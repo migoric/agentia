@@ -29,13 +29,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   text.ts（引擎文本口径：多块 `\n` 连接）、stop-reason.ts（stop_reason
 │   │                        #   → 收尾结论的映射表；「非正常收尾必须带结构化 error」的唯一落点）、
 │   │                        #   turn-request.ts（回合请求装配）、tool-context.ts（工具上下文透传装配 ——
-│   │                        #   八处条件展开各自是一个「漏了就静默降级」的守卫；false/0 是有意义的值）、
+│   │                        #   十处条件展开各自是一个「漏了就静默降级」的守卫；false/0 是有意义的值）、
 │   │                        #   tool-events.ts（单工具执行的记账面：两个事件体 + tool_result 块；
 │   │                        #   失败出参的截断上限**更小** —— 「哪个工具老超时」要一行看得完）
 │   │                        #   retry.ts 的 retryAllowed（重试闸四项合取，含「吐过字不重试」护栏）
 │   │                        #   loop.ts 同样在往外移纯件：run-config.ts（run 生效旋钮的缺省解析 +
 │   │                        #   快照编码 —— 认下缺省值的人就是写进 trace 的人，NaN/-1 一律记 'off'）、
-│   │                        #   loop-result.ts（循环出口的结果形状：7 个字段必在场 + 四个具名出口 ——
+│   │                        #   loop-result.ts（循环出口的结果形状：10 个字段必在场 + 四个具名出口 ——
 │   │                        #   挂起不是失败、取消也带结构化 error、抛出必被 classifyError 翻译）、
 │   │                        #   resume-input.ts（续跑入口的读取件：末尾未决 tool_use 的识别只看**末尾一条** ——
 │   │                        #   漏判就是把续跑当新对话，同一批工具再跑一遍、花费翻倍）
@@ -69,7 +69,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   后续抽块（审批监督 / 信号投递 / 恢复扫描 / drain 协调）才有基线
 │   │                        #   ⚠️ 2026-09-29 复算：09-20 写下时 895 行，**「后续三步」当时一步没走**，
 │   │                        #   类反长到 **1554 行**（文件 375→1929）；同日下午抽出审批监督 / 信号投递 /
-│   │                        #   恢复扫描三簇 ⇒ 文件 **1460 行**（含代码行 664）
+│   │                        #   恢复扫描三簇 ⇒ 文件 1460 行（含代码行 664）—— 这是**当日**读数；
+│   │                        #   2026-10-13 复算 **1380 行 / 627 代码行**，当前真值以
+│   │                        #   `tests/architecture/source-size.test.ts` 头注表为准，别在这里数
 │   │                        #   ⚠️ **原句「只剩 drain 协调未抽」是错的，2026-10-11 更正**（它让我把
 │   │                        #   已完成的抽件当成未偿的债报进评审）：drain 的**等待闸**早已抽成
 │   │                        #   `drain-gate.ts`（就在下面几行）；**在飞计数刻意不搬**（它同时是 /healthz 的
@@ -210,7 +212,9 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   /metrics · 优雅停机；模型侧是内置假 OpenAI 兼容端点，不联网）
 ├── scripts/e2e-deploy.ts    # 部署示例端到端（npm run e2e 第四步：examples/deploy 真构建、真起服务，
 │                            #   跑 /healthz · 同步 /run · /metrics · 优雅停机 + **崩溃续跑**
-│                            #   （SIGKILL 后同库重启 resumePending 续跑）；假 Anthropic 端点，不联网）
+│                            #   （SIGKILL 后同库重启 resumePending 续跑）+ **PORT 校验**（`PORT=abc`
+│                            #   必须非零退出并报校验文案 —— `Number('')`/`Number('abc')` 会被 listen
+│                            #   静默当随机端口；`PORT=0` 合法，e2e 靠它拿随机端口）；假 Anthropic 端点，不联网）
 ├── scripts/e2e-grpc.ts      # gRPC 宿主端到端（npm run e2e 第五步：examples/grpc-host 真构建、真起宿主，
 │                            #   用**示例自带的客户端**跑四个 RPC —— 一元 / 服务端流 / 异步投递 / 查任务；
 │                            #   守四处语义：deadline 到期服务端 run 真被 abort、metadata traceparent →
@@ -233,6 +237,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   断言不丢 / 不重（幂等簿记）/ 猝死续跑真把活干完 / 注入按比例落地 /
 │                            #   定时触发真在派 / 干净退出 / DB 每任务字节数有界。
 │                            #   零网络零 token；SOAK_APP_DURATION_MS / SOAK_APP_CONCURRENCY 可调）
+├── scripts/e2e-soak-suspend.ts  # 「挂起链路 × 时间维度」（npm run e2e:soak:suspend：approve /
+│                            #   timeout / signal / timer 四条臂各是一个真实唤醒源，种子固定可复现 ⇒
+│                            #   断言不丢不卡（逐批对账数 = 提交数、收尾 inFlight=0）、按**落地的决定**
+│                            #   逐笔对账（timeout 臂必须零副作用）、同 eventId 再投必须 409。
+│                            #   审批监督 / 信号投递 / 恢复扫描三簇只在这条链路上跑 —— 它们的病是
+│                            #   「不收敛」，没有错误码，只能靠长跑 + 对账抓。零网络零 token）
 ├── scripts/bench-trace-cost.ts  # trace 记录成本基准（npm run bench:trace：量「一条 run 的 trace 多大」——
 │                            #   缺省 / 不截断 / 截断 200 三种口径 × 工具调用数；实测大出参下「不截断」是
 │                            #   缺省的 13.7× ⇒ spec §9.4「全量记录成本 vs 采样阈值」的答案来源。
@@ -242,11 +252,21 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   S6b 进程启动+装配 / S6c 走 dist 的对照 / S4-S5 MCP 握手的冷热两档。
 │                            #   零网络零 token（MCP 侧是本地夹具）；CAPS / RUNS / BOOT_DIST 可调；
 │                            #   与 bench:trace 同档，不进 verify-all / CI）
+├── scripts/bench-otlp-snapshot.ts  # OTLP 导出成本基准（npm run bench:otlp：量 metrics-otlp
+│                            #   每次 flush 的 snapshot 分位成本 —— 外部深评 S4「白算分位」的数字来源。
+│                            #   同档不进 verify-all / CI）
+├── scripts/bench-redis-due.ts  # 「redis 要不要做到期索引」的基准（本机无 redis ⇒ 量**形状**：
+│                            #   list() 往返次数与纯 CPU，延迟按 RTT 外推并逐档标注「外推」；
+│                            #   无 npm script，直接 `tsx scripts/bench-redis-due.ts`）
+├── scripts/bench-resume-scan.ts  # 「挂起量 → resumePending() 扫描成本」的基准（list / resume
+│                            #   等口径对照，触发条件写进 spec §10 2026-09-28 ⑤；
+│                            #   无 npm script，直接 `tsx scripts/bench-resume-scan.ts`）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
 ├── scripts/release-surface.mjs  # **发布面清单（单源）**：一次发版要动哪些文件的哪个值 ——
-│                            #   18 项替换面（每项带 count 期望值 + 「漏了会怎样」）+ 3 项结构面；
-│                            #   闸门与 bump 共用这一份。`--list` 给人看、`--json` 给测试
+│                            #   19 项替换面（每项带 count 期望值 + 「漏了会怎样」）+ 3 项结构面
+│                            #   （`--list` 的输出是唯一真值，别在这里数）；闸门与 bump 共用这一份。
+│                            #   `--list` 给人看、`--json` 给测试
 ├── scripts/check-release.mjs  # 发版闸门：逐项断言「发布面 == 包版本」+「高于 npm 已发布版本」，
 │                            #   挂在**两包的 prepublishOnly**（不进 verify-all：未发布窗口内
 │                            #   AGENTIA_VERSION 有意落后）。`--offline` 跳网络、`--allow-pending` 降级骨架
@@ -254,16 +274,18 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   / `tag <x.y.z>`（核对 registry 产物 ↔ 仓库树后打 **annotated** tag
 │                            #   + 建 Release）/ `retag <x.y.z>`（lightweight → annotated，默认只演练）
 ├── packages/
-│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/diff/add），零运行时依赖
+│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/diff/export/add），零运行时依赖
 │   │                        #   report = trace.jsonl → 调优报告；harvest = trace.jsonl → eval 用例骨架
 │   │                        #   （harvest 的用例生成器是框架 src/eval/harvest.ts 的去类型移植副本，
 │   │                        #   packages/cli/test 有逐字对拍守护，改生成格式必须两边同步）；
 │   │                        #   diff = 两条 trace.jsonl 的调用树 A/B 比对（有差异退出码 1），
 │   │                        #   其 diffTraces 是框架 src/engine/trace-diff.ts 的去类型移植副本，
-│   │                        #   同样有逐字对拍守护，改算法必须两边同步
+│   │                        #   同样有逐字对拍守护，改算法必须两边同步；
+│   │                        #   export = trace.jsonl → 训练数据集（JSONL，一行一份 messages）
 │   │                        #   机器可读面：report / diff / doctor 支持 --json（stdout 只一个 JSON
-│   │                        #   文档、无人类装饰；出错仍 stderr + 退出码 1，stdout 保持空）；harvest
-│   │                        #   刻意没有 —— 它的 stdout 就是产物（生成的 eval 源码）。
+│   │                        #   文档、无人类装饰；出错仍 stderr + 退出码 1，stdout 保持空）；
+│   │                        #   harvest / export 刻意没有 —— 它们的 stdout 就是产物
+│   │                        #   （eval 源码 / 训练数据 JSONL）。
 │   │                        #   --version / -v 读**包自身 package.json**（不另存常量，免得漂）。
 │   │                        #   脚手架的 `dev` script 指向 `agentia dev`（与 npx 同一条路、带面板），
 │   │                        #   所以 dev 必须把额外参数透传给用户脚本（`npm run dev -- "问题"`）。
@@ -302,8 +324,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 
 - **分层单向**（`tests/architecture/layering.test.ts` 强制；改依赖方向必须同步改该测试的 ALLOWED）：
   core ← engine ← { runtime, store }；store ← transport；runtime ← toolkit；
-  `integrations` 只依赖 core（模型/trace 适配器），**engine 依赖 integrations**（仅为取默认
-  ModelClient，见下条）；`container` 与 core 是叶子
+  `integrations` 只依赖 core（模型/trace 适配器），**engine 依赖 integrations**（取默认
+  ModelClient（见下条）+ `mcp-server.ts` 取 `DEFAULT_PROTOCOL_VERSION`）；`container` 与 core 是叶子
   （不 import 任何东西），container 仅被 toolkit 依赖。core 不依赖任何上层。
   `index.ts` 是公共唯一出口，允许引用全部层。
   `eval/` 是**叶子消费模块**（依赖 toolkit 与公共面）：它 import 别人，别人不 import 它。
@@ -378,14 +400,15 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   **X 自己的输入/代码路径**（如模板生成的入口文件、模板里那句路径表达式），禁止测试脚本另算一份
   等价输入绕过产物 —— discover「生产必崩」（#83）就是这么漏的：测试脚本自己 `join(proj, 'src/tools')`，
   模板里有病的 cwd 相对路径从未被执行。
-- **验证顺序**：`npm run typecheck && npx biome ci . && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website && node scripts/check-website-agent-readiness.mjs` 全绿才算完
+- **验证顺序**：`npm run typecheck && npx biome ci . --error-on-warnings && npm run build && npm run typecheck:types && npm run typecheck:tests && npm run build:cli && npm test && npm run e2e && npm run build:website && node scripts/check-website-agent-readiness.mjs` 全绿才算完
   （在仓库里就是 `bash scripts/verify-all.sh`，8 步 —— 第 1 步同时管类型检查与 lint）。
   - **要加检查，折进已有步骤，不要加第 9 步**：`verify` job 的 name 是分支保护的必需状态检查，
     而它写死了步数（「全链验证（verify-all 8 步）」）。加一步这名就成了假话；改名则 PR 会卡死
     等一个永不出现的检查。折进已有步骤还有个好处 —— 新检查直接落进**必需**检查里。
     lint 就是这么进来的：它原本只在 CI 的独立 job 里，本地链不跑它，于是「本地 8/8 全绿、
     CI 挂 Biome」是可能的（2026-09-14 真发生了一次）。
-  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/` 四份示例的 `src`**
+  - `typecheck` = src；`typecheck:tests` = src+tests（含测试目录的类型错误）**+ `examples/`
+    九份示例的 `src` 与 `examples/patrol/drill.ts`**（清单照 `tsconfig.tests.json` 的 include）
     —— 示例此前被 tsconfig 排除在外，等于「文档指着它说『完整可跑写法』、却没有任何门禁守着」；
     靠 `paths` 映射指到框架 `src` 与 `examples/observability` 源码，因此**无需在示例目录里 install** 即可检查；
   - `typecheck:types` = **针对构建产物 dist 的类型断言测试**（`tests/types/`，用 `@ts-expect-error`
@@ -411,8 +434,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （import 面只有 `runAgent` 那几个），跑完整装配的 `e2e:examples` 又是**只跑一轮**的线性脚本 ⇒
     这一格原本空着）。**不并入**上面 8 步，理由同 `e2e:soak`：默认 30s×6 并发，是「跑久了对不对」。
     改了 `transport/` 的异步任务面（store 认领 / resumePending / scheduler）值得跑它。
+  - 另有 `npm run e2e:soak:suspend`（**挂起链路 × 时间维度**：上面两条的负载里**没有一条会挂起**，
+    而审批监督 / 信号投递 / 恢复扫描三簇只在挂起链路上跑 —— 它们的病是「不收敛」（任务永远
+    停在 suspended），没有错误码 ⇒ 只能靠长跑 + 逐笔对账抓）。**不并入**上面 8 步，理由同
+    `e2e:soak`。改了 `transport/` 的挂起面（approval-supervisor / signal-supervisor /
+    resume-scanner / wake-policy）值得跑它。
   - **CI**：`.github/workflows/ci.yml` —— 七个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
-    不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
+    不新增检查项）；② `lint`（`npx biome ci . --error-on-warnings`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
     同时当回落守卫）；⑤ `e2e:mcp:server`（MCP 反向桥端到端，离线零网络，CI 与本机同一条路）；
     ⑥ `deploy-website`（**发布**，只在 `main` 上跑：`needs: [verify, lint]` + `npm run deploy:website`
@@ -464,6 +492,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     `dist/inspector/` 在场。不等就是「这棵树不是发出去那版」，直接拒绝打 tag。
 - **官网（Astro）**：`packages/website` 是独立私有包，只影响官网，与框架本体和两个 npm 包无关。
   构建 `npm run build:website`（产物 `dist/`，已 gitignore），部署 `npm run deploy:website`（构建后上传）。
+  - **双语站（2026-10-08 起：中文 + `/en` 英文站）**：两版共用同一套客户端脚本 ⇒ 「两版之间
+    哪些必须逐字相同、哪些必须不同」由 `tests/docs/website-i18n.test.ts` 钉（页面集合一一对应、
+    fragment 的 `id` 集合逐页相等、演示剧本骨架逐例相等、英文面剥代码块后零 CJK、Nav 的
+    切换控件写 `hl` cookie）；**服务端语言协商**（`_worker.js` 的 302：`Accept-Language`
+    自动跳、显式选择（cookie）优先、防「点中又被弹回 /en」的循环）由
+    `tests/docs/website-lang-negotiation.test.ts` **真跑** worker 守 —— 它跑在构建之外，
+    单测与产物守卫都看不见它。
   - **wrangler 钉死 `4.131.0`，不要改回裸 `npx wrangler`**：`latest`（4.131.1）依赖的 workerd 二进制
     `@cloudflare/workerd-darwin-64@1.20260911.1` 从未发布（registry 最大 `1.20260910.1`），裸 `npx`
     会去拉 latest → workerd 装不上 → 挂死。`4.131.0` 是当前能装的最新版。

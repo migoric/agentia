@@ -5,8 +5,8 @@ import type { Trace, TraceSink } from '../core/trace.js';
 /**
  * Agentia —— JSONL 文件 sink：一行一条**裸 Trace** 追加落盘。
  *
- * 这是 CLI 三件套 `agentia report` / `agentia diff` / `agentia harvest` 的**输入格式**
- * （每行一个 JSON，裸 Trace）—— 消费侧早就吃这个文件，产出侧此前要用户手写
+ * 这是 CLI 四件套 `agentia report` / `agentia diff` / `agentia harvest` / `agentia export`
+ * 的**输入格式**（每行一个 JSON，裸 Trace）—— 消费侧早就吃这个文件，产出侧此前要用户手写
  * `appendFileSync` 的 sink，这里把它收进框架。
  *
  * 语义：

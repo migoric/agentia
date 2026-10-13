@@ -1,7 +1,9 @@
 // 部署示例端到端：`examples/deploy` **真构建、真起服务**，把 README 承诺的四件事真打一遍：
 //   /healthz · 同步 /run（主 agent → echo → 收尾）· /metrics · 优雅停机（drain → exit 0）
-// 外加 deploy 示例独有、此前零守卫的一条：**崩溃续跑** —— SIGKILL 模拟崩溃，同库重启后
-// `resumePending()` 必须把「running 死在半路的任务」续跑到 succeeded。
+// 外加 deploy 示例独有的两条：**崩溃续跑** —— SIGKILL 模拟崩溃，同库重启后
+// `resumePending()` 必须把「running 死在半路的任务」续跑到 succeeded；
+// **PORT 校验** —— `PORT=abc` 必须非零退出并报校验文案（`Number('')`/`Number('abc')`
+// 会被 listen 静默当随机端口），`PORT=0` 合法（本脚本自己靠它拿随机端口）。
 //
 // 为什么独立成脚本而不并进 e2e-examples.ts：那份是 complete 示例的（README 三触发全流程），
 // 这份是 deploy 示例的（最小可交付 + 耐久/续跑），两者断言面不同；且 deploy 走**框架默认的
@@ -304,6 +306,29 @@ let server: Awaited<ReturnType<typeof startExample>> | undefined;
 try {
   ensureLinks();
   buildExample();
+
+  // —— PORT 校验：`PORT=abc` 必须**响亮失败**（非零退出 + 校验文案）——
+  // 没这道闸时 `Number('abc')` = NaN、`Number('')` = 0 都会被 listen 当「随机端口」静默吞掉
+  // （没人知道的端口 = 看起来就是起不来）。`PORT=0` 是**合法**的（e2e 自己靠它拿随机端口），别误伤。
+  {
+    const bad = spawn(process.execPath, ['dist/main.js'], {
+      cwd: exampleDir,
+      env: { ...process.env, PORT: 'abc', AGENTIA_DB: join(tmp, 'bad-port.db') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let badErr = '';
+    bad.stderr?.on('data', (c: Buffer) => {
+      badErr += c.toString();
+    });
+    const badCode = await new Promise<number | null>((done) =>
+      bad.on('exit', (code) => done(code)),
+    );
+    assert(badCode !== 0 && badCode !== null, `PORT=abc 应非零退出，实际 ${String(badCode)}`);
+    assert(
+      badErr.includes('PORT 必须是 0–65535 的整数'),
+      `PORT=abc 应报 PORT 校验错，实际 stderr：${badErr.slice(0, 300)}`,
+    );
+  }
 
   // —— 阶段 A：起服务 → 提交异步任务 → 模型调用挂在闸门里 → SIGKILL 模拟崩溃 ——
   server = await startExample({ dbPath, fakeBaseURL: fake.baseURL, tag: 'A' });

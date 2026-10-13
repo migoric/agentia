@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,28 @@ describe('add.resolvePackageName', { skip: SKIP }, () => {
     assert.equal(resolvePackageName('@scope/foo@1.2.3'), '@scope/foo');
     assert.equal(resolvePackageName('plain@2.0.0'), 'plain');
     assert.equal(resolvePackageName('plain'), 'plain');
+  });
+});
+
+describe('doctor 能力入口候选（与框架 discover 的源码级对拍）', () => {
+  // doctor 不 import 框架代码（CLI 零运行时依赖），ENTRY_CANDIDATES 是双写 ——
+  // 与 harvest / diff 的移植副本同款风险，这里钉源码级逐字对拍（不依赖构建产物，不进 SKIP 闸）。
+  it('CLI doctor 与框架 discover 的 ENTRY_CANDIDATES 数组字面量逐字相等', () => {
+    const cliSrc = readFileSync(new URL('../src/doctor.ts', import.meta.url), 'utf8');
+    const fwSrc = readFileSync(
+      new URL('../../../src/toolkit/discover.ts', import.meta.url),
+      'utf8',
+    );
+    const pick = (s) => s.match(/ENTRY_CANDIDATES = \[[^\]]*\]/)?.[0];
+    const a = pick(cliSrc);
+    const b = pick(fwSrc);
+    assert.ok(a, 'packages/cli/src/doctor.ts 里没找到 ENTRY_CANDIDATES 声明（防真空变绿）');
+    assert.ok(b, 'src/toolkit/discover.ts 里没找到 ENTRY_CANDIDATES 声明（防真空变绿）');
+    assert.equal(
+      a,
+      b,
+      'doctor 的入口候选与框架 discover 漂移了 —— 改一侧必须同步另一侧（双写，无单源）',
+    );
   });
 });
 

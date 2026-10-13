@@ -4,7 +4,7 @@
  * 字符串不过编译器：模板代码对仓库自己的 typecheck/lint 不可见，缺陷要等用户
  * npm install 后才暴露（discover 路径「生产必崩」就是这么漏出去的）。真文件化后
  * 模板被仓库自己的工具链全程照看：`tsconfig.templates.json` 把它纳入 tsc
- * （'@migor/agentia' 经 paths 映射到框架 src），Biome 照常收 lint/format。
+ * （'@migor/agentia' 经 paths 映射到框架 src）；Biome 收 lint，formatter 对 templates/** 关闭（生成物字节是兼容契约，见 biome.jsonc）。
  *
  * 占位符纪律：token 只许出现在**字符串 / 注释 / 标识符**位置
  * （`__PROJECT_NAME__` / `__NAME__` / `__CLASS_NAME__` / `__METHOD_NAME__`），

@@ -830,7 +830,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
-| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` 的输入格式**，见 §6「调优报告」 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` 的输入格式**，见 §6「调优报告」 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -1098,20 +1098,24 @@ span 的 `session.id`（宿主传 `session: { store, id }` 才会写，见 §6.4
 这是刻意的取舍，读数时把「等审批」与「跑成了」分开看。
 成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和，**不含** capability 聚合 ⇒
 `@SubAgent` 里套 `@Skill` 时不会把同一批 token 数两遍）。
+能力排行的 tokens / cost 列同一条纪律：**只认顶层 capability**（没有 capability 祖先的）——
+capability span 的 usage 是其子孙 `llm.turn` 的聚合，嵌套时内层行的 tokens / cost 显示为 `-`
+（那批 token 已在外层行里 ⇒ 各行的 tokens / cost 可加总、不重复计数）；内层行的
+calls / err / 耗时照记（那是它自己这次调用的真账）。
 
 > ⚠️ **单条 run 内样本常 < 5，分位没有意义** —— 所以报告以 `total` / `max` 为主；
 > 要看分位请用 `mergeRunReports` 汇总多条，或用 `metricsSink` 的直方图。
 > CLI 报告的聚合口径与 `agentia dev` 面板的能力排行同源（同一份 `@migor/trace-view` 实现）。
 
 那个 jsonl 从哪来 —— 框架内置了文件 sink，一行接入（零依赖）。它产出的格式就是
-**CLI 三件套的输入**：`agentia report` / `agentia diff` / `agentia harvest` 都吃这个文件
-（一行一个 JSON，裸 Trace）：
+**CLI 四件套的输入**：`agentia report` / `agentia diff` / `agentia harvest` / `agentia export`
+都吃这个文件（一行一个 JSON，裸 Trace）：
 
 ```ts
 import { createApp, jsonlTraceSink } from '@migor/agentia';
 
 const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] });
-// 之后：agentia report trace.jsonl / agentia diff a.jsonl b.jsonl / agentia harvest trace.jsonl
+// 之后：agentia report trace.jsonl / agentia diff a.jsonl b.jsonl / agentia harvest trace.jsonl / agentia export trace.jsonl
 ```
 
 父目录不存在会自动递归创建；**追加不覆盖**（多跑几次就累积多行）；写失败抛给 `flushSinks`
@@ -1469,8 +1473,8 @@ const c = await app.run(messages); // 起一条新 run，沿着分叉点前的�
 每个 span 带 `path` / `missing` / `fields`），**退出码语义不变**（有差异仍为 1）—— 门禁照旧可用，
 只是「差在哪」也能被读。`agentia doctor --json` 同理（体检结果结构化，有错误仍退出 1）。
 
-> `report` / `diff` / `doctor` 支持 `--json`；`harvest` **没有**：它的 stdout 本身就是产物
-> （生成的 eval 文件源码），加 `--json` 会自相矛盾。
+> `report` / `diff` / `doctor` 支持 `--json`；`harvest` / `export` **没有**：它们的 stdout
+> 本身就是产物（生成的 eval 文件源码 / 训练数据 JSONL），加 `--json` 会自相矛盾。
 
 - **配对语义**（结构性配对，字段差异不影响配对）：llm.turn 按回合序配对、**忽略 span name** ——
   name 是模型 id，而「换模型重跑」正是 A/B 主用例，按 name 配对会把两侧所有 turn 报成缺失；

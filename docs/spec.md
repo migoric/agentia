@@ -6797,6 +6797,36 @@ resumePending**（宿主启动路径直接崩），引用语义 store 下「queu
 
 **验证**：`scheduler.test.ts` 新增：drain 前正常派发、drain 后 ≥4 个 tick 零新增调用、
 `console.error` 零调用。
+### 2026-10-13 ⑬：能力排行的 usage 只认顶层 capability（嵌套去重，E1）
+
+**起因**：2026-10-13 五路深度评审（`docs/reviews/2026-10-13/project-deep-review.md` E1）：
+`packages/trace-view/src/summary.js` 对每个 capability span 累加 `span.usage`，而框架侧
+capability.usage 是其**子孙 llm.turn 的聚合**（tracer 收尾时就地算，§9）⇒ `@SubAgent` 套
+`@Skill`（装配期允许）时同一批 token 在外层 subagent 行与内层 skill 行**各计一次**，
+tokens / costUsd 列不可加总 —— 与 `core/trace.ts`「capability 聚合不进 totalUsage，
+避免重复计数」的纪律直接冲突。CLI `report`、`dev` 面板、官网 playground 三处共用同一份
+实现，同漏。
+
+**决策**：
+
+- **聚合时跳过嵌套在其他 capability 下的 capability span 的 usage（只计顶层）**；内层行仍计
+  calls / errors / 耗时 —— 那是它自己这次调用的真账，不重复。效果：每条 llm.turn 的 token
+  只落在它的**顶层** capability 祖先行里 ⇒ 各行 tokens / costUsd 可加总。
+- **没选「从 llm.turn 重新归账」**：手写 / 外来的 trace（`report` 明言支持的输入形态）可能
+  只在 capability span 上带 usage、而没有嵌套的 llm.turn 子孙，重算会把这类成本**静默清零**。
+- 引擎与 tracer 行为不动（capability.usage 的「子孙聚合、仅供展示」语义不变）—— 变的只是
+  **展示层的加总口径**。
+- CLI `report` 的 run 成本仍取 `totalUsage.costEstimate`，不从能力行反加（理由随本次更新：
+  能力行覆盖不了 run 根直属的 llm.turn，反加会**漏**）。⚠️ `buildRunReport`
+  （`src/integrations/report.ts`）有同款嵌套累加模式，本次**刻意不碰**（评审未点名，
+  另行评估）。
+
+**影响面**：`packages/trace-view/src/summary.js`（+spanId 索引与上爬判定）、
+`packages/trace-view/test/summary.test.js`（+嵌套夹具）、
+`packages/trace-view/test/structure.test.js`（棘轮 130 → 153）、`packages/cli/src/report.ts`
+（注释更新）、`docs/usage-guide.md`（口径说明）。
+**验证**：嵌套夹具断言「内层行 tokens / cost 为 null、各行可加总」；变异（去掉顶层判定）
+当场咬住；`verify-all.sh` 8/8。
 
 ## 11. 开放项
 

@@ -4,7 +4,15 @@
  * CLI inspector 与官网 playground 共用同一份实现，避免两处聚合口径漂移。
  *
  * 数据来源（与框架侧的具名约定一致）：
- * - `capability` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）；
+ * - `capability` span（skill / subagent）→ 调用耗时与子孙 usage 聚合（tokens / costUsd）。
+ *   ⚠️ **usage 只认顶层 capability**（没有 capability 祖先的）：框架侧 capability.usage
+ *   是其**子孙 llm.turn 的聚合**（`src/engine/tracer.ts`），嵌套时（`@SubAgent` 套
+ *   `@Skill`）外层与内层带着同一批 token ⇒ 逐行累加会重复计数。嵌套行仍计
+ *   calls / errors / 耗时（那是它自己这次调用的真账，不重复），tokens / costUsd
+ *   留给顶层行 —— 各行可加总，与 `src/core/trace.ts`「capability 聚合不进
+ *   totalUsage（避免重复计数）」同一条纪律。没选「从 llm.turn 重新归账」：
+ *   手写 / 外来的 trace 可能只在 capability span 上带 usage（没有嵌套的 llm.turn
+ *   子孙），重算会把这类成本静默清零。
  * - `llm.turn` span 上的 `tool.output` 事件（普通工具不建 span）→ 工具耗时与成败，
  *   读 `body.durationMs` / `body.ok`；
  * - `approval.decided` 事件（**审批不建 span**，G7 护栏）→ `guardrail:<工具名>` 一类的
@@ -46,6 +54,21 @@ export function summarizeTrace(trace) {
   };
 
   const spans = trace?.spans || [];
+  const byId = new Map();
+  for (const s of spans) if (s && s.spanId != null) byId.set(s.spanId, s);
+  // 该 span 是否嵌套在另一个 capability 之下（沿 parentSpanId 上爬；seen 防手写 trace 的环）
+  const hasCapabilityAncestor = (span) => {
+    let p = span.parentSpanId;
+    const seen = new Set();
+    while (p != null && !seen.has(p)) {
+      seen.add(p);
+      const ps = byId.get(p);
+      if (!ps) return false;
+      if (ps.kind === 'capability') return true;
+      p = ps.parentSpanId;
+    }
+    return false;
+  };
   for (const span of spans) {
     if (span.kind === 'capability') {
       const a = get(`${kindOf(span)}:${span.name}`);
@@ -53,7 +76,7 @@ export function summarizeTrace(trace) {
       if (span.status === 'error') a.errors += 1;
       if (span.endedAt != null) addMs(a, span.endedAt - span.startedAt);
       const u = span.usage;
-      if (u) {
+      if (u && !hasCapabilityAncestor(span)) {
         a.tokens =
           (a.tokens || 0) +
           (u.inputTokens || 0) +
