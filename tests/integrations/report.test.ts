@@ -136,6 +136,44 @@ describe('G1 buildRunReport', () => {
     assert.deepEqual(r.models, []);
     assert.equal(r.durationMs, 500);
   });
+
+  it('嵌套能力（@SubAgent 套 @Skill）：usage 只计顶层行，各行 tokens/cost 可加总', () => {
+    // capability.usage 是子孙 llm.turn 的聚合 ⇒ 嵌套时外层与内层带着同一批 token，
+    // 逐行累加会重复计数（与 trace-view summarizeTrace 同款口径）。
+    const trace = traceWith([
+      span({
+        spanId: 'cap-outer',
+        kind: 'capability',
+        name: 'researcher',
+        attributes: { subagent: 'researcher' },
+        startedAt: 100,
+        endedAt: 400,
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.002 },
+      }),
+      span({
+        spanId: 'cap-inner',
+        kind: 'capability',
+        name: 'writer',
+        attributes: { skill: 'writer' },
+        parentSpanId: 'cap-outer',
+        startedAt: 150,
+        endedAt: 300,
+        // 框架语义：这是外层那笔的子集（同一批 token 的再聚合）
+        usage: { inputTokens: 4, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.001 },
+      }),
+    ]);
+    const r = buildRunReport(trace);
+    const outer = r.capabilities.find((c) => c.capability === 'subagent:researcher')!;
+    const inner = r.capabilities.find((c) => c.capability === 'skill:writer')!;
+    assert.equal(outer.tokensTotal, 15, '顶层行带上自己的聚合');
+    assert.equal(outer.costUsd, 0.002);
+    assert.equal(inner.calls, 1, '嵌套行仍计调用次数（它自己这次调用的真账）');
+    assert.equal(inner.tokens, null, '嵌套行的 usage 不重复计（去掉顶层判定则此处红）');
+    assert.equal(inner.tokensTotal, null);
+    assert.equal(inner.costUsd, null);
+    const sum = r.capabilities.reduce((acc, c) => acc + (c.tokensTotal ?? 0), 0);
+    assert.equal(sum, 15, '各行 tokensTotal 可加总、且不双计');
+  });
 });
 
 describe('G1 mergeRunReports', () => {

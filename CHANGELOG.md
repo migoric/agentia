@@ -1239,6 +1239,17 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   summary.js 130 → 153。
 - **验证**：嵌套夹具 + 变异验证（去掉顶层判定 ⇒ 新用例红）；`verify-all.sh` 8/8。
 
+### 修复：`buildRunReport` 的嵌套能力重复计数（2026-10-13 ⑭）
+
+- **病灶**：⑬ 修的是 trace-view 展示层；框架公共 API `buildRunReport`
+  （`src/integrations/report.ts`）有同款嵌套累加 —— `@SubAgent` 套 `@Skill` 时同一批
+  token 在外层与内层行各计一次，能力排行的 tokens/costUsd 不可加总。消费方
+  `examples/observability-mcp` 的 `report_trace` 工具同漏。
+- **修法**：与 ⑬ 完全同款 —— 沿 `parentSpanId` 上爬判 capability 祖先（带防环），
+  嵌套行的 usage 不累加（`tokens`/`tokensTotal`/`costUsd` 为 `null`），calls/errors/耗时
+  照计 ⇒ 各行可加总。依据见 `docs/spec.md` §10 2026-10-13 ⑭。
+- **验证**：`tests/integrations/report.test.ts` 新增嵌套夹具（去掉顶层判定即红）。
+
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 
 - **病灶**：真实审批流是「挂起 → 人批 → 带 approvals 恢复」；恢复段的工具执行走续跑入口

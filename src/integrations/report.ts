@@ -1,5 +1,5 @@
 import { capabilityKindOf } from '../core/trace.js';
-import type { Trace, Usage } from '../core/trace.js';
+import type { Span, Trace, Usage } from '../core/trace.js';
 import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
@@ -12,7 +12,12 @@ import { percentile } from '../core/stats.js';
  *
  * 数据全部从既有 trace 派生，**纯函数、无副作用、不联网**：
  * - 能力级：`tool` 读 turn 上的 `tool.output` 事件（E1 补的 `durationMs`/`ok`），
- *   `skill`/`subagent` 读 `capability` span（tracer 已聚合其子孙 usage）；
+ *   `skill`/`subagent` 读 `capability` span（tracer 已聚合其子孙 usage）。
+ *   ⚠️ **usage 只认顶层 capability**（没有 capability 祖先的）：capability.usage 是其
+ *   子孙 llm.turn 的聚合，嵌套时（@SubAgent 套 @Skill）外层与内层带着同一批 token
+ *   ⇒ 逐行累加会重复计数。嵌套行仍计 calls/errors/耗时（它自己这次调用的真账），
+ *   tokens/costUsd 留给顶层行 ⇒ 各行可加总。与 `core/trace.ts`「capability 聚合不进
+ *   totalUsage」、trace-view `summarizeTrace` 同一条纪律（三处口径一致）。
  * - 模型级：读 `llm.turn` span（`name` 即模型 id）。
  *
  * ⚠️ **单条 run 的分位没有统计意义**（样本常 < 5）：报告以 `total` / `max` 为主，
@@ -138,13 +143,30 @@ export function buildRunReport(trace: Trace): RunReport {
   const unpriced = new Set<string>();
   const usageMissing = new Set<string>();
 
+  // 嵌套判定（沿 parentSpanId 上爬；seen 防手写 trace 的环）——与 trace-view 的
+  // summarizeTrace 同款：usage 只计顶层 capability，嵌套行的 token 是它外层祖先行那笔。
+  const byId = new Map<string, Span>();
+  for (const s of trace.spans) byId.set(s.spanId, s);
+  const hasCapabilityAncestor = (span: Span): boolean => {
+    let p = span.parentSpanId;
+    const seen = new Set<string>();
+    while (p != null && !seen.has(p)) {
+      seen.add(p);
+      const ps = byId.get(p);
+      if (!ps) return false;
+      if (ps.kind === 'capability') return true;
+      p = ps.parentSpanId;
+    }
+    return false;
+  };
+
   for (const span of trace.spans) {
     if (span.kind === 'capability') {
       const a = acc(`${capabilityKindOf(span)}:${span.name}`);
       a.calls++;
       if (span.status === 'error') a.errors++;
       if (span.endedAt !== undefined) a.durations.push(Math.max(0, span.endedAt - span.startedAt));
-      if (span.usage) {
+      if (span.usage && !hasCapabilityAncestor(span)) {
         a.tokens = a.tokens ? { ...a.tokens } : emptyUsage();
         addUsage(a.tokens, span.usage);
         if (span.usage.costEstimate != null) a.costUsd = (a.costUsd ?? 0) + span.usage.costEstimate;
