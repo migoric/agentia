@@ -77,6 +77,12 @@ export interface SignalSupervisorDeps {
   approvals: ApprovalSupervisor;
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
+  /**
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：投递进入前等它收口再重判
+   * （否则事件落库与 cancelled 落库互相覆盖，两边都说了假话）。
+   * ⚠️ 必须在**入链之前**等：链尾一旦被 cancel 当成「在飞推进」等下去就是死等。
+   */
+  cancelInflight?(taskId: string): Promise<unknown> | undefined;
 }
 
 export class SignalSupervisor {
@@ -117,6 +123,15 @@ export class SignalSupervisor {
    * 事件两种原因都适用，是这个闸新盖的缝 —— 已记在 spec §10 2026-09-28 ⑥）。
    */
   signalTask(taskId: string, event: TaskEvent): Promise<TaskRecord> {
+    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ②）。**入链之前**等：
+    // 链尾会同步登记进 `#inflight`，cancel 侧的「等在飞推进」正等它 —— 进了链再等
+    // cancel，就是两边互等的死锁。
+    const settling = this.#deps.cancelInflight?.(taskId);
+    if (settling) {
+      return Promise.resolve(settling)
+        .catch(() => undefined)
+        .then(() => this.signalTask(taskId, event));
+    }
     // 串行化（**不是** approve 那种「共享在飞那次」）：两个并发事件是**两条不同的输入**，
     // 共享在飞那次 = 后一条被静默丢掉；各自读-改-写而不互斥 = 双派发（与 resumePending
     // 的重入闸同一个 bug 类）。排成链：前一次落库完，这一次进闸后重读再判
@@ -131,6 +146,11 @@ export class SignalSupervisor {
       });
     this.#inflight.set(taskId, run);
     return run;
+  }
+
+  /** 该任务上在飞的事件投递链尾（cancel 的等待依据，2026-10-13 ②） */
+  inflightFor(taskId: string): Promise<TaskRecord> | undefined {
+    return this.#inflight.get(taskId);
   }
 
   async #signalInner(taskId: string, event: TaskEvent): Promise<TaskRecord> {

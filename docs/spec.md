@@ -6683,6 +6683,120 @@ CLI 移植对拍三套件（diff / export / harvest，22 条）绿 —— 对拍
 `tests/engine/trace-limits.test.ts`（多次 snapshot 摘要逐字一致且与增量流同一份）、
 `tests/engine/mcp-server.test.ts`（listenerCount 不累积 / 构造期坏值 / 闸与截断透传）；
 `npm run e2e:mcp:server` 全绿。
+### 2026-10-13 ⑨：TaskStore 副本契约坐实 —— 内建 store 的 `save` 入库与 `get`/`byIdempotency`/`list` 出站全走 `cloneTaskRecord`
+
+**起因**（五路深评 B2）：`TaskStore.get` 的契约注释早就写着「返回的必须是反序列化副本 /
+快照，不是内部活引用」，而 `InMemoryTaskStore` / `FileTaskStore` 两个内建实现交出的就是
+活引用 —— 声明写下去了实现没跟上。真实后果：transport 的纪律是「先变异 rec、再
+`await save` 落库」（approve / 恢复路径的「重读 → 改 status → 先落库再派发」），活引用下
+`FileTaskStore.save` 同步抛错（磁盘满）时变异**已经进了内存 Map** ⇒ approve 重试撞 409
+（状态已是 running），任务搁死到重启；`fsStore.test.ts` 那条「落盘失败内存不推进」用例
+恰好只用**新记录**，测不到「改活记录 + append 抛错」这一格。
+
+**决策**：
+
+- **副本契约双向坐实**：`save` 存副本（内存推进只许由 save 驱动：调用方两次 save 之间的
+  中间态对其他读者不可见，save 失败时污染不留在库里），`get` / `byIdempotency` / `list`
+  一律交副本。唯一落点是 `store.ts` 的 `cloneTaskRecord`。
+- **克隆件不是序列化往返**：递归克隆数组与**纯对象**（原型为 `Object.prototype` 或 null），
+  函数与类实例**按引用保留** —— `spec.options` 里合法装着 `AbortSignal` / `ModelClient` /
+  工具的 `run` 等进程内对象，`structuredClone` 遇上它们直接抛 `DataCloneError`
+  （sqlite/redis 序列化时本来也丢它们，见 `RunInvocationOptions.fallbacks` 的序列化边界注释）。
+- **性能取舍（如实记录）**：`get` / `list` 现在每次付出与记录体积成正比的克隆成本
+  （记录含完整 trace）。接受它的理由：sqlite/redis 每次读本来就付全量反序列化，内建
+  store 只是对齐到同一成本模型；「换宿主不换语义」（§6.6）的前提恰恰是各实现的行为
+  一致 —— 引用语义是 InMemory/File 独有的**意外**，不是可以保留的性能特性。
+  `resumePending` 的全表 `list()` 克隆是扫描量级的一次性成本，不在高频路径上。
+- **行为变化（要如实说的）**：终态那次 save 抛错时，库里**诚实地停在最后一次落库成功的
+  状态**（running）而不再是「引用语义下内存已被原地推进成终态」—— 这正是
+  `onPersistError` 要对账的那一格，此前被引用语义遮掉了。`async.test.ts` 两条用例的
+  断言随之从「库里已是 succeeded」改成「库里停在 running」。
+
+**影响面**：`src/store/store.ts`（cloneTaskRecord + 两个实现的四个读/写点）、
+`src/store/fsStore.ts`（同款四点）；`AsyncRunner.submit` / `#claims` 的去重返回从浅拷贝
+升级为 `cloneTaskRecord`（低等项「浅拷贝与活记录共享嵌套对象」随本件一并收口 —— 评估结论
+是**需要做**：HITL 挂起会整体替换 `rec.spec.messages`，浅拷贝的提交快照照样被穿透）。
+**验证**：`tests/store/taskStore-copy.test.ts`（新：两实现 × get/save/byIdempotency+list
+副本断言、AbortSignal 按引用保留、改活记录+append 失败内存不推进）；既有套件里依赖
+「poll 回来改字段即生效」的三处用例改为显式 `save` 后再判（approval / durable-timer /
+run-outcome）。
+
+### 2026-10-13 ⑩：cancel 与推进路径的互斥闸 —— `#cancelInflight` 对侧闸 + `#executeInner` 取消意图闸
+
+**起因**（五路深评 B1）：`#cancel` 不共享 approve 的在飞闸 / signalTask 的串行链 /
+wakeDue 闸 / 槽位后的 readClaimed 重读 —— 25 条 cancel 用例全是串行时序。两扇窗都真实：
+① cancel(suspended)×approve 并发：两边各凭旧快照读-改-写，后写的把 cancelled 覆盖回
+running ⇒ 任务取消后照常执行、`onFinished` 双发（`#cancelSettled` 当时只对 queued 分支
+登记）；② cancel(queued)×槽位释放并发：等槽位那趟 `#executeInner` 的 readClaimed 读到
+cancel 落库前的快照，照常置 running 落库 ⇒ 「被取消的排队任务绝不起跑」不成立。
+
+**决策**（三件合力，各有不可替代的一段）：
+
+- **`#cancelInflight`（per-task 在飞闸）+ 互为对侧**：cancel 进入前先等该任务的在飞推进
+  （approve / signalTask / wakeDue 三条，经各监督件新增的 `inflightFor` / `inflightWakeFor`
+  读数）收口、**重读**记录再判；推进路径进入前同步看一眼 cancel 闸 —— approve / signalTask
+  等它收口后重走（signalTask 必须**入链之前**等：链尾一旦被 cancel 当「在飞推进」等就是
+  死等）；到期唤醒 / 审批超时是**惰性**路径，见闸即跳过本轮（下轮再判，不丢事）。
+  两侧的「查对方闸 + 登记自己闸」都在**同一个同步段** ⇒ 先登记者赢，没有缝隙；等待方
+  都不在持有自己闸的状态下等对方 ⇒ 无死锁。并发 cancel 同任务也串行（后者等前者收尾
+  重读，多半撞 409）。
+- **cancel 的临界段原子落库**：不再走 `#safeSave` 的微任务延迟 —— 落库推迟一个微任务，
+  「重读再判」那几条路就会在缝里读到取消前的旧状态。同步 store 下 cancel 的
+  get→落库因此是原子的，无在飞推进时维持同步快路径（同步抛 404/409 的既有语义不变）。
+  失败口径与 `#safeSave` 相同（不遮罩 + `onPersistError`），上报逻辑抽成
+  `#reportPersistError` 共用。
+- **`#executeInner` 起跑前的取消意图闸**：意图（`#cancels`）在 cancel 临界段**入口**就立
+  （先于落库可见），且生命周期收紧为「还有活着的 `#execute` 就不摘」（四个出口：run 收尾 /
+  意图闸 / cancel 的 finish / `#execute` finally 兜底）。意图在场 ⇒ 绝不起跑，记录落
+  cancelled，**记账归 cancel** —— 这是 `#cancelSettled` 的第二个生产者（覆盖面从 queued
+  补齐到「被并发恢复路径派发出来的 suspended 取消」），登记者与消费者同为那趟
+  `#execute`，不泄漏。
+
+**影响面**：`async.ts`（闸 + 意图闸 + 临界段原子落库）、三个监督件各加一个
+`cancelInflight` 注入读数与一个 `inflightFor` 出口（依赖仍单向：回调注入，无 import）。
+**验证**：`tests/transport/cancel-race.test.ts`（新）：cancel×approve 两个方向
+（approve 先赢 ⇒ cancel 409「已受理未起跑」、任务跑完、onFinished 恰好一次；cancel 先赢
+⇒ approve 重读见 cancelled 409、工具零执行）；cancel×槽位用「读过期快照」夹具
+（`StaleOnceStore`）复现窗口 ⇒ 意图闸拦下、绝不跑、不双发、终态不被覆盖。
+
+### 2026-10-13 ⑪：恢复路径的落库失败防护 —— 认领 save 接同步抛错，三处 catch 不再静默留尸
+
+**起因**（五路深评 B3 + 低等项）：`resume-scanner` 的认领循环里 `store.save(rec)` 没有
+try/catch（同文件 `#wakeDueInner` 有）—— FileTaskStore 磁盘失败时异常**同步逃出
+resumePending**（宿主启动路径直接崩），引用语义 store 下「queued + 本进程 ownerId」的
+变异已进内存 ⇒ 后续扫描按 own-process 跳过 ⇒ 搁死到重启（⑨ 的副本契约把「污染内存」
+那一半也关掉了，但同步抛出这一半必须在调用点接）。且三处恢复路径
+（认领 / 审批超时 / 到期唤醒）落库失败都是 catch 后裸 return —— 静默留尸，对照
+`#dispatch` 的停机拒绝都有一次性 warn。
+
+**决策**：
+
+- 认领 save 同步抛错 ⇒ **接住、warn、不派发、不计入推进数**（返回值是「推进了几条」的
+  承诺，没落库就不是推进）；异步 reject 同款（此前它会让 `Promise.all` 整批 reject，
+  resumePending 的调用方多半不接 ⇒ unhandled rejection）。
+- `#wakeDueInner` / `#expireAndResumeInner` 的两个 catch 分支各补 `console.warn`
+  （带 taskId 与错误消息）。不做「一次性」去重：这两处是**每任务每故障一笔**，与
+  `#dispatch` 那种「同一窗口同一原因刷 N 条」不同构。
+- 三条路径语义不变：落不了库 = 不派发（先落库再派发），下轮惰性扫描还会再判。
+
+**验证**：`tests/transport/resume-scanner.test.ts`（新，直接构造监督件 + stub store）：
+认领同步抛 / 异步 reject 各一条（不逃出、不派发、warn、计 0）+ 阳性对照（正常认领照常
+派发）；wakeDue 两个分支的 warn；审批超时恢复的 warn；cancel 在飞时两条惰性路径跳过
+本轮（含阳性对照）。
+
+### 2026-10-13 ⑫：Scheduler 感知 drain —— 停机窗口里 tick 静默跳过
+
+**起因**（五路深评低等项）：runner drain 之后 `submit` 必抛「正在优雅停机」，Scheduler
+的 `dispatch` 没有 drain 闸 ⇒ 停机窗口里每个 tick 换一条 `console.error`（纯刷屏；
+停机语义本来就是「不再往前推」，跳过 tick 不是故障）。
+
+**决策**：`dispatch` 开头查 `runner.isDraining`，在停机即**直接返回**（静默 —— 与
+`wakeDue` 的 drain 闸同口径；宿主此刻的义务是退出，见 `drain()` 契约）。选静默而非
+一次性 warn：调度器的 tick 是周期事件，「停机后没再派活」由 drain 本身的语义覆盖，
+再加一条 warn 是给必发生的事件造噪音。
+
+**验证**：`scheduler.test.ts` 新增：drain 前正常派发、drain 后 ≥4 个 tick 零新增调用、
+`console.error` 零调用。
 
 ## 11. 开放项
 

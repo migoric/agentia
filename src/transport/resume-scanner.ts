@@ -60,6 +60,11 @@ export interface ResumeScannerDeps {
   dispatch(rec: TaskRecord): void;
   /** 停机闸读数（`wakeDue` 的配套 5：drain 之后不唤醒，见 `drain-gate.ts`） */
   isDraining(): boolean;
+  /**
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：到期唤醒见它即**跳过本轮**
+   * （惰性路径下一轮还会再判；cancel 会把任务落终态，唤醒就是「取消后照常执行」）。
+   */
+  cancelInflight?(taskId: string): Promise<unknown> | undefined;
 }
 
 export class ResumeScanner {
@@ -137,6 +142,9 @@ export class ResumeScanner {
     // 不设这道闸，一条天级的 sleeping run 会在停机窗口里被叫起来接着跑 —— 部署卡在它身上。
     // （重启后由新进程的首次 resumePending 唤醒：那时停机窗口早过去了。）
     if (this.#deps.isDraining()) return false;
+    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ②）：它马上把任务落终态，唤醒就是「取消后照常执行」。
+    // 惰性路径跳过不丢事：下一轮读还会再判（若取消没成）。
+    if (this.#deps.cancelInflight?.(rec.taskId)) return false;
     if (this.#inflightWakes.has(rec.taskId)) return false;
     const run = this.#wakeDueInner(rec, now).finally(() => {
       this.#inflightWakes.delete(rec.taskId);
@@ -145,6 +153,11 @@ export class ResumeScanner {
     // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
     run.catch(() => undefined);
     return true;
+  }
+
+  /** 该任务上在飞的到期唤醒（cancel 的等待依据，2026-10-13 ②） */
+  inflightWakeFor(taskId: string): Promise<TaskRecord> | undefined {
+    return this.#inflightWakes.get(taskId);
   }
 
   /**
@@ -203,21 +216,50 @@ export class ResumeScanner {
         }) === undefined,
     );
 
-    const claims: Promise<void>[] = [];
+    const claims: Promise<boolean>[] = [];
+    let claimed = 0;
     for (const rec of pending) {
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
       rec.ownerId = this.#deps.ownerId; // 认领：此后本进程的记录不再被（自己）重派
-      const saved = this.#deps.store.save(rec);
+      // 同步抛错防护（2026-10-13 ③，与 #wakeDueInner 同款）：FileTaskStore 磁盘失败在这里
+      // 同步抛出 —— 不接住就逃出 resumePending（宿主启动路径直接崩）。落不了库 = 没推进：
+      // 不派发、不计入返回值；warn 出来（静默留尸的话任务搁死到重启都没人知道）。
+      let saved: MaybePromise<void>;
+      try {
+        saved = this.#deps.store.save(rec);
+      } catch (err) {
+        console.warn(
+          `[agentia] 认领落库失败（task ${rec.taskId}），本次不重投:`,
+          (err as Error)?.message ?? err,
+        );
+        continue;
+      }
       if (isThenable(saved)) {
         // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
-        claims.push(Promise.resolve(saved).then(() => this.#deps.dispatch(rec)));
+        claims.push(
+          Promise.resolve(saved).then(
+            () => {
+              this.#deps.dispatch(rec);
+              return true;
+            },
+            (err: unknown) => {
+              console.warn(
+                `[agentia] 认领落库失败（task ${rec.taskId}），本次不重投:`,
+                (err as Error)?.message ?? err,
+              );
+              return false;
+            },
+          ),
+        );
       } else {
         // 派发走唯一入口（闸在 #dispatch 里）—— 外部深评 P2-1：认领循环以前绕过了那道闸。
         this.#deps.dispatch(rec);
+        claimed++;
       }
     }
-    if (claims.length === 0) return pending.length + expired + woken;
-    return Promise.all(claims).then(() => pending.length + expired + woken);
+    const settled = Promise.all(claims).then((oks) => oks.filter(Boolean).length);
+    if (claims.length === 0) return claimed + expired + woken;
+    return settled.then((n) => claimed + n + expired + woken);
   }
 
   async #wakeDueInner(rec: TaskRecord, now: number): Promise<TaskRecord> {
@@ -231,13 +273,23 @@ export class ResumeScanner {
     let saved: MaybePromise<void>;
     try {
       saved = this.#deps.store.save(target);
-    } catch {
-      return target; // 同步落库失败则不派发（先落库再派发，见 approval-supervisor.ts 的 #expireAndResumeInner）
+    } catch (err) {
+      // 同步落库失败则不派发（先落库再派发）—— 但不静默：留尸到下一次惰性判定
+      // 之前，至少日志里要有这一笔（与 #dispatch 停机拒绝的 warn 同一条纪律）。
+      console.warn(
+        `[agentia] 到期唤醒落库失败（task ${target.taskId}），本次不派发:`,
+        (err as Error)?.message ?? err,
+      );
+      return target;
     }
     if (isThenable(saved)) {
       try {
         await saved;
-      } catch {
+      } catch (err) {
+        console.warn(
+          `[agentia] 到期唤醒落库失败（task ${target.taskId}），本次不派发:`,
+          (err as Error)?.message ?? err,
+        );
         return target;
       }
     }

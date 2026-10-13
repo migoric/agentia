@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { parseTaskRecord } from './record.js';
+import { cloneTaskRecord } from './store.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
 /**
@@ -105,21 +106,24 @@ export class FileTaskStore implements TaskStore {
     // 「已存」而磁盘没有（append-only 日志里也没这一笔），进程重启后记录静默回退，
     // 任务状态与持久层两本账。顺序反过来时抛错点在内存推进之后，丢的就是这个不变量。
     this.append(rec);
-    this.byTask.set(rec.taskId, rec);
+    // 内存同样只存副本（2026-10-13 ①）：调用方此后对 rec 的推进不得绕过 save 直接可见
+    this.byTask.set(rec.taskId, cloneTaskRecord(rec));
     if (rec.idempotencyKey) this.byKey.set(rec.idempotencyKey, rec.taskId);
   }
 
   get(taskId: string): TaskRecord | undefined {
-    return this.byTask.get(taskId);
+    const rec = this.byTask.get(taskId);
+    return rec === undefined ? undefined : cloneTaskRecord(rec);
   }
 
   byIdempotency(key: string): TaskRecord | undefined {
     const taskId = this.byKey.get(key);
-    return taskId ? this.byTask.get(taskId) : undefined;
+    const rec = taskId ? this.byTask.get(taskId) : undefined;
+    return rec === undefined ? undefined : cloneTaskRecord(rec);
   }
 
   list(): TaskRecord[] {
-    return [...this.byTask.values()];
+    return [...this.byTask.values()].map(cloneTaskRecord);
   }
 
   clear(): void {

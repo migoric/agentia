@@ -8,7 +8,7 @@ import type { RunStatus, TaskEvent } from '../core/run.js';
 import { isTerminalStatus } from '../core/run.js';
 import { normalizeMessages, TaskInputError } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
-import { InMemoryTaskStore, isThenable, nextTaskId } from '../store/store.js';
+import { InMemoryTaskStore, cloneTaskRecord, isThenable, nextTaskId } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { abortedError } from '../engine/turn.js';
@@ -503,6 +503,7 @@ export class AsyncRunner {
       ownerId: this.ownerId,
       approvalTimeoutMs: this.approvalTimeoutMs,
       dispatch: (rec) => this.#dispatch(rec),
+      cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
     });
     // 事件投递与恢复扫描同样在 ownerId 就位后构造。两处**回调注入**的理由与 `#approvals` 一致：
     // `#dispatch`（停机闸 + 唯一派发点 + 一次性告警）与 drain 读数都归本类，两个监督件只**消费**它们
@@ -512,6 +513,7 @@ export class AsyncRunner {
       ownerId: this.ownerId,
       approvals: this.#approvals,
       dispatch: (rec) => this.#dispatch(rec),
+      cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
     });
     this.#scanner = new ResumeScanner({
       store: this.store,
@@ -520,6 +522,7 @@ export class AsyncRunner {
       approvals: this.#approvals,
       dispatch: (rec) => this.#dispatch(rec),
       isDraining: () => this.#drain.isDraining,
+      cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
     });
   }
 
@@ -551,7 +554,7 @@ export class AsyncRunner {
       // Promise，同步门面等不了；而 #executeInner 只采纳已 succeeded 的记录 ⇒ 不认领这条，
       // 「同时提交两个同键任务」会两次都执行（见 #claims 的注释）。
       const inFlight = this.#claims.get(opts.idempotencyKey);
-      if (inFlight) return { ...inFlight };
+      if (inFlight) return cloneTaskRecord(inFlight);
       const existing = this.store.byIdempotency(opts.idempotencyKey);
       if (isThenable(existing)) {
         // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute。
@@ -613,8 +616,9 @@ export class AsyncRunner {
     // 仍然走它：**「派发一律走唯一入口」这条纪律不该有例外** —— 少一个例外，就少一处将来
     // 新增恢复路径时会漏的枚举。
     this.#dispatch(rec);
-    // 返回浅拷贝：记录会被后台状态机原地推进，调用方拿到的是提交时刻的快照
-    return { ...rec };
+    // 返回深拷贝（2026-10-13 ③ 收口）：记录会被后台状态机原地推进，浅拷贝只隔顶层 ——
+    // `spec.messages` 等嵌套对象此前与 runner 的活记录共享（HITL 挂起会换 spec.messages）。
+    return cloneTaskRecord(rec);
   }
 
   /** 查任务当前记录（异步 store 下返回 Promise，调用方 await） */
@@ -699,6 +703,18 @@ export class AsyncRunner {
   }
 
   /**
+   * cancel 的 per-task 在飞闸（2026-10-13 ②）—— cancel 与四条推进路径（approve /
+   * 事件投递 / 到期唤醒 / 审批超时恢复）之间的**互斥**靠它合上：
+   * - cancel 进入前：先等该任务的在飞推进收口、**重读**记录再判（凭进闸前的旧快照落
+   *   cancelled，会被对方随后的 running 落库覆盖回去 —— 任务取消后照常执行）；
+   * - 推进路径进入前：同步看一眼本闸（approve / signalTask 等它收口后重试；
+   *   到期唤醒 / 审批超时是**惰性**路径，跳过本轮、下一轮再判）。
+   * 两侧的「检查对方闸 + 登记自己闸」都在**同一个同步段**里 ⇒ 先登记者赢，没有缝隙。
+   * 同步 store 的 cancel 临界段（get → 落库）本身原子，不走本闸。
+   */
+  readonly #cancelInflight = new Map<string, Promise<TaskRecord>>();
+
+  /**
    * 取消一个任务（durable 配套 5 的另一半；设计稿 `docs/plans/2026-09-28-cancel-api.md`）。
    *
    * 三种「在服」状态各自的语义 —— 都落在这一处，不分散：
@@ -727,11 +743,52 @@ export class AsyncRunner {
    * 它**不是**「不在本进程」—— 原文案一律那么说，对这一类是说反话。两种情形分开措辞
    * （见 `#cancel` 的判据），但**闸不放开**：放开会让等槽位那趟 `#execute` 的 finally
    * 双发 `onFinished`（spec §10 的变异 M23）。
+   *
+   * 与推进路径的互斥（2026-10-13 ②）：见 `#cancelInflight` 的注释。并发 cancel 同任务
+   * 串行：第二个等第一个收尾后重读再判（多半撞上「已终态 ⇒ 409」）。
    */
   cancel(taskId: string): MaybePromise<TaskRecord> {
+    // 并发 cancel 串行（2026-10-13 ②）：两个并发 cancel 各自读-改-写会双记账（webhook 双发）
+    const own = this.#cancelInflight.get(taskId);
+    if (own)
+      return own.then(
+        () => this.cancel(taskId),
+        () => this.cancel(taskId),
+      );
+    const advance = this.#advanceInflight(taskId);
     const found = this.store.get(taskId);
-    if (isThenable(found)) return found.then((rec) => this.#cancel(rec, taskId));
+    if (advance !== undefined || isThenable(found)) {
+      // 异步路径：先入闸（后续推进路径会看到它并等待/跳过），等在飞推进收口后**重读**再判
+      const run = (async (): Promise<TaskRecord> => {
+        if (advance !== undefined) await advance.catch(() => undefined);
+        // 意图先立（等闸窗口里就要可见）：等槽位那趟 #executeInner 可能正好放行 ——
+        // 意图在场它才不会起跑（见 #executeInner 的取消意图闸）
+        this.#cancels.add(taskId);
+        try {
+          const rec = advance !== undefined ? await this.store.get(taskId) : await found;
+          return await this.#cancel(rec, taskId);
+        } catch (e) {
+          this.#cancels.delete(taskId); // 没走到收尾（404/409）⇒ 意图撤回
+          throw e;
+        }
+      })();
+      const tracked = run.finally(() => {
+        this.#cancelInflight.delete(taskId);
+      });
+      this.#cancelInflight.set(taskId, tracked);
+      return tracked;
+    }
+    // 同步快路径：同步 store 且无任何推进在飞 ⇒ 临界段（get → 落库）原子，无需入闸
     return this.#cancel(found, taskId);
+  }
+
+  /** 三条推进路径（审批 / 事件投递 / 到期唤醒）在该任务上的在飞 Promise（无则 undefined） */
+  #advanceInflight(taskId: string): Promise<unknown> | undefined {
+    return (
+      this.#approvals.inflightFor(taskId) ??
+      this.#signals.inflightFor(taskId) ??
+      this.#scanner.inflightWakeFor(taskId)
+    );
   }
 
   #cancel(rec: TaskRecord | undefined, taskId: string): MaybePromise<TaskRecord> {
@@ -766,8 +823,10 @@ export class AsyncRunner {
     }
     // queued / suspended：没有在飞 run（或它还没起跑），直接落终态 —— 记账由本方法做完，
     // 等槽位那趟 #execute 的 finally 靠 `#cancelSettled` 跳过它那一份（否则 onFinished 两次）。
-    // ⚠️ `#cancelSettled` 只为 **queued** 而存（它有活着的、在等槽位的 #execute 来消费）；
-    // suspended 的那趟 #execute 早在挂起时就走完了，条目加进去永远没人摘（泄漏）。
+    // ⚠️ cancel 自己只为 **queued** 登记（它有活着的、在等槽位的 #execute 来消费）；
+    // suspended 的那趟 #execute 早在挂起时就走完了，cancel 直接登记会永远没人摘（泄漏）。
+    // 第二个生产者是 `#executeInner` 的取消意图闸（2026-10-13 ②）：被并发恢复路径派发出
+    // 来的那趟自己登记、自己的 finally 消费 —— 覆盖面带消费者一起补，仍不泄漏。
     // 既知边界（多进程）：他进程取消本进程**排队中**的任务时，本进程的 execute finally
     // 在自己的 `#cancelSettled` 里查不到 ⇒ onFinished 会双发（cancel 进程一次 + owner 一次）。
     const wasQueued = rec.status === 'queued';
@@ -781,20 +840,36 @@ export class AsyncRunner {
     rec.suspendedReason = undefined;
     rec.wakeAt = undefined;
     this.#approvals.unmarkSuspended(taskId);
-    const saved = this.#safeSave(rec, 'outcome');
-    this.#cancels.delete(taskId);
+    // ⚠️ 落库**当场发生**（2026-10-13 ②）：不走 `#safeSave` 的微任务延迟 —— cancel 的临界段
+    // 必须原子。落库推迟一个微任务，「重读再判」那几条路（readClaimed / 恢复路径的进闸重读）
+    // 就会在这个缝里读到取消前的旧状态、照常起跑/派发（「绝不起跑」承诺就是这样被破的）。
+    // 失败口径与 #safeSave 相同：不遮罩（记账继续），但必须可观测（onPersistError）。
+    let saved: MaybePromise<void>;
+    try {
+      saved = this.store.save(rec);
+    } catch (error) {
+      this.#reportPersistError(rec, error, 'outcome');
+      saved = undefined;
+    }
     if (wasQueued) this.#cancelSettled.add(taskId);
     const finish = (): TaskRecord => {
+      // 取消意图的终点（2026-10-13 ②）：还有活着的 #execute 时留给它消费 —— 它靠这个意图
+      // 判「绝不起跑」（等槽位那趟的 readClaimed 可能读到的是落库前的旧快照）；
+      // 没有活着的（suspended 取消 / 它已先走完全程）由这里摘掉，不得滞留。
+      if (!this.#executions.has(taskId)) this.#cancels.delete(taskId);
       this.#taskWaiters.notify(taskId);
       this.#streams.markDone(taskId);
       this.sessionInputs.delete(taskId);
       const key = rec.idempotencyKey;
       if (key !== undefined && this.#claims.get(key)?.taskId === taskId) this.#claims.delete(key);
       this.#notifyDrained();
+      // 深拷贝在此**不需要**（与 submit 的 cloneTaskRecord 不同档）：rec 是 cancel 自己的
+      // 入站快照（store 契约保证不是库内活引用），且任务已终态 —— 之后没有任何路径再推进它
       return { ...rec };
     };
     return isThenable(saved)
       ? Promise.resolve(saved)
+          .catch((error) => this.#reportPersistError(rec, error, 'outcome'))
           .then(() => this.#notifySinks(rec))
           .then(finish)
       : this.#notifySinks(rec).then(finish);
@@ -922,7 +997,11 @@ export class AsyncRunner {
   /**
    * 取消的**意图**（2026-09-28 ④）。落库状态按意图判、不从 signal 反推 ——
    * 同一条 signal 有三个来源（调用方传入 / `runTimeoutMs` / 取消），反推不出「谁按的」。
-   * 只在一次 run 的收尾判定里活着：登记在认领处，摘除在同一次 run 的 finally。
+   *
+   * 生命周期（2026-10-13 ② 收紧）：登记在 cancel 的临界段**入口**（异步路径在等闸之前
+   * 就立上 —— 它同时是 `#executeInner` 取消意图闸的判据），摘除在四处：run 收尾
+   * （`cancelIntent` 取值处）、`#executeInner` 的意图闸、cancel 自己的 `finish`
+   * （仅当没有活着的 `#execute` 会消费它时）、`#execute` 的 finally（兜底）。
    */
   readonly #cancels = new Set<string>();
 
@@ -933,6 +1012,11 @@ export class AsyncRunner {
    * 已由 `cancel` **自己**收尾过的任务。那趟等槽位的 `#execute` 还活着，它的 finally 会再记一遍账
    * （onFinished 触发两次 / 流被关两次）—— 用这个集合把「谁负责记账」说定：cancel 收尾了，
    * finally 就只做它自己那份（在飞递减、通知等待者、排空通知）。
+   *
+   * 两个生产者（2026-10-13 ② 补齐）：① cancel 的 queued 分支（老的那条）；② `#executeInner`
+   * 的取消意图闸 —— 被并发恢复路径派发出来的 suspended 取消也有一条活着的 `#execute`，
+   * 它在意图闸拦下起跑、同样要把「记账归 cancel」说定。两个生产者都保证有消费者
+   * （那趟 `#execute` 自己的 finally），不会滞留。
    */
   readonly #cancelSettled = new Set<string>();
 
@@ -1103,6 +1187,10 @@ export class AsyncRunner {
         // 「本进程已受理」的终点（与 #execute 同寿）。删在最后：此前若 cancel 挤进来，
         // 它看到的仍是「本进程在推进这条」，文案不会突然改口。
         this.#executions.delete(rec.taskId);
+        // 取消意图的兜底摘除（2026-10-13 ②）：正常路径里它已被各自的出口消费
+        // （run 收尾 / 意图闸 / cancel 自己的 finish），这里是「早退路径没走到任何出口」的
+        // 兜底 —— 意图滞留会让一条**后来**的同任务取消记录误导收尾判定（意图只认 taskId）。
+        this.#cancels.delete(rec.taskId);
       }
     }
   }
@@ -1161,6 +1249,19 @@ export class AsyncRunner {
           // 记账（sinks / 事件流 / 认领释放 / 等待者）交给**还活着**的那次 #execute 的 finally
           // ——它正是此刻在等槽位的这一条。
           Object.assign(rec, claimed);
+          return;
+        }
+        // 取消意图闸（2026-10-13 ②）：cancel 已在收尾这条任务（意图先于落库可见、且
+        // 在还有活着的 #execute 时不会被摘除）⇒ **绝不起跑**。没有它时这条缝真实存在：
+        // 上面的 readClaimed 读到的是 cancel 落库前的快照，这里照常置 running 落库，
+        // 就把 cancelled 覆盖回去 —— 任务取消后照常执行、webhook 双发。
+        // 记账归 cancel：登记 #cancelSettled（覆盖面从 queued 补齐到这一支 —— 被并发
+        // 恢复路径派发出来的 suspended 取消也走这里），本趟 finally 只走低层清理。
+        if (this.#cancels.has(rec.taskId)) {
+          this.#cancelSettled.add(rec.taskId);
+          this.#cancels.delete(rec.taskId);
+          rec.status = 'cancelled';
+          rec.error = abortedError();
           return;
         }
         // 在飞句柄**先**登记（在任何 await 与状态写之前）：cancel 的中断窗口从这里闭合
@@ -1311,16 +1412,23 @@ export class AsyncRunner {
     try {
       await Promise.resolve().then(() => this.store.save(rec));
     } catch (error) {
-      // 落库失败不遮罩主流程：任务结果仍在内存记录里可见。
-      // 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
-      if (this.onPersistError) {
-        try {
-          // 传快照（与 #notifySinks 同纪律）：回调拿到的是「此刻的记录」，之后记录
-          // 再被推进不会串进回调持有的引用（引用语义 store 下，活引用 = 回调能改写库里的记录）
-          this.onPersistError({ record: { ...rec }, error, phase });
-        } catch {
-          /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
-        }
+      this.#reportPersistError(rec, error, phase);
+    }
+  }
+
+  /**
+   * 落库失败的上报口（`#safeSave` 与 `cancel` 的临界段共用，2026-10-13 ② 抽出）。
+   * 落库失败不遮罩主流程：任务结果仍在内存记录里可见。
+   * 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
+   */
+  #reportPersistError(rec: TaskRecord, error: unknown, phase: PersistFailureInfo['phase']): void {
+    if (this.onPersistError) {
+      try {
+        // 传快照（与 #notifySinks 同纪律）：回调拿到的是「此刻的记录」，之后记录
+        // 再被推进不会串进回调持有的引用
+        this.onPersistError({ record: { ...rec }, error, phase });
+      } catch {
+        /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
       }
     }
   }

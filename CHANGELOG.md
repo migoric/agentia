@@ -1197,6 +1197,30 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `tools/call` 那棵 trace 的事件数上限，构造期校验、坏值抛 TypeError）与
   `maxEventChars`（事件正文截断上限，`false` = 不截断）—— 缺省与引擎缺省逐字一致，
   子 agent 类工具在桥内长跑时 trace 体积不再无界。
+### 修复：TaskStore 副本契约坐实 + cancel 与推进路径互斥（五路深评批次二，2026-10-13 ⑨–⑫）
+
+- **B2 · store 副本契约（⑨）**：`InMemoryTaskStore` / `FileTaskStore` 的 `save` 入库与
+  `get` / `byIdempotency` / `list` 出站统一走 `cloneTaskRecord`（深拷纯数据、AbortSignal /
+  函数等进程内对象按引用保留）。此前契约注释要求副本、实现交活引用 —— 「改 rec →
+  `await save`」的纪律下，save 失败时变异已污染内存（approve 重试撞 409、任务搁死）。
+  **行为变化**：终态落库失败时库里诚实停在最后一次落库成功的状态（此前被引用语义
+  原地推进遮掉）；`submit` / 幂等去重返回从浅拷贝升级为深拷贝（HITL 挂起会整体替换
+  `spec.messages`，浅拷贝快照照样被穿透）。
+- **B1 · cancel 互斥闸（⑩）**：新增 per-task `#cancelInflight`，与 approve / signalTask /
+  到期唤醒 / 审批超时四条推进路径互为对侧（先登记者赢，无死锁）；cancel 临界段落库改
+  **当场发生**（不再经微任务延迟）；`#executeInner` 起跑前加**取消意图闸**（意图在场
+  ⇒ 绝不起跑，记账归 cancel），`#cancelSettled` 覆盖面随之补齐。修掉两扇真实竞态窗：
+  cancel×approve 并发「取消后照常执行 + onFinished 双发」、cancel×槽位释放并发打破
+  「被取消的排队任务绝不起跑」。
+- **B3 + 低等 · 恢复路径落库失败（⑪）**：`resumePending` 认领 save 接同步抛错（不再逃出
+  启动路径；不派发、不计入推进数、warn）；认领 / 审批超时 / 到期唤醒三处落库失败的
+  catch 不再静默留尸，各补 `console.warn`。
+- **低等 · Scheduler drain 感知（⑫）**：runner 停机后 tick 静默跳过（此前每 tick 刷一条
+  `console.error`）。
+- **依据与取舍**（含副本克隆的成本评估）：`docs/spec.md` §10 2026-10-13 ⑨–⑫。
+- **验证**：新增 `tests/store/taskStore-copy.test.ts` / `tests/transport/cancel-race.test.ts` /
+  `tests/transport/resume-scanner.test.ts` 三份套件 + scheduler drain 用例；既有依赖
+  「改 poll 返回值即生效」的三处用例改为显式 `save`（副本契约的推论）。
 
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 

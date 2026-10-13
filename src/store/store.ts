@@ -97,16 +97,25 @@ export interface TaskRecord {
 }
 
 export interface TaskStore {
+  /**
+   * 落库。存进去的必须是**副本**而不是调用方的活引用（2026-10-13 ①）——
+   * 调用方的纪律是「改 rec → save → 继续改 rec → 再 save」，存活引用会让
+   * 「两次 save 之间的中间态」对其他读者可见，且某次 save 失败时污染已留在库里。
+   */
   save(rec: TaskRecord): MaybePromise<void>;
   /**
    * 取任务记录。返回的必须是**反序列化副本 / 快照，不是内部活引用** ——
    * engine/transport 的纪律是「先变异 rec、再 `await save` 落库」（如 resume-scanner /
    * approval-supervisor 的「重读 → 改 status → 先落库再派发」）：若 `get` 交出活引用，
-   * 变异会在 `save` 之前就被其他读者看见，「未落库的中间态」直接对外可见。
+   * 变异会在 `save` 之前就被其他读者看见，「未落库的中间态」直接对外可见；
+   * save 失败时那些变异就**留在库里**（落不了库的决定却改了记录）。
+   * `byIdempotency` / `list` / `listDue` 同一纪律（2026-10-13 ① 坐实：内建实现
+   * 统一走 `cloneTaskRecord`，下方）。
    */
   get(taskId: string): MaybePromise<TaskRecord | undefined>;
-  /** 幂等键 → 最近一次任务（last-wins） */
+  /** 幂等键 → 最近一次任务（last-wins）。返回副本，纪律同 `get` */
   byIdempotency(key: string): MaybePromise<TaskRecord | undefined>;
+  /** 全表快照。每条都是副本，纪律同 `get` */
   list(): MaybePromise<TaskRecord[]>;
   /**
    * **可选**：到期索引（2026-09-28 ⑤ 落地）—— 只回「`suspended` 且 `wakeAt <= before`」
@@ -142,6 +151,33 @@ export interface TaskStore {
   close?(): MaybePromise<void>;
 }
 
+/**
+ * TaskRecord 的深拷贝（2026-10-13 ①，副本契约的唯一落点：`save` 入库与
+ * `get` / `byIdempotency` / `list` 出站都走它）。
+ *
+ * 递归克隆数组与**纯对象**（原型为 `Object.prototype` 或 null）；函数与类实例
+ * 按引用保留 —— `spec.options` 里合法地装着 `AbortSignal` / `ModelClient` /
+ * 工具的 `run` 等进程内对象，它们不是「会被调用方变异的数据」，而 `structuredClone`
+ * 遇上它们直接抛 `DataCloneError`（sqlite/redis 序列化时本来也会丢它们，见
+ * `RunInvocationOptions.fallbacks` 的序列化边界注释）。
+ */
+export function cloneTaskRecord(rec: TaskRecord): TaskRecord {
+  return cloneData(rec);
+}
+
+function cloneData<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(cloneData) as T;
+  if (value !== null && typeof value === 'object') {
+    const proto: unknown = Object.getPrototypeOf(value);
+    // 类实例（AbortSignal 等）按引用保留：克隆它没有意义，也克隆不了
+    if (proto !== Object.prototype && proto !== null) return value;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = cloneData(v);
+    return out as T;
+  }
+  return value;
+}
+
 export class InMemoryTaskStore implements TaskStore {
   // 刻意**不实现** `listDue`（到期索引）：记录本就在内存 Map 里，`list()` 只是返回 snapshot ——
   // 到期过滤的成本与全表相同，索引无利可省（实测与触发条件见 spec §10 2026-09-28 ⑤）。
@@ -168,7 +204,8 @@ export class InMemoryTaskStore implements TaskStore {
   }
 
   save(rec: TaskRecord): void {
-    this.byTask.set(rec.taskId, rec);
+    // 存副本（契约见 TaskStore.save）：调用方此后对 rec 的推进不得绕过 save 直接可见
+    this.byTask.set(rec.taskId, cloneTaskRecord(rec));
     if (rec.idempotencyKey) this.byKey.set(rec.idempotencyKey, rec.taskId);
     if (this.byTask.size > this.maxRecords) this.evict();
   }
@@ -188,14 +225,16 @@ export class InMemoryTaskStore implements TaskStore {
   }
 
   get(taskId: string): TaskRecord | undefined {
-    return this.byTask.get(taskId);
+    const rec = this.byTask.get(taskId);
+    return rec === undefined ? undefined : cloneTaskRecord(rec);
   }
   byIdempotency(key: string): TaskRecord | undefined {
     const taskId = this.byKey.get(key);
-    return taskId ? this.byTask.get(taskId) : undefined;
+    const rec = taskId ? this.byTask.get(taskId) : undefined;
+    return rec === undefined ? undefined : cloneTaskRecord(rec);
   }
   list(): TaskRecord[] {
-    return [...this.byTask.values()];
+    return [...this.byTask.values()].map(cloneTaskRecord);
   }
   clear(): void {
     this.byTask.clear();
