@@ -29,6 +29,7 @@ import { interruptibleSleep, withTimeout, TIMED_OUT } from '../src/core/timeout.
 import { mapWithConcurrency } from '../src/engine/concurrency.js';
 import { runAgent } from '../src/engine/loop.js';
 import { resolveTraceLimits, TraceRecorder } from '../src/engine/tracer.js';
+import { backoffDelay, resolveRetry } from '../src/engine/retry.js';
 import { toolInputPayload } from '../src/engine/tool-events.js';
 import { resolveMaxRetries } from '../src/integrations/adapter-options.js';
 import { createAnthropicClient } from '../src/integrations/anthropic.js';
@@ -256,6 +257,27 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     return 'disabled';
   },
 
+  async 'RetryOptions.maxAttempts'() {
+    // NaN 曾让 `!(NaN >= 1)` 成立 ⇒ 重试被静默关闭（2026-10-13 深评 A1）
+    assert.throws(() => resolveRetry({ maxAttempts: Number.NaN }), /非负安全整数/);
+    assert.throws(() => resolveRetry({ maxAttempts: 1.5 }), /非负安全整数/);
+    assert.throws(() => resolveRetry({ maxAttempts: -1 }), /非负安全整数/);
+    // 0 = 关闭重试（不是「不限」：重试没有「不限」的读法 —— 无限重试是事故不是语义）
+    assert.equal(resolveRetry({ maxAttempts: 0 }), null, '0 必须读作「关闭重试」');
+    assert.ok(resolveRetry({ maxAttempts: 1 }), '1 = 只试一次（仍是一条合法配置）');
+    return 'disabled';
+  },
+
+  async 'RetryOptions.jitter'() {
+    assert.throws(() => resolveRetry({ jitter: 1.5 }), /0 ~ 1/);
+    assert.throws(() => resolveRetry({ jitter: Number.NaN }), /0 ~ 1/);
+    // 0 = 不加抖动（机制关掉）：退避必须等于无抖动的确定值，而不是「抖动失效报错」
+    const r = resolveRetry({ baseDelayMs: 100, maxDelayMs: 8000, jitter: 0 })!;
+    assert.equal(backoffDelay(1, r), 100, '0 = 不加抖动：退避必须逐字等于指数值');
+    assert.equal(backoffDelay(3, r), 400);
+    return 'disabled';
+  },
+
   async maxEventChars() {
     const body = { a: 'x'.repeat(50) };
     const use = { id: 'tu1', name: 't', input: body } as never;
@@ -294,6 +316,27 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
   },
 
   // ── 0 = 立即执行 ────────────────────────────────────────────────────────
+  async 'RetryOptions.baseDelayMs'() {
+    // NaN 曾让 backoffDelay 算出 NaN ⇒ sleep 抛 RangeError ⇒ 被吞成「用户取消」（深评 A1）
+    assert.throws(() => resolveRetry({ baseDelayMs: Number.NaN }), /有限数/);
+    assert.throws(() => resolveRetry({ baseDelayMs: -1 }), /有限数/);
+    assert.throws(() => resolveRetry({ baseDelayMs: 2 ** 31 }), /有限数/, '超 Node 定时器上限必拒');
+    // 0 = 不退避（立即重试）：任何 attempt 算出的退避都是 0
+    const r = resolveRetry({ baseDelayMs: 0, jitter: 0 })!;
+    assert.equal(backoffDelay(1, r), 0, '0 必须读作「不退避」—— 若读成别的这里非零');
+    assert.equal(backoffDelay(5, r), 0);
+    return 'immediate';
+  },
+
+  async 'RetryOptions.maxDelayMs'() {
+    assert.throws(() => resolveRetry({ maxDelayMs: Number.NaN }), /有限数/);
+    assert.throws(() => resolveRetry({ maxDelayMs: -1 }), /有限数/);
+    // 0 = 封顶为零：再大的指数退避也被压到 0（立即重试）
+    const r = resolveRetry({ baseDelayMs: 1000, maxDelayMs: 0, jitter: 0 })!;
+    assert.equal(backoffDelay(5, r), 0, '0 必须读作「封顶为零」—— 若读成「不限」这里会是 16000');
+    return 'immediate';
+  },
+
   async 'interruptibleSleep.ms'() {
     const t0 = Date.now();
     await interruptibleSleep(0);
@@ -789,6 +832,11 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
       ],
       ['metricsSink.maxModels', () => metricsSink({ maxModels: 0 }), /0 = 一个模型都认不下/],
       ['metricsSink.maxScores', () => metricsSink({ maxScores: 0 }), /0 = 一个分数都认不下/],
+      // 2026-10-13 深评 A1 补登的四个 retry 旋钮（与 maxRetries 同纪律，文案插 zeroClauseOf）
+      ['RetryOptions.maxAttempts', () => resolveRetry({ maxAttempts: -1 }), /0 = 关闭重试/],
+      ['RetryOptions.jitter', () => resolveRetry({ jitter: 2 }), /0 = 不加抖动/],
+      ['RetryOptions.baseDelayMs', () => resolveRetry({ baseDelayMs: -1 }), /0 = 不退避/],
+      ['RetryOptions.maxDelayMs', () => resolveRetry({ maxDelayMs: -1 }), /0 = 退避封顶为零/],
     ];
     for (const [knob, run, expected] of cases) {
       const clause = LIMIT_SEMANTICS.find((s) => s.knob === knob)?.zeroClause ?? '';

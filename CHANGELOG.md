@@ -1110,6 +1110,26 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ## [Unreleased]
 
+### 修复：retry 配置坏值被误报成「用户取消」+ 入口段抛错时 run 根 span 不合拢（2026-10-13 ①②）
+
+- **病灶①（深评 A1）**：`retry: { baseDelayMs: NaN }` + 一次 429 ⇒ 退避算出 NaN ⇒
+  `sleep` 抛 RangeError ⇒ `turn.ts` 的裸 `catch` 吞成 `stopReason: 'aborted'`（配置错被
+  谎报成用户取消）；`maxAttempts: NaN` 则让重试被**静默关闭**（`!(NaN >= 1)` 成立）。
+- **修法①**：`RetryOptions` 四个数值旋钮登记进 `core/limits.ts` 真源表并加构造期校验
+  （`resolveRetry` 抛 `TypeError`，报错文案插 `zeroClauseOf`；`runAgent` 入口同款校验，
+  与 labels / fallbacks 同落点 —— 配置错响亮抛，不收成失败的 run）；退避处 catch 只认
+  AbortError，其他错误原样抛出归类；`backoffDelay` 上界夹在 `MAX_TIMER_DELAY_MS`
+  （正向抖动曾能把它推过 Node 定时器上限）。0 的读法：`maxAttempts: 0` = 关闭重试、
+  `baseDelayMs: 0` = 不退避、`maxDelayMs: 0` = 封顶为零、`jitter: 0` = 不加抖动。
+- **病灶②（深评 A2）**：`runAgent` 入口段（菜单摘要 / 模型链 / 标签校验）抛错时 run 根
+  span 已开却永不 end —— 交付 sink 的 trace 里 `status='error'` 而根 span 是 ok、无
+  endedAt、无结构化 error，违反「非正常收尾必带结构化 error」。
+- **修法②**：入口段包 try/catch，catch 给根 span 收尾（error 状态 + 结构化 error）
+  后原样 rethrow —— 对外行为不变（照样抛），trace 不再说谎。
+- **验证**：`tests/engine/retry.test.ts` +6 条（含深评实测路径的入口校验用例与 catch 判别
+  用例）、`tests/engine/loop.test.ts` +1 条（两个真实触发点的 trace 形状）、
+  `tests/limits.test.ts` +4 探针 + 4 文案对账 case。
+
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 
 - **病灶**：真实审批流是「挂起 → 人批 → 带 approvals 恢复」；恢复段的工具执行走续跑入口

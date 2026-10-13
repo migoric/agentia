@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { executeRun } from '../../src/index.js';
+import { executeRun, runAgent, TraceRecorder } from '../../src/index.js';
 import type { JsonSchema, MessageParam, Span } from '../../src/index.js';
 import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
@@ -209,6 +209,39 @@ describe('agentLoop 边界与失败路径', () => {
     assert.match(result.error?.message ?? '', /maxIterations=2/);
     const root = result.trace.spans.find((s) => s.kind === 'run')!;
     assert.equal(root.error?.type, 'max_iterations', 'run 根 span 必须带 error 对象');
+  });
+
+  it('入口段抛错（配置错）：照常抛出，且 run 根 span 已合拢（error + 结构化 error + endedAt）', async () => {
+    // 2026-10-13 深评 A2：入口段（menuSignature / resolveModelChain / validateLabels）
+    // 抛错时 run 根已开却永不 end —— 交付 sink 的 trace 里 status='error' 而根 span 是
+    // ok、无 endedAt、无结构化 error，违反「非正常收尾必带结构化 error」的不变量。
+    // 两个真实触发点各打一条：labels 空键（validateLabels）、空壳 fallback client（resolveModelChain）。
+    const badOptions = [
+      { labels: { '': 'x' } },
+      { fallbacks: [{ model: 'm2', client: {} as never }] },
+    ];
+    for (const bad of badOptions) {
+      const recorder = new TraceRecorder();
+      const { client, seen } = mockClient([endTurnMsg('不该被调用')]);
+      await assert.rejects(
+        () =>
+          runAgent({
+            messages: [{ role: 'user', content: 'go' }],
+            client,
+            recorder,
+            ...bad,
+          }),
+        TypeError,
+        '配置错必须照常响亮抛出（行为对外不变）',
+      );
+      assert.equal(seen.length, 0, '入口校验失败不该发出任何模型请求');
+      const trace = recorder.snapshot('error'); // 模拟 runtime/run.ts fail() 的交付路径
+      const root = trace.spans.find((s) => s.kind === 'run')!;
+      assert.equal(root.status, 'error', '根 span 状态必须是 error（修前是 ok —— trace 在说谎）');
+      assert.ok(root.endedAt !== undefined, '根 span 必须有 endedAt（修前永不合拢）');
+      assert.ok(root.error, '根 span 必须带结构化 error');
+      assert.equal(typeof root.error?.message, 'string');
+    }
   });
 
   it('signal 预先中止 → stopReason=aborted、run 失败，且不发起模型请求', async () => {

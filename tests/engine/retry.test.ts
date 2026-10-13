@@ -9,6 +9,9 @@ import {
   retryAllowed,
 } from '../../src/engine/retry.js';
 import type { RetryOptions } from '../../src/engine/retry.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/core/timeout.js';
+import { streamTurn } from '../../src/engine/turn.js';
+import { TraceRecorder } from '../../src/engine/tracer.js';
 import { classifyError, runAgent } from '../../src/index.js';
 import type { ModelClient } from '../../src/index.js';
 
@@ -81,6 +84,72 @@ describe('RetryOptions 归一（resolveRetry）', () => {
   });
 });
 
+describe('RetryOptions 数值旋钮校验（2026-10-13 深评 A1：坏值必须响亮，不得静默）', () => {
+  it('maxAttempts: NaN 曾静默关闭重试（`!(NaN >= 1)` 成立）—— 现在抛 TypeError', () => {
+    assert.throws(() => resolveRetry({ maxAttempts: Number.NaN }), {
+      name: 'TypeError',
+      message: /非负安全整数/,
+    });
+    assert.throws(() => resolveRetry({ maxAttempts: Number.POSITIVE_INFINITY }), TypeError);
+    assert.throws(() => resolveRetry({ maxAttempts: -1 }), TypeError);
+    assert.throws(() => resolveRetry({ maxAttempts: 1.5 }), TypeError);
+  });
+
+  it('baseDelayMs / maxDelayMs：NaN、负数、超 Node 定时器上限一律抛', () => {
+    assert.throws(() => resolveRetry({ baseDelayMs: Number.NaN }), {
+      name: 'TypeError',
+      message: /有限数/,
+    });
+    assert.throws(() => resolveRetry({ baseDelayMs: -1 }), TypeError);
+    assert.throws(() => resolveRetry({ baseDelayMs: MAX_TIMER_DELAY_MS + 1 }), TypeError);
+    assert.throws(() => resolveRetry({ maxDelayMs: Number.NaN }), TypeError);
+    assert.throws(() => resolveRetry({ maxDelayMs: -1 }), TypeError);
+    // 边界值合法：0 = 不退避 / 封顶为零（limits 表口径），上限本身可收
+    assert.ok(resolveRetry({ baseDelayMs: 0 }));
+    assert.ok(resolveRetry({ maxDelayMs: 0, baseDelayMs: 100 }));
+    assert.ok(resolveRetry({ maxDelayMs: MAX_TIMER_DELAY_MS }));
+  });
+
+  it('jitter 超出 0~1 抛 TypeError（>1 会把退避拉成负数再被静默钳回 0）', () => {
+    assert.throws(() => resolveRetry({ jitter: 1.5 }), { name: 'TypeError', message: /0 ~ 1/ });
+    assert.throws(() => resolveRetry({ jitter: -0.1 }), TypeError);
+    assert.ok(resolveRetry({ jitter: 0 }));
+    assert.ok(resolveRetry({ jitter: 1 }));
+  });
+
+  it('runAgent 入口同款校验：配置错响亮抛出，不收成「失败的 run」更不谎报「用户取消」', async () => {
+    // 深评 A1 的实测路径：`retry:{baseDelayMs:NaN}` + 429 曾 → stopReason:'aborted'
+    const alwaysFail: ModelClient = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw Object.assign(new Error('429 too many'), { status: 429 });
+          },
+        }),
+      },
+    };
+    await assert.rejects(
+      () =>
+        runAgent({
+          messages: [{ role: 'user', content: 'hi' }],
+          client: alwaysFail,
+          retry: { baseDelayMs: Number.NaN },
+        }),
+      { name: 'TypeError', message: /retry\.baseDelayMs/ },
+    );
+    await assert.rejects(
+      () =>
+        runAgent({
+          messages: [{ role: 'user', content: 'hi' }],
+          client: alwaysFail,
+          retry: { maxAttempts: Number.NaN },
+        }),
+      { name: 'TypeError', message: /retry\.maxAttempts/ },
+    );
+  });
+});
+
 describe('backoffDelay（指数 + 上限 + 抖动）', () => {
   const base = {
     ...DEFAULT_RETRY,
@@ -106,6 +175,24 @@ describe('backoffDelay（指数 + 上限 + 抖动）', () => {
       const d = backoffDelay(1, jittered); // 500 ± 20% → [400, 600]
       assert.ok(d >= 400 && d <= 600, `得到 ${d}`);
     }
+  });
+
+  it('正向抖动把退避推过 Node 定时器上限时夹回（超上限的 setTimeout 会被钳到 1ms）', () => {
+    // maxDelayMs 贴上限 + jitter=1 ⇒ 抖动最高把 capped 翻倍（2 × 2^31-1），不夹就会让
+    // sleep 的 assertTimerDelay 抛 RangeError —— 配置本身合法，不该死在派生值上
+    const huge = {
+      ...base,
+      baseDelayMs: MAX_TIMER_DELAY_MS,
+      maxDelayMs: MAX_TIMER_DELAY_MS,
+      jitter: 1,
+    };
+    let sawClamped = false;
+    for (let i = 0; i < 500; i++) {
+      const d = backoffDelay(1, huge);
+      assert.ok(d <= MAX_TIMER_DELAY_MS, `${d} 超上限`);
+      if (d === MAX_TIMER_DELAY_MS) sawClamped = true;
+    }
+    assert.ok(sawClamped, '500 次采样应至少踩到一次「夹回上限」的分支');
   });
 });
 
@@ -217,5 +304,61 @@ describe('引擎侧：退避等待期间被取消（turn.ts 的重试循环）',
     assert.ok(elapsed < 2000, `退避期间取消必须立刻收尾，实际等了 ${elapsed}ms（退避是 5000ms）`);
     assert.equal(result.stopReason, 'aborted');
     assert.equal(result.error?.type, 'aborted', '取消是结构化结论，不是抛出去的异常');
+  });
+});
+
+/**
+ * 退避处 catch 的判别（2026-10-13 深评 A1）：`sleep` 不只抛 AbortError ——
+ * `assertTimerDelay` 对坏延迟抛 RangeError。旧代码 `catch { aborted = true }` 把它
+ * 吞成「用户取消」（实测 `retry:{baseDelayMs:NaN}` + 429 → stopReason:'aborted'）。
+ * 入口校验落地后这条路本不该走到；这里绕过 resolveRetry 直接构造 hostile retryCfg，
+ * 钉住「非 AbortError 必须原样抛出」这层纵深防御。
+ */
+describe('turn.ts 退避处 catch 只认 AbortError', () => {
+  it('sleep 抛 RangeError（坏延迟）⇒ 原样抛出，不吞成 aborted', async () => {
+    const recorder = new TraceRecorder();
+    const rootId = recorder.begin('run', 't', null);
+    const alwaysFail: ModelClient = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            throw Object.assign(new Error('429 too many'), { status: 429 });
+          },
+        }),
+      },
+    };
+    const hostileRetry = {
+      maxAttempts: 3,
+      baseDelayMs: Number.NaN, // backoffDelay 算出 NaN ⇒ sleep 抛 RangeError
+      maxDelayMs: 8000,
+      jitter: 0,
+      isRetryable: () => true,
+      onRetry: () => {},
+    };
+    const ctx = {
+      args: {
+        client: alwaysFail,
+        model: 'm',
+        maxTokens: 100,
+        maxIterations: 1,
+        messages: [],
+        tools: [],
+        recorder,
+        parentSpanId: rootId,
+      },
+      messages: [],
+      apiTools: [],
+      system: undefined,
+      retryCfg: hostileRetry,
+      pricing: {},
+      unpricedSeen: new Set<string>(),
+      budget: undefined,
+      progress: { iterations: 0 },
+      typed: undefined,
+      submitted: false,
+    } as never;
+    // 旧行为：返回 { aborted: true }（谎报取消）；修复后：RangeError 原样冒出
+    await assert.rejects(() => streamTurn(ctx), RangeError);
   });
 });
