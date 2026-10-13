@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scan } from './lib/source-scan.js';
 
 // 本文件在 tests/architecture/ —— 回退两层才是仓库根
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -80,13 +81,15 @@ function layerOf(abs: string): string {
  *    `import('./x.js').T` 与运行时的 `await import('./x.js')` 同形。
  *    只统计相对路径字面量；变量/表达式（如 `import(pathToFileURL(f).href)`）不算 ——
  *    那是运行期拼出来的路径，不是编译期依赖边。
+ *
+ * 2026-10-13 起改走 `lib/source-scan.ts` 的遮蔽器（与 file-cycles / no-runtime-deps
+ * 同一个扫描器）：此前这里是三条裸正则读原始文本，注释 / 模板字符串里写一句
+ * `from './x.js'` 就会造出一条假依赖边。
  */
 function relativeImports(text: string): string[] {
-  const specs: string[] = [];
-  for (const m of text.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) specs.push(m[1]);
-  for (const m of text.matchAll(/^[ \t]*import\s+['"](\.[^'"]+)['"]/gm)) specs.push(m[1]);
-  for (const m of text.matchAll(/import\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g)) specs.push(m[1]);
-  return specs;
+  return scan(text)
+    .specs.map((s) => s.spec)
+    .filter((s) => s.startsWith('.'));
 }
 
 /** 把相对来源解析成 src 内实际文件（补 .js→.ts、index.ts），解析不到返回 null */

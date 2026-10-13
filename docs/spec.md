@@ -6599,6 +6599,55 @@ traces 侧缺省至少落 `console.warn`（flushSinks），metrics 侧是零信�
 `src/integrations/metrics.ts`（选项注释）、`tests/integrations/mcpConnector.test.ts` +1
 （变异验证：摘掉 abort ⇒ 新用例红）、`tests/integrations/metrics.test.ts` +1、
 `docs/usage-guide.md`（metricsSink `onExportError` 行与已知边界行）。
+### 2026-10-13 ⑦：守卫射程轮（批次 4）—— CLI 纳入 exactOptionalPropertyTypes、e2e:mcp:server 进 CI、三处货架补齐
+
+**起因**：五路深度评审（`docs/reviews/2026-10-13/project-deep-review.md`）批次 4「守卫射程」，
+两类中等 + 三处低等，全是**门禁的射程**问题而不是行为缺陷：
+
+- **D2**：`exactOptionalPropertyTypes` 的守卫（`tests/architecture/tsconfig-strictness.test.ts`）
+  只读根 `tsconfig.json` —— `packages/cli/tsconfig.json` 与 `tsconfig.templates.json` **没开**
+  这个开关却天天在编译，等于「显式 undefined 覆盖缺省」那类防线（2026-09-18 ⑦，39 处）
+  在 CLI 一半代码上**无声缺位**；
+- **D1**：`scripts/e2e-mcp-server.ts`（MCP 反向桥端到端）全仓零自动化 —— 不在 verify-all
+  8 步（**不能**加第 9 步：verify job 名写死步数，见 AGENTS.md），也不在 CI 六个 job 里；
+- **E2**：inspector 的 STATIC 静态资源白名单硬编码文件名，而 copy-assets 是**整树递归**拷贝
+  —— trace-view 拆出一个新模块文件时拷贝带上、白名单没有 ⇒ 浏览器 404、面板白屏，
+  node 侧单测照样全绿（它们 import 的是 TS 源）；
+- 低等三项：CI 各 job 无 `timeout-minutes`；guards-registry 的货架漏 `tests/scripts`
+  （三个文件其实早已登记在表，货架本身漏登）；`layering.test.ts` 用裸正则读**原始文本**，
+  注释 / 模板字符串里写一句 `from './x.js'` 就会造出一条假依赖边。
+
+**决策**：
+
+- **D2（本条唯一改类型的语义项）**：两份 CLI 配置开 `exactOptionalPropertyTypes`（连同
+  `forceConsistentCasingInFileNames`）。对照根 tsconfig **逐项核对**的结论：
+  `lib` / `esModuleInterop` 由 `target` / `module: NodeNext` 隐含（写出来是冗余，不写）；
+  `declaration` / `sourceMap` 是框架包**发布产物形状**的决定（CLI 只发 bin、不发类型，不加）。
+  暴露的 6 处类型错按三类角色纪律修：`SpanDiff` / `ToolIoEvent` / `ExportRecordMeta`
+  是**结果记录** ⇒ 必填 `T | undefined`（这三个文件本是框架侧的移植副本，框架侧早就是
+  这个形状，CLI 侧只是补齐对齐）；`HarvestRow.messages` 是**内部管道** ⇒ `?: T | undefined`；
+  `harvestEvalCase` 的 `messages` 是**公共入参** ⇒ 签名不动、调用点条件展开。
+  守卫射程同时扩到**发给用户**的模板 `templates/tsconfig.json`（同开关；同一份代码已在
+  `tsconfig.templates.json` 下过该开关 ⇒ 生成物必过），四份配置一并钉进守卫。
+- **D1**：CI 加独立 job `e2e-mcp-server`（离线零网络、不需要 uv —— 与 `e2e-mcp` 的
+  「回落夹具」不同款，CI 与本机同一条路）；登记进 `verify-all.sh` 的 `ci_only`
+  （必需检查），`CONTRIBUTING.md` 合并契约与坑表、`AGENTS.md` 的 CI 段落同步。
+  顺手修了 wiring 守卫的一个真缺陷：job 匹配从 `\b` 换成排除连字符延续的边界 ——
+  `\b` 把 `-` 当边界，`e2e-mcp` 会匹配进 `e2e-mcp-server` 里（一个 job 被数成两个，
+  兜底扫描当场误报 `examples/observability-mcp/README.md`）。
+- **E2**：STATIC 白名单**保持显式**（放行谁进面板是安全决定，不该由目录内容自动放行），
+  新增 W5 守卫（`packages/cli/test/structure.test.mjs`）按 `dist/inspector` 的**实际文件**
+  与白名单做双向集合相等 —— 计数算出来、不写死，白名单仍是人批的。
+- **低等**：CI 七个 job 各补 `timeout-minutes`（verify 30 / import-floor 15 / e2e-mcp 15 /
+  e2e-mcp-server 10 / lint 10 / docker-image 20 / deploy-website 20）；`SHELVES` 加
+  `tests/scripts`；`layering.test.ts` 的解析改走 `lib/source-scan.ts` 遮蔽器（与
+  file-cycles / no-runtime-deps 同一个扫描器）。
+
+**验证**：wiring 守卫先红（CONTRIBUTING 列表 / 坑表 / AGENTS.md 圈码各咬住一条）后绿；
+CLI 移植对拍三套件（diff / export / harvest，22 条）绿 —— 对拍比的是运行时产物，类型
+标注收紧不影响；W5 变异验证（往 `dist/inspector` 丢一个白名单外的 `graph.js` ⇒ 恰该条红，
+删除还原绿）；layering 换扫描器后 10 条用例全绿（含阳性对照与解析计数下限），另做反向
+验证（注释 / 块注释 / 模板里的假 `from` 不再被读成依赖边）。
 
 ## 11. 开放项
 

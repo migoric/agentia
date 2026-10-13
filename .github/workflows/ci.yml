@@ -35,6 +35,7 @@ jobs:
   verify:
     name: 全链验证（verify-all 8 步）
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       # 全历史（默认 depth=1 是**浅克隆**）：`tests/docs/commit-refs.test.ts` 要判「文档引用的
       # 提交是否在主干祖先链上」—— 浅克隆下历史不可见，那条守卫会**空转**（它会因解析下限而红）。
@@ -60,6 +61,7 @@ jobs:
   lint:
     name: Lint + 格式（Biome）
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -82,6 +84,7 @@ jobs:
   import-floor:
     name: 导入下限（Node ${{ matrix.node }}）
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +109,7 @@ jobs:
   e2e-mcp:
     name: MCP 端到端（真第三方 server，缺失时回落夹具）
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -127,6 +131,29 @@ jobs:
       - name: e2e:mcp
         run: npm run e2e:mcp
 
+  # MCP **反向**桥端到端（app 菜单暴露成 MCP server，stdio + StreamableHTTP 两传输都真跑，
+  # 客户端是出厂连接器；trace 落盘逐条对账）。**离线零网络**，不需要 uv —— 与 e2e-mcp 不同，
+  # 它没有任何「缺失时回落」的分支，CI 与本机跑的是同一条路。
+  e2e-mcp-server:
+    name: MCP 反向桥端到端（e2e:mcp:server）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 脚本直接 tsx 跑 src（夹具子进程也走 tsx），不需要构建产物；与 e2e-mcp 不同，
+      # 它没有任何「缺失时回落」的分支，CI 与本机跑的是同一条路。
+      - name: e2e:mcp:server
+        run: npm run e2e:mcp:server
+
   # ── deploy 示例的镜像：**在 CI 里真构建一次** ────────────────────────────────────
   # 为什么要有它：`examples/deploy` 是定位里「交付可上线的服务」那一脚的参考实现，
   # 而它的 Dockerfile 此前**没有任何门禁构建过** —— 本机没有 docker、本地链跑不了它，
@@ -140,6 +167,7 @@ jobs:
   docker-image:
     name: 构建 deploy 示例镜像（非必需检查）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -169,6 +197,7 @@ jobs:
   deploy-website:
     name: 部署官网（Cloudflare Pages）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [verify, lint] # 只在验证通过后才发布（verify 里已经建好 dist，这里复查一遍）
     if: github.ref == 'refs/heads/main'
     steps:

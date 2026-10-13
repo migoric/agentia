@@ -53,8 +53,8 @@ function stringifySafe(x: unknown): string {
 
 interface ToolInputEvent {
   tool: string;
-  toolUseId?: string;
-  input?: string;
+  toolUseId?: string | undefined;
+  input?: string | undefined;
 }
 
 function toolInputsOf(turn: SpanLike): ToolInputEvent[] {
@@ -231,7 +231,7 @@ export function harvestEvalCase(input: HarvestCaseArgs): string {
 
 interface HarvestRow {
   trace: HarvestTraceLike;
-  messages?: MessageParamLike[];
+  messages?: MessageParamLike[] | undefined;
   failed: boolean;
   label: string;
 }
@@ -361,9 +361,10 @@ export async function harvestCommand(args: string[]): Promise<number> {
 
   const picked = rows.filter((r) => !onlyFailed || r.failed).slice(0, limit ?? rows.length);
   const cases = picked.map((r) =>
+    // messages 是 harvestEvalCase 的公共入参（签名不动）⇒ 调用点条件展开，不把 undefined 传进去
     harvestEvalCase({
       trace: r.trace,
-      messages: r.messages,
+      ...(r.messages !== undefined ? { messages: r.messages } : {}),
       name: `harvest-${r.label}`,
       source: file,
     }),

@@ -94,9 +94,9 @@ export interface DiffEntry {
 export interface SpanDiff {
   /** 从根到该 span 的配对路径（人读 + 稳定锚），规则见框架侧文件头 */
   path: string;
-  /** 缺侧 = 该侧调用树无此位置 */
-  a?: Span;
-  b?: Span;
+  /** 缺侧 = 该侧调用树无此位置（与框架侧同为必填 `| undefined`：结果记录的角色纪律） */
+  a: Span | undefined;
+  b: Span | undefined;
   /** 两侧都在时的字段级差异；缺侧时为空数组 */
   fields: DiffEntry[];
 }

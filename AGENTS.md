@@ -385,7 +385,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   - 另有 `npm run e2e:mcp`（真接第三方 MCP server，需要网络 / uv；离线自动回落
     `scripts/mcp-fixture-server.py`）。它**不并入**上面 8 步，但动了 `integrations/mcp.ts` 就要跑。
   - 另有 `npm run e2e:mcp:server`（MCP **反向**桥：app 菜单暴露成 MCP server，两个传输都真跑，
-    客户端是我们自己的出厂连接器；离线零网络）。同样**不并入**上面 8 步，动了
+    客户端是我们自己的出厂连接器；离线零网络）。**不并入**上面 8 步，但已是 CI 的独立必需检查
+    `e2e-mcp-server`（与 e2e:mcp 同档 —— 唯一区别是它不需要 uv，CI 与本机跑同一条路），动了
     `engine/mcp-server.ts` 就要跑。
   - 另有 `npm run e2e:live`（真 API 集成验证）。**不并入**上面 8 步、**不进 CI**（会真花 token），
     无凭据时跳过并打横幅（静默跳过 = 假装验过）。动了 `integrations/anthropic.ts` 或
@@ -401,12 +402,13 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     （import 面只有 `runAgent` 那几个），跑完整装配的 `e2e:examples` 又是**只跑一轮**的线性脚本 ⇒
     这一格原本空着）。**不并入**上面 8 步，理由同 `e2e:soak`：默认 30s×6 并发，是「跑久了对不对」。
     改了 `transport/` 的异步任务面（store 认领 / resumePending / scheduler）值得跑它。
-  - **CI**：`.github/workflows/ci.yml` —— 六个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
+  - **CI**：`.github/workflows/ci.yml` —— 七个 job：① `verify`（`bash scripts/verify-all.sh`，与本地**同一条链**，
     不新增检查项）；② `lint`（`npx biome ci .`）；③ `import-floor`（在 Node 18/20 上验证「包可导入」——
     守住 `engines: >=18` 的声明，见 `scripts/check-import-floor.mjs`）；④ `e2e:mcp`（runner 无 uvx ⇒ 必走回落分支，
-    同时当回落守卫）；⑤ `deploy-website`（**发布**，只在 `main` 上跑：`needs: [verify, lint]` + `npm run deploy:website`
+    同时当回落守卫）；⑤ `e2e:mcp:server`（MCP 反向桥端到端，离线零网络，CI 与本机同一条路）；
+    ⑥ `deploy-website`（**发布**，只在 `main` 上跑：`needs: [verify, lint]` + `npm run deploy:website`
     推 Cloudflare Pages。PR 上 skip。**它不是必需状态检查，不要加进分支保护** —— 同下面 `verify` 的坑）；
-    ⑥ `docker-image`（**构建 `examples/deploy` 的镜像**：本机没有 docker、本地链跑不了它，于是「镜像建不建得起来」
+    ⑦ `docker-image`（**构建 `examples/deploy` 的镜像**：本机没有 docker、本地链跑不了它，于是「镜像建不建得起来」
     此前只活在文档的示例命令里。**同样不是必需状态检查**，但它把那一跳变成 CI 侧的真实构建 —— 首次绿就是它的验证）。
     **`verify` 的 job name 是分支保护的必需状态检查，改名 = PR 永远等不到该检查 → 卡死**；
     同理**不要给 `verify` 加 matrix**（matrix 会给检查名加后缀）。要挡更低 Node 版本请另开 job。
