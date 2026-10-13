@@ -32,6 +32,15 @@ lint 也过了。**要往链上加检查，请折进已有步骤，不要加第 
 
 动了 `src/integrations/mcp.ts` 还要跑 `npm run e2e:mcp`；动了 `src/engine/mcp-server.ts` 还要跑 `npm run e2e:mcp:server`。
 
+想让静态问题更早暴露，可以开**仓内的 git 钩子**（每个克隆各开一次，git 不会自动启用仓库里的钩子）：
+
+```bash
+git config core.hooksPath .githooks   # 之后每次 push 前只跑静态三步（约 15 秒）
+SKIP_VERIFY=1 git push                # 急着推时跳过
+```
+
+⚠️ 它**不是门禁**：只覆盖 `bash scripts/verify-all.sh rapid` 那三步，真正的门禁是 CI。
+
 ## 提 PR 的流程
 
 `main` 是**受保护分支**：
