@@ -260,7 +260,7 @@ describe('Scheduler', () => {
   });
 
   it('drain 感知：runner 停机后 tick 静默跳过（不再每个 tick 刷一条 console.error）', async () => {
-    // 反向验证（2026-10-13 ④）：没有 dispatch 里那道 isDraining 闸时，drain 之后
+    // 反向验证（2026-10-13 ⑫）：没有 dispatch 里那道 isDraining 闸时，drain 之后
     // 每个 tick 的 submit 都抛「正在优雅停机」⇒ catch 里 console.error 刷屏。
     const app = fakeApp();
     const runner = new AsyncRunner(app);

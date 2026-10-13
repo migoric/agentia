@@ -70,8 +70,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   ⚠️ 2026-09-29 复算：09-20 写下时 895 行，**「后续三步」当时一步没走**，
 │   │                        #   类反长到 **1554 行**（文件 375→1929）；同日下午抽出审批监督 / 信号投递 /
 │   │                        #   恢复扫描三簇 ⇒ 文件 1460 行（含代码行 664）—— 这是**当日**读数；
-│   │                        #   2026-10-13 复算 **1380 行 / 627 代码行**，当前真值以
-│   │                        #   `tests/architecture/source-size.test.ts` 头注表为准，别在这里数
+│   │                        #   ⚠️ **此后不在这张图里维护读数** —— 上一版写「2026-10-13 复算 1380 行 /
+│   │                        #   627 代码行」，两个数当天就都错了（行数差一；代码行被同日的抽件改掉，
+│   │                        #   实测 1487 / 680）。当前真值只认 `tests/architecture/source-size.test.ts`
+│   │                        #   头注表 —— 那张表**带自审断言**（表里的数 ≠ 实测即红），别在这里数
 │   │                        #   ⚠️ **原句「只剩 drain 协调未抽」是错的，2026-10-11 更正**（它让我把
 │   │                        #   已完成的抽件当成未偿的债报进评审）：drain 的**等待闸**早已抽成
 │   │                        #   `drain-gate.ts`（就在下面几行）；**在飞计数刻意不搬**（它同时是 /healthz 的
@@ -95,8 +97,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   resume-scanner.ts = 恢复扫描与接管（同日抽）：resumePending 一次扫描
 │   │                        #   按序干四件事（顺序有语义）—— rebuild → expireIfExpired → wakeDue → 认领重投；
 │   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）；
-│   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ③）
-│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ②）：AsyncRunner 的
+│   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ⑪）
+│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ⑩）：AsyncRunner 的
 │   │                        #   #cancelInflight 与三个监督件互为对侧闸（各经 cancelInflight 回调
 │   │                        #   读对方、以 inflightFor/inflightWakeFor 被对方读）；#executeInner
 │   │                        #   起跑前还有一道取消意图闸 —— 「被取消的排队任务绝不起跑」靠它合上
@@ -139,7 +141,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   纯件 ⇒ 实例副作用（快照写 sessionInputs、审批登记簿除名）以**返回值**
 │   │                        #   交回调用点；「用户输入快照必须在 rec.spec 被覆盖**之前**取」是承重的顺序事实
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
-│   │                        #   **副本契约**（spec §10 2026-10-13 ①）：save 入库与
+│   │                        #   **副本契约**（spec §10 2026-10-13 ⑨）：save 入库与
 │   │                        #   get/byIdempotency/list 出站一律走 cloneTaskRecord
 │   │                        #   （深拷纯数据、AbortSignal/函数按引用保留）—— 内存推进只许由
 │   │                        #   save 驱动，「改 rec 就改了库」是契约违规

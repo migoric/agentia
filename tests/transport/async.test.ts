@@ -27,7 +27,7 @@ class SyncThrowOnTerminalStore extends InMemoryTaskStore {
  * 模拟 sqlite/redisStore 这类**异步** store：方法返回 Promise，且 `list()` 交出的
  * 是**反序列化后的新对象**（改它不入库）。这正是 `#redispatch` 那个重复执行窗口的
  * 必要条件 —— 当年 `InMemoryTaskStore` 存对象引用恰好把问题掩盖了
- * （2026-10-13 ① 起内建 store 也全部走副本，这个夹具仍管「异步」那一半）。
+ * （2026-10-13 ⑨ 起内建 store 也全部走副本，这个夹具仍管「异步」那一半）。
  */
 class AsyncCopyStore implements TaskStore {
   readonly #byTask = new Map<string, TaskRecord>();
@@ -250,7 +250,7 @@ describe('AsyncRunner', () => {
       await waitFor(() => app.calls === 2, '落库抛错后槽位必须仍被释放（第二条也跑得到）');
       await new Promise((r) => setTimeout(r, 20)); // 给潜在的 unhandled rejection 落地机会
       assert.deepEqual(rejections, []);
-      // 副本契约（2026-10-13 ①）坐实后，终态 save 抛错 ⇒ 内存**不再**被原地推进：
+      // 副本契约（2026-10-13 ⑨）坐实后，终态 save 抛错 ⇒ 内存**不再**被原地推进：
       // 库里诚实地停在 running（最后一次落库成功的状态）—— 这正是 onPersistError
       // 要对账的那一格，不再被引用语义遮掉。
       const left = (store.list() as TaskRecord[]).map((r) => r.status);
@@ -272,7 +272,7 @@ describe('AsyncRunner', () => {
    *
    * 为什么必须要它：此前 `InMemoryTaskStore` 存**对象引用**，runner 就地改写 `rec` ⇒ 即便
    * `save` 抛错，库里那条也已经是终态 —— 「终态落库失败」当时根本看不见。
-   * 2026-10-13 ① 起内建 store 全部坐实副本契约（`cloneTaskRecord`），这个测试夹具
+   * 2026-10-13 ⑨ 起内建 store 全部坐实副本契约（`cloneTaskRecord`），这个测试夹具
    * 仍在的理由是另两样：**异步**（Promise 分支）与**按谓词失败**（jitter 注入）。
    */
   class CopyStoreOnSave implements TaskStore {
@@ -366,7 +366,7 @@ describe('AsyncRunner', () => {
     assert.equal(
       store.get(t.taskId)?.status,
       'running',
-      '终态那次 save 抛了 ⇒ 库里停在最后一次落库成功的状态（副本契约 2026-10-13 ①：' +
+      '终态那次 save 抛了 ⇒ 库里停在最后一次落库成功的状态（副本契约 2026-10-13 ⑨：' +
         '既不被回调的改写污染，也不再被 runner 的活引用原地推进）',
     );
     assert.equal(seen[0]!.phase, 'outcome');
