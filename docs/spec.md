@@ -6479,6 +6479,53 @@ check、7 → 10 组）、`tests/observability-mcp-parity.test.ts`（新）。**
 **验证**：3 条变异各咬住预期断言（去掉 taskId 层 ⇒ 双钉红 + verify §8 红；去掉 root=`/` 特判
 ⇒ verify §9 红；去掉截断 ⇒ verify §10 三条红）；`npm run e2e:examples` 全绿。
 
+### 2026-10-13 ①：retry 数值旋钮入口校验 + 退避处 catch 只认 AbortError（深评 A1）
+
+**起因**：五路深度评审实测：`retry: { baseDelayMs: NaN }` + 一次 429 ⇒ `backoffDelay` 算出
+NaN ⇒ `sleep → interruptibleSleep → assertTimerDelay` 抛 RangeError ⇒ `turn.ts` 退避处的
+裸 `catch { aborted = true }` 把它吞成 `stopReason: 'aborted'`（配置错被谎报成「用户取消」）。
+同族：`maxAttempts: NaN` 让 `!(NaN >= 1)` 成立 ⇒ 重试被**静默关闭**（`retry.ts:70`），
+run 根快照记 `config.retry.maxAttempts: 0`，看着像用户主动关的 —— 而 client 层
+`maxRetries` 对同款坏值是构造期抛 TypeError 的，两层纪律不对称。
+
+**决策**：
+
+- **四个数值旋钮进 `core/limits.ts` 真源表 + `resolveRetry` 校验抛 TypeError**：
+  `maxAttempts`（非负安全整数，`0` = 关闭重试）、`baseDelayMs` / `maxDelayMs`
+  （0 ~ 2^31-1ms 有限数，`0` = 不退避 / 封顶为零）、`jitter`（0~1，`0` = 不加抖动）。
+  报错文案插 `zeroClauseOf`（文案与表同源，tests/limits.test.ts 的文案对账 case 守着）。
+  校验放 `resolveRetry`（单源，`runAgent` / `runAgentScoped` / 直连 `agentLoop` 都过它），
+  `runAgent` 入口另调一次 `validateRetryOptions` —— 与 `validateLabels` / `resolveModelChain`
+  同落点：**配置错响亮抛出，不收成「一条失败的 run」**。
+- **退避处 catch 只认 `isAbortError`**，其他错误原样抛出（走 `classifyError` 的正常归类）。
+  入口校验让这条路本不该走到，留它作纵深防御 —— 「sleep 只抛 AbortError」是假设不是契约。
+- **`backoffDelay` 上界再封一道**：`maxDelayMs ≤ 2^31-1` 由校验保证，但正向抖动（±jitter 是
+  有意的）仍能把它推过 Node 定时器上限 ⇒ `Math.min(…, MAX_TIMER_DELAY_MS)` 夹住。
+  用 `Math.min` 而不用 `clampTimerDelay`：后者把 NaN 读成 0，而 NaN 是必须响亮的坏值。
+
+**影响面**：`src/engine/retry.ts`（+validateRetryOptions / clamp）、`src/engine/turn.ts`
+（catch 判别）、`src/engine/loop.ts`（入口校验）、`src/core/limits.ts`（+4 旋钮）、
+`tests/limits.test.ts`（+4 探针 + 4 文案对账 case）、`tests/engine/retry.test.ts`（+6 条）、
+`docs/usage-guide.md`（重试段补口径）。**验证**：旧行为逐字复现为红（去掉校验 ⇒
+runAgent 入口用例红；catch 改回裸 catch ⇒ streamTurn 用例红）。
+
+### 2026-10-13 ②：runAgent 入口段抛错时 run 根 span 必须合拢（深评 A2）
+
+**起因**：`loop.ts` 的 `recorder.begin('run', …)` 之后、`agentLoop` 之前的入口段
+（`menuSignature` 的 JSON.stringify、`resolveModelChain`、`validateLabels` 等）抛错时，
+run 根 span 永不 `end` —— `runtime/run.ts` 的 `fail()` 只在**根未开**时补记，于是交付
+sink 的 trace 是 `status='error'` 而根 span 是 ok、无 endedAt、无结构化 error，违反
+「非正常收尾必带结构化 error」的不变量。
+
+**决策**：入口段整体进 try/catch，catch 只做两件事 —— 给根 span 收尾
+（`status:'error'` + `classifyError(e)` 的结构化 error）+ **原样 rethrow**。
+对外行为不变（配置错照样响亮抛，不收成「失败的 run」），只是 trace 不再说谎。
+`recorder.end` 幂等，`fail()` 不双记（根已开它只 snapshot）。
+
+**影响面**：`src/engine/loop.ts`（入口段 try/catch）；`tests/engine/loop.test.ts` +1 条
+（labels 空键 / 空壳 fallback client 两个真实触发点，断言根 span error + endedAt +
+结构化 error 且模型请求零发出）。**验证**：去掉 catch 里的收尾 ⇒ 该用例红。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

@@ -425,7 +425,12 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
         }
         try {
           await sleep(delayMs, signal);
-        } catch {
+        } catch (sleepErr) {
+          // 只认取消（AbortError）：sleep 还会因坏延迟抛 RangeError（assertTimerDelay）——
+          // 那是配置/实现错误，吞成 aborted 会把「配置坏了」谎报成「用户取消」
+          // （2026-10-13 深评 A1 实测：`retry:{baseDelayMs:NaN}` + 429 → stopReason:aborted）。
+          // 入口校验（validateRetryOptions）让这条路本不该走到，真走到就原样抛出归类。
+          if (!isAbortError(sleepErr)) throw sleepErr;
           aborted = true; // 退避期间被取消
           break;
         }

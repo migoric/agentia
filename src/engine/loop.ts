@@ -24,7 +24,9 @@ import {
   runConfigSnapshot,
   validateLabels,
 } from './run-config.js';
+import type { ResolvedModelLink } from './run-config.js';
 import type { RetryOptions } from './retry.js';
+import { validateRetryOptions } from './retry.js';
 import { TraceRecorder } from './tracer.js';
 import {
   abortedError,
@@ -37,6 +39,7 @@ import {
 } from './turn.js';
 import { textOf } from './text.js';
 import { resolveStopReason } from './stop-reason.js';
+import { classifyError } from './errors.js';
 import type { AgentLoopArgs } from './turn.js';
 import type {
   AgentRunResult,
@@ -343,59 +346,79 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   const recorder = options.recorder ?? new TraceRecorder();
   const rootName = options.runName ?? 'agent.run';
   const rootId = recorder.begin('run', rootName, null);
-  recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
-  // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
-  if (options.systemVersion) recorder.setAttribute(rootId, 'system.version', options.systemVersion);
-  // @Prompt 资产版本（R7）：菜单里各 prompt 的版本表落 run 根 —— 质量回归能定位到具体资产版本
-  if (options.promptVersions) {
-    const joined = Object.entries(options.promptVersions)
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([n, v]) => `${n}@${v}`)
-      .join(',');
-    if (joined) recorder.setAttribute(rootId, 'prompts.versions', joined);
-  }
-  // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
-  if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
-  // 归因标签（R8-P4）：labels.* 落 run 根（trace 侧无基数问题；进 metrics 是
-  // metricsSink 的 labelKeys 那道显式开关 —— 两套纪律在各自的注释里互相指）
-  if (options.labels) {
-    for (const [k, v] of Object.entries(options.labels)) {
-      recorder.setAttribute(rootId, `labels.${k}`, v);
+  // 入口段（属性记账 + 模型链 / 标签 / retry 校验）整体进 try：这一段抛错是**配置错**，
+  // 必须照常响亮抛出（catch 只收尾、原样 rethrow，行为对外不变）—— 但 run 根已开，
+  // 抛出前必须先合拢（error 状态 + 结构化 error + endedAt），否则交付 sink 的 trace 里
+  // status='error' 而根 span 是 ok、无 endedAt、无结构化 error，违反「非正常收尾必带
+  // 结构化 error」的不变量（2026-10-13 深评 A2）。runtime/run.ts 的 fail() 只在根未开时
+  // 补记，根已开就信任这里已收尾（recorder.end 幂等，不双记）。
+  let client: ModelClient;
+  let model: string;
+  let modelChain: ResolvedModelLink[];
+  try {
+    recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
+    // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
+    if (options.systemVersion)
+      recorder.setAttribute(rootId, 'system.version', options.systemVersion);
+    // @Prompt 资产版本（R7）：菜单里各 prompt 的版本表落 run 根 —— 质量回归能定位到具体资产版本
+    if (options.promptVersions) {
+      const joined = Object.entries(options.promptVersions)
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([n, v]) => `${n}@${v}`)
+        .join(',');
+      if (joined) recorder.setAttribute(rootId, 'prompts.versions', joined);
     }
+    // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
+    if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
+    // 归因标签（R8-P4）：labels.* 落 run 根（trace 侧无基数问题；进 metrics 是
+    // metricsSink 的 labelKeys 那道显式开关 —— 两套纪律在各自的注释里互相指）
+    if (options.labels) {
+      for (const [k, v] of Object.entries(options.labels)) {
+        recorder.setAttribute(rootId, `labels.${k}`, v);
+      }
+    }
+    // 入站链路（spec §9.2 跨进程关联）：把「谁触发了这次 run」记成 run 根的一条 link。
+    // 与 `traceId == runId` 共存 —— 上游是被**链接**而不是被继承成父 span，所以本 run
+    // 的树永远自洽（上游采样掉/已结束都不影响），因果关系仍然可查。见 core/trace.ts。
+    if (options.traceContext) {
+      recorder.addLink(rootId, {
+        traceId: options.traceContext.traceId,
+        ...(options.traceContext.spanId ? { spanId: options.traceContext.spanId } : {}),
+      });
+    }
+    // 菜单版本化（R8 候选 3）：名字清单（人读、有界）+ 摘要（比对）。
+    // 与 `prompts.versions` 同一动机 —— 质量回归要能定位到具体菜单版本；摘要覆盖 schema，
+    // 所以「工具还在、签名变了」也算漂移。**只在 run 根记**：子循环走 `runAgentScoped`
+    // （不开 run 根、不设根属性），所以不会把子菜单覆写到根上。
+    if (options.tools && options.tools.length > 0) {
+      const { names, hash } = menuSignature(options.tools);
+      recorder.setAttribute(rootId, 'tools.names', names);
+      recorder.setAttribute(rootId, 'tools.menuHash', hash);
+    }
+    // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
+    // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
+    // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
+    for (const [k, v] of Object.entries(runConfigSnapshot(options)))
+      recorder.setAttribute(rootId, k, v);
+
+    // fallback 链（R8-P2）在这里解析 + 校验：坏环 / 死 client（持久化反序列化的空壳）
+    // 是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 上面的 catch 只给根 span
+    // 收尾就原样 rethrow，不会收成「一条失败的 run」（配置错被记成运行失败是静默降级的一种）。
+    client = options.client ?? createAnthropicClient();
+    model = resolveDefaultModel(options.model);
+    modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
+    // 归因标签（R8-P4）同一条入口校验纪律：配置错响亮抛，不收成失败的 run
+    validateLabels(options.labels);
+    // retry 数值旋钮同款（2026-10-13 深评 A1）：NaN / 负数 / 超上限在这里响亮抛 ——
+    // 否则 `maxAttempts: NaN` 静默关重试、`baseDelayMs: NaN` 的 RangeError 会被退避处的
+    // catch 误报成「用户取消」（各旋钮 0 的读法见 core/limits.ts 真源表）
+    validateRetryOptions(options.retry);
+  } catch (e) {
+    recorder.end(rootId, { status: 'error', error: classifyError(e) });
+    throw e;
   }
-  // 入站链路（spec §9.2 跨进程关联）：把「谁触发了这次 run」记成 run 根的一条 link。
-  // 与 `traceId == runId` 共存 —— 上游是被**链接**而不是被继承成父 span，所以本 run
-  // 的树永远自洽（上游采样掉/已结束都不影响），因果关系仍然可查。见 core/trace.ts。
-  if (options.traceContext) {
-    recorder.addLink(rootId, {
-      traceId: options.traceContext.traceId,
-      ...(options.traceContext.spanId ? { spanId: options.traceContext.spanId } : {}),
-    });
-  }
-  // 菜单版本化（R8 候选 3）：名字清单（人读、有界）+ 摘要（比对）。
-  // 与 `prompts.versions` 同一动机 —— 质量回归要能定位到具体菜单版本；摘要覆盖 schema，
-  // 所以「工具还在、签名变了」也算漂移。**只在 run 根记**：子循环走 `runAgentScoped`
-  // （不开 run 根、不设根属性），所以不会把子菜单覆写到根上。
-  if (options.tools && options.tools.length > 0) {
-    const { names, hash } = menuSignature(options.tools);
-    recorder.setAttribute(rootId, 'tools.names', names);
-    recorder.setAttribute(rootId, 'tools.menuHash', hash);
-  }
-  // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
-  // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
-  // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
-  for (const [k, v] of Object.entries(runConfigSnapshot(options)))
-    recorder.setAttribute(rootId, k, v);
 
   const progress = { iterations: 0, eventsDelivered: false };
-  // fallback 链（R8-P2）在 **try 之外**解析 + 校验：坏环 / 死 client（持久化反序列化的
-  // 空壳）是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 放进 try 会被
-  // failedResult 收成「一条失败的 run」，配置错就这样被记成了运行失败（静默降级的一种）。
-  const client = options.client ?? createAnthropicClient();
-  const model = resolveDefaultModel(options.model);
-  const modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
-  // 归因标签（R8-P4）同一条入口校验纪律：配置错响亮抛，不收成失败的 run
-  validateLabels(options.labels);
   let result: AgentLoopResult<SchemaType<S>>;
   try {
     // run 根作用域（spec §9.2 出站传播）：循环内任何地方（工具 / 子能力 / 中间件）都读得到

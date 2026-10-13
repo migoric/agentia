@@ -1,5 +1,6 @@
 import type { SpanError } from '../core/trace.js';
-import { interruptibleSleep } from '../core/timeout.js';
+import { zeroClauseOf } from '../core/limits.js';
+import { MAX_TIMER_DELAY_MS, interruptibleSleep } from '../core/timeout.js';
 import { classifyError } from './errors.js';
 
 /**
@@ -58,9 +59,60 @@ function definedOnly(o: RetryOptions | undefined): RetryOptions {
   return out;
 }
 
+/**
+ * 校验 `RetryOptions` 的四个数值旋钮 —— **响亮抛 TypeError**，与 client 层
+ * `resolveMaxRetries`（integrations/adapter-options.ts）同一条纪律。
+ *
+ * 坏值的真实后果（2026-10-13 深评 A1，实测）：
+ * - `maxAttempts: NaN` ⇒ `!(NaN >= 1)` 成立 ⇒ **重试被静默关闭**（run 根快照记
+ *   `config.retry.maxAttempts: 0`，看着像用户主动关的）；
+ * - `baseDelayMs: NaN` ⇒ `backoffDelay` 算出 NaN ⇒ `sleep` 的 `assertTimerDelay` 抛
+ *   RangeError —— 它曾被 turn.ts 退避处的裸 catch 吞成「用户取消」（配置错被谎报）；
+ * - 延迟超 2^31-1ms ⇒ 被 Node 静默钳到 1ms（远期退避变热重试，单源上限见 core/timeout.ts）。
+ *
+ * `0` 各有合法读法（`maxAttempts: 0` = 关闭、`baseDelayMs: 0` = 不退避、`jitter: 0` =
+ * 不加抖动），不在被拒之列 —— 各旋钮的 0 语义登记在 `core/limits.ts`。
+ */
+export function validateRetryOptions(o: RetryOptions | false | undefined): void {
+  if (o === false || o === undefined) return;
+  const { maxAttempts, baseDelayMs, maxDelayMs, jitter } = o;
+  if (maxAttempts !== undefined && (!Number.isSafeInteger(maxAttempts) || maxAttempts < 0)) {
+    throw new TypeError(
+      `retry.maxAttempts 必须是非负安全整数（${zeroClauseOf('RetryOptions.maxAttempts')}），收到 ${String(maxAttempts)} —— ` +
+        'NaN / Infinity / 负数 / 小数都会让「重试几次」变成猜的（`!(NaN >= 1)` 成立 ⇒ 重试被静默关闭）',
+    );
+  }
+  for (const [name, v] of [
+    ['retry.baseDelayMs', baseDelayMs],
+    ['retry.maxDelayMs', maxDelayMs],
+  ] as const) {
+    if (v === undefined) continue;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > MAX_TIMER_DELAY_MS) {
+      throw new TypeError(
+        `${name} 必须是 0 ~ ${MAX_TIMER_DELAY_MS}ms 的有限数` +
+          `（${zeroClauseOf(name === 'retry.baseDelayMs' ? 'RetryOptions.baseDelayMs' : 'RetryOptions.maxDelayMs')}），` +
+          `收到 ${String(v)} —— NaN 会让退避算成 NaN，超上限会被 Node 钳到 1ms（远期变热重试）`,
+      );
+    }
+  }
+  if (
+    jitter !== undefined &&
+    (typeof jitter !== 'number' || !Number.isFinite(jitter) || jitter < 0 || jitter > 1)
+  ) {
+    throw new TypeError(
+      `retry.jitter 必须是 0 ~ 1 的有限数（${zeroClauseOf('RetryOptions.jitter')}），收到 ${String(jitter)} —— ` +
+        '>1 会把退避拉成负数再被静默钳回 0（抖动与退避一起失效）',
+    );
+  }
+}
+
 /** 归一重试配置：`undefined` → 缺省策略（**缺省开启**）；`false` → null（关闭）。 */
 export function resolveRetry(o: RetryOptions | false | undefined): ResolvedRetry | null {
   if (o === false) return null;
+  // 数值旋钮坏值响亮失败（见 validateRetryOptions 头注）。runAgent 入口另有一次同款
+  // 校验（配置错不收成「失败的 run」）；这里保留是因为直连 agentLoop / runAgentScoped
+  // 的路径不经过 run 入口。
+  validateRetryOptions(o);
   // 用 definedOnly 兜住显式 undefined，否则旧写法会把缺省覆盖掉：
   // `maxAttempts: undefined` → `!(undefined >= 1)` 成立 → **重试被静默关闭**，
   // 而 run 根快照记的是 config.retry.maxAttempts: 0（看起来像用户主动关的）；
@@ -89,7 +141,11 @@ export function backoffDelay(attempt: number, r: ResolvedRetry): number {
   const exp = r.baseDelayMs * 2 ** Math.max(0, attempt - 1);
   const capped = Math.min(exp, r.maxDelayMs);
   const jitter = r.jitter > 0 ? capped * r.jitter * (Math.random() * 2 - 1) : 0;
-  return Math.max(0, Math.round(capped + jitter));
+  // 上界再封一道：`capped ≤ maxDelayMs ≤ 2^31-1` 由入口校验保证，但正向抖动还能把它
+  // 推过 Node 定时器的物理上限（maxDelayMs 贴上限 + jitter=1 ⇒ 最多 2 倍）——超上限
+  // 的 setTimeout 会被钳到 1ms（远期退避变热重试），这里在交付给 sleep 之前夹住。
+  // ⚠️ 用 Math.min 而不是 clampTimerDelay：后者会把 NaN 读成 0，而 NaN 是必须响亮的坏值。
+  return Math.min(Math.max(0, Math.round(capped + jitter)), MAX_TIMER_DELAY_MS);
 }
 
 /**
