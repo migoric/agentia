@@ -206,6 +206,10 @@ export class Scheduler {
   }
 
   private dispatch(job: Job): void {
+    // drain 感知（2026-10-13 ④）：runner 停机后 submit 必抛「正在优雅停机」—— 不设这道闸，
+    // 停机窗口里每个 tick 都换一条 console.error（纯刷屏；停机语义本来就是「不再往前推」，
+    // 跳过 tick 不是故障，不报）。
+    if (this.runner.isDraining) return;
     // maxInFlight 闸门（仅周期任务）：上一片还在跑就跳过本次 tick —— 否则
     // every(1000) + 60s 任务会每个 tick 都派发，任务无上限堆积。
     // Infinity = 闸门关闭：也不追踪（否则 inFlight 集合随 tick 无界增长）。

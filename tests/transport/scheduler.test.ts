@@ -259,6 +259,31 @@ describe('Scheduler', () => {
     }
   });
 
+  it('drain 感知：runner 停机后 tick 静默跳过（不再每个 tick 刷一条 console.error）', async () => {
+    // 反向验证（2026-10-13 ④）：没有 dispatch 里那道 isDraining 闸时，drain 之后
+    // 每个 tick 的 submit 都抛「正在优雅停机」⇒ catch 里 console.error 刷屏。
+    const app = fakeApp();
+    const runner = new AsyncRunner(app);
+    const scheduler = new Scheduler(runner);
+    const logged: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      scheduler.every(10, 'tick');
+      await waitFor(() => app.calls >= 1, '停机前正常派发');
+      await runner.drain();
+      const callsAtDrain = app.calls;
+      await sleep(45); // ≥ 4 个 tick
+      assert.equal(app.calls, callsAtDrain, '停机后不再提交新任务');
+      assert.deepEqual(logged, [], '停机窗口里的跳过是静默的（不是故障，不报）');
+    } finally {
+      console.error = orig;
+      scheduler.stop();
+    }
+  });
+
   it('every(0) / 负值 / 非有限数：占位空转是配置错误，直接抛错', () => {
     const scheduler = new Scheduler(new AsyncRunner(fakeApp()));
     assert.throws(() => scheduler.every(0, 'x'), /intervalMs 必须为正有限数/);

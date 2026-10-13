@@ -565,6 +565,12 @@ const app = await createApp({ ... });
 ⚠️ 框架**刻意不替你调**：`drain()` 不关 store（同一个 store 可能被调度器或另一个宿主共用，
 关掉它是**宿主的**生命周期决定）。压实频率建议低频（如 cron 每小时一次）。
 
+**副本契约（自定义 store 必读）**：`save` 存**副本**、`get` / `byIdempotency` / `list` 交**副本** ——
+内存推进只许由 `save` 驱动。内建实现经 `cloneTaskRecord` 坐实（深拷纯数据；`AbortSignal` /
+函数等进程内对象按引用保留，不是序列化往返）；sqlite / redis 走序列化天然满足。自实现若交
+活引用，「改 rec → `await save`」的纪律会让未落库的中间态对其他读者可见，save 失败时
+污染留在库里（approve 重试撞 409、任务搁死到重启那一类）。
+
 #### gRPC 宿主（第 4 个宿主，**框架不内置**）
 
 gRPC 不是「另一种 broker」，它与 HTTP 是同一档的东西：**触发宿主**。所以正确形状与 HTTP 宿主

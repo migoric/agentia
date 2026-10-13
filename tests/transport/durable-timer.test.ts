@@ -11,7 +11,7 @@ import {
 } from '../../src/index.js';
 import type { AgentTool, AppCallable, MessageParam, TaskRecord } from '../../src/index.js';
 import { createHttpHandler } from '../../src/transport/http.js';
-import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
+import { endTurnMsg, mockClient, toolUseMsg, waitFor } from '../helpers.js';
 
 /**
  * 时间挂起（durable timer）**宿主侧**：submit → 睡到某时刻 → 到期唤醒 → 重跑那一批。
@@ -261,12 +261,17 @@ describe('AsyncRunner 时间挂起（durable timer）', () => {
     assert.equal(after!.wakeAt, gate.at, '目标时刻没被动过');
     assert.equal(spy.calls, 1, '没有被重派（工具不会再跑一遍）');
 
-    // 对照：同一条记录只把**原因**换成 approval ⇒ 同一把闸立刻生效（补 deny + 重派）
+    // 对照：同一条记录只把**原因**换成 approval ⇒ 同一把闸立刻生效（补 deny + 重派）。
+    // 恢复是异步的：触发的这一读只保证「兜底已启动」，断言要等它真落地。
     await runner.store.save({ ...after!, suspendedReason: 'approval' });
-    const expired = await runner.poll(t.taskId);
-    assert.notEqual(expired!.status, 'suspended', '等人工的挂起照旧被判超时、恢复执行');
-    assert.equal(expired!.approvals?.tu1?.approved, false, '框架兜底的拒绝（人没来）');
-    assert.equal(spy.calls, 1, '被拒的调用不执行工具体（denied 走 is_error 的 tool_result）');
+    await runner.poll(t.taskId);
+    // 「被兜底重派了」的实证：timer 挂起的恢复语义是「醒来重跑那一批」⇒ 工具真再跑一次
+    // （它会再次 deferUntil 睡回去 —— 终态不是本用例的对象，本用例管的是闸有没有越界/兜底）。
+    await waitFor(() => spy.calls === 2, '换成 approval 原因 ⇒ 超时兜底重派，恢复段真跑了一次');
+    const expired = (await runner.store.get(t.taskId))!;
+    assert.equal(expired.approvals?.tu1?.approved, false, '框架兜底的拒绝（人没来）');
+    assert.equal(expired.approvals?.tu1?.reason, '审批超时');
+    assert.equal(expired.approvals?.tu1?.decidedBy, 'system');
   });
 
   it('/healthz 的 suspended 段：空载给 null；按原因分组；读数由扫描按 store 对齐', async () => {

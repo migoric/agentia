@@ -102,7 +102,12 @@ describe('readClaimed —— 认领前重读（自 #executeInner 抽出）', () 
     const stored = mkRec({ taskId: 't9', status: 'cancelled' });
     await store.save(stored);
     const claimed = await readClaimed(store, mkRec({ taskId: 't9', status: 'running' }));
-    assert.equal(claimed, stored, '必须把 store 的真相交出来 —— 拿 submit 时那个对象判不出取消');
+    // 副本契约（2026-10-13 ①）下断言「内容与来源」而不是引用：store 交出的本就是快照
+    assert.deepEqual(
+      claimed,
+      stored,
+      '必须把 store 的真相交出来 —— 拿 submit 时那个对象判不出取消',
+    );
   });
 
   it('store 里没有：**回落 rec**（不是 undefined —— 那会让正常任务被这道闸吞掉）', async () => {
@@ -127,7 +132,7 @@ describe('readClaimed —— 认领前重读（自 #executeInner 抽出）', () 
     const store = new AsyncGetStore();
     const stored = mkRec({ taskId: 't-async', status: 'succeeded' });
     await store.save(stored);
-    assert.equal(await readClaimed(store, mkRec({ taskId: 't-async' })), stored);
+    assert.deepEqual(await readClaimed(store, mkRec({ taskId: 't-async' })), stored);
     assert.equal((await readClaimed(store, mkRec({ taskId: 't-absent' })))?.taskId, 't-absent');
   });
 });

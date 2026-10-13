@@ -92,7 +92,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   事件**串行成链**（不共享在飞那次），且多一道容量闸（上限 64）
 │   │                        #   resume-scanner.ts = 恢复扫描与接管（同日抽）：resumePending 一次扫描
 │   │                        #   按序干四件事（顺序有语义）—— rebuild → expireIfExpired → wakeDue → 认领重投；
-│   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）
+│   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）；
+│   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ③）
+│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ②）：AsyncRunner 的
+│   │                        #   #cancelInflight 与三个监督件互为对侧闸（各经 cancelInflight 回调
+│   │                        #   读对方、以 inflightFor/inflightWakeFor 被对方读）；#executeInner
+│   │                        #   起跑前还有一道取消意图闸 —— 「被取消的排队任务绝不起跑」靠它合上
 │   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
 │   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
 │   │                        #   task-events.ts = 每任务的**记账事件缓冲 + 订阅表**（GET /tasks/:id/stream 的底座：
@@ -132,6 +137,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   纯件 ⇒ 实例副作用（快照写 sessionInputs、审批登记簿除名）以**返回值**
 │   │                        #   交回调用点；「用户输入快照必须在 rec.spec 被覆盖**之前**取」是承重的顺序事实
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
+│   │                        #   **副本契约**（spec §10 2026-10-13 ①）：save 入库与
+│   │                        #   get/byIdempotency/list 出站一律走 cloneTaskRecord
+│   │                        #   （深拷纯数据、AbortSignal/函数按引用保留）—— 内存推进只许由
+│   │                        #   save 驱动，「改 rec 就改了库」是契约违规
 │   ├── integrations/        # 外部系统适配：OpenAI 兼容端点(ModelClient)、OTLP 导出、
 │   │                        #   MCP 桥(duck-typed) + 出厂连接器(stdio/StreamableHTTP，只用标准库)、
 │   │                        #   指标(metricsSink，满足 TraceSink)

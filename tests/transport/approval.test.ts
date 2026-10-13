@@ -237,11 +237,12 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     const t = runner.submit('活');
     await waitStatus(runner, t.taskId, 'suspended');
 
-    // 把挂起时刻拨到很久以前（InMemory store 返回的是活对象）—— 不起定时器，
+    // 把挂起时刻拨到很久以前（副本契约：改完要落库才算数）—— 不起定时器，
     // 超时只在「有人读它」时生效（惰性判定）
     const rec = (await runner.poll(t.taskId))!;
     assert.equal(rec.status, 'suspended', '没到点不动作');
     rec.suspendedSince = 0;
+    await runner.store.save(rec);
 
     // 下一次读到（poll） ⇒ 自动全拒 + 重派
     const done = await runner.awaitTask(t.taskId);
@@ -270,8 +271,10 @@ describe('AsyncRunner HITL（审批挂起/恢复）', () => {
     assert.equal((await runner2.poll(t.taskId))!.status, 'suspended');
 
     // 配了 approvalTimeoutMs 且已过期 ⇒ resumePending 顺手判掉（惰性）并重派
+    // （副本契约：poll 交出的是快照，拨时刻后要落库才算数）
     const rec = (await runner2.poll(t.taskId))!;
     rec.suspendedSince = 0;
+    await runner2.store.save(rec);
     const runner3 = new AsyncRunner(app2, { store, approvalTimeoutMs: 1000 });
     const expired = await runner3.resumePending();
     assert.equal(expired, 1, '过期的挂起任务被自动判拒重派（计入重派数）');

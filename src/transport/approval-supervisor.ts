@@ -50,6 +50,12 @@ export interface ApprovalSupervisorDeps {
   approvalTimeoutMs: number;
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
+  /**
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：approve 进入前等它收口再重判；
+   * 惰性超时恢复见它即**跳过本轮**（惰性路径下一轮还会再判，跳过不丢）。
+   * 与 `#inflight` 互为对侧：两侧的「查对方闸 + 登记自己闸」在同一个同步段 ⇒ 先登记者赢。
+   */
+  cancelInflight?(taskId: string): Promise<unknown> | undefined;
 }
 
 export class ApprovalSupervisor {
@@ -120,6 +126,9 @@ export class ApprovalSupervisor {
    */
   expireIfExpired(rec: TaskRecord, now: number): boolean {
     if (!approvalExpired(rec, now, this.#deps.approvalTimeoutMs)) return false;
+    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ②）：它马上把任务落成终态，超时恢复再来一脚
+    // 就是「取消后照常执行」那条竞态。惰性路径不丢事：下一轮读还会再判（若取消没成）。
+    if (this.#deps.cancelInflight?.(rec.taskId)) return false;
     this.#expireAndResume(rec, now);
     return true;
   }
@@ -147,6 +156,14 @@ export class ApprovalSupervisor {
     decisions: ApprovalDecisions,
     opts: { decidedBy?: string } = {},
   ): Promise<TaskRecord> {
+    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ②）：否则两边各凭旧快照落库，
+    // 后写的那一份把 cancelled 覆盖成 running —— 任务取消后照常执行、webhook 双发。
+    // 检查必须在登记自己闸**之前**、且两者在同一同步段：先看对方、再登记，先登记者赢。
+    const settling = this.#deps.cancelInflight?.(taskId);
+    if (settling) {
+      await settling.catch(() => undefined);
+      return this.approve(taskId, decisions, opts);
+    }
     const inflight = this.#inflight.get(taskId);
     if (inflight) return inflight;
     const run = this.#approveInner(taskId, decisions, opts).finally(() => {
@@ -154,6 +171,11 @@ export class ApprovalSupervisor {
     });
     this.#inflight.set(taskId, run);
     return run;
+  }
+
+  /** 该任务上在飞的审批/超时恢复（cancel 的等待依据，2026-10-13 ②） */
+  inflightFor(taskId: string): Promise<TaskRecord> | undefined {
+    return this.#inflight.get(taskId);
   }
 
   async #approveInner(
@@ -264,14 +286,24 @@ export class ApprovalSupervisor {
     let saved: MaybePromise<void>;
     try {
       saved = this.#deps.store.save(target);
-    } catch {
-      return target; // 同步落库失败则不派发（与下一条异步分支同纪律：先落库再派发）
+    } catch (err) {
+      // 同步落库失败则不派发（先落库再派发）—— 但绝不能**静默**留尸：
+      // 任务会停在 suspended 直到下一次惰性判定，没人知道它失败过。
+      console.warn(
+        `[agentia] 审批超时恢复落库失败（task ${target.taskId}），本次不派发:`,
+        (err as Error)?.message ?? err,
+      );
+      return target;
     }
     if (isThenable(saved)) {
       // 落库失败则不派发（认领没落地就派发 = 重新打开重复执行窗口）
       try {
         await saved;
-      } catch {
+      } catch (err) {
+        console.warn(
+          `[agentia] 审批超时恢复落库失败（task ${target.taskId}），本次不派发:`,
+          (err as Error)?.message ?? err,
+        );
         return target;
       }
     }
