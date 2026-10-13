@@ -6,7 +6,7 @@ import { TaskCancelError } from '../../src/transport/async.js';
 import { endTurnMsg, mockClient, toolUseMsg, waitFor } from '../helpers.js';
 
 /**
- * cancel × 推进路径的互斥（2026-10-13 ②，spec §10）。
+ * cancel × 推进路径的互斥（2026-10-13 ⑩，spec §10）。
  *
  * 修复前两扇窗都真实存在（五路深评 B1）：
  * ① cancel(suspended) × approve 并发：两边各凭旧快照读-改-写，后写的把 cancelled

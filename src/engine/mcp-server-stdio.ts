@@ -50,7 +50,7 @@ function dispatchLine(line: string, core: McpCore, isClosed: () => boolean): voi
 
 export function startStdioTransport(core: McpCore): McpServer {
   // stdout 的 error **必须吞**：宿主先关读端、stdin 仍开着时，下一次应答写入就是异步
-  // `write EPIPE` —— 未捕获会把 server 打成栈回溯 + exit 1（2026-09-27 ⑩），而它只是
+  // `write EPIPE` —— 未捕获会把 server 打成栈回溯 + exit 1（2026-09-27 ⑦），而它只是
   // 「对端没了」的次生现象，不是根因。正向连接器对子进程 stdin 是同一处置
   // （`integrations/mcp-stdio.ts` 的 `p.stdin?.on('error', () => {})`），方向对称。
   // 吞掉 ≠ 静默：真该知道的人（宿主）已经从自己的管道拿到 EOF 了。
