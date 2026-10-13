@@ -256,11 +256,24 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
 
     ctx.messages.push({ role: 'assistant', content: message.content });
 
+    // 每回合刷新 finalText：max_iterations 耗尽出口也保留已产出文本
+    // （与 max_tokens / refusal / budget_exceeded 同口径；下方各收尾分支会按终态语义覆写）
+    finalText = textOf(message);
+
     const resolution = resolveStopReason(message, args.maxTokens);
     if (resolution.kind === 'finish') {
       stopReason = resolution.stopReason;
       finalText = resolution.finalText;
       if (resolution.error) error = resolution.error;
+      finished = true;
+      break;
+    }
+
+    // 「消息已收、工具未跑」窗口：abort 落在这里时整批工具的副作用不该再发生 ——
+    // 与续跑入口（resumeUses 分支）「已取消不执行任何工具」同一口径
+    if (args.signal?.aborted) {
+      stopReason = 'aborted';
+      error = abortedError();
       finished = true;
       break;
     }

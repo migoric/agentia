@@ -1353,6 +1353,8 @@ console.log(mcp.url); // http://127.0.0.1:8787/mcp
 | `server` | 挂进**既有** `http.Server`（框架不替它 listen；`close()` 只摘本 handler 不关它）。非本 `path` 的请求本 handler 直接忽略（交给宿主自己的路由） |
 | `client` | 进 `ToolRunContext.client`（子 agent / skill 类工具要它拉子循环）；缺省惰性 `createAnthropicClient()` |
 | `sinks` | trace 出口：每次 `tools/call` 收尾投递（抛错被吞 + `console.warn`，观测不击穿业务） |
+| `traceLimits` | 每次 `tools/call` 那棵 trace 的事件数闸（与引擎 `traceLimits` 同款：超限停记 + run 根留 `trace.truncated` 簿记；缺省 = 不限；坏值构造期抛 TypeError） |
+| `maxEventChars` | 事件正文截断上限（与引擎 `maxEventChars` 同款；`false` = 不截断；缺省 = 引擎缺省） |
 | `toolTimeoutMs` | 单次 `tools/call` 的工具执行超时（毫秒），语义与引擎 `toolTimeoutMs` 同款；非正数 / 不设 = 不限 |
 | `auth` | http 侧鉴权钩子：在读 body 之前调用，抛错即 401（原文只进服务端日志）；stdio 侧信任父进程、本项不生效 |
 | `name` | `serverInfo.name`（握手回给客户端），缺省 `'agentia'` |

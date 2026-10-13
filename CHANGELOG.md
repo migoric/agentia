@@ -1179,6 +1179,24 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `layering.test.ts` 的 import 解析改走 `lib/source-scan.ts` 遮蔽器（注释 / 模板里的
   `from './x.js'` 不再造假依赖边）。
 - 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ⑦。
+### 修复：engine 非正常路径口径对齐（深度评审 2026-10-13 低等项五件）（spec §10 2026-10-13 ⑧）
+
+- **`max_iterations` 出口保留已产出文本**：循环耗尽时 `finalText` 此前恒为 `''`，与
+  `max_tokens` / `refusal` / `budget_exceeded` 的「文本不丢」口径不一致；现在耗尽出口
+  带上最后一回合的模型文本。
+- **「消息已收、工具未跑」窗口内取消不再执行工具**：`streamTurn` 成功返回后、
+  `executeTurnTools` 之前补 `signal.aborted` 检查 —— abort 落在该窗口时整批工具的副作用
+  一个都不发生（与续跑入口「已取消不执行任何工具」同口径），run 以 `aborted` 收尾。
+- **trace 截断摘要多源漂移修复**：`snapshot()` 的收尾摘要（`trace.truncated` 的
+  `{ droppedEvents, limit }` 那笔）此前每次调用都新建时间戳，多次 snapshot 互不一致、
+  也都与增量流里那一条对不上；现在只生成一次、同一对象复用于两条缝
+  （「按 seq 折回 == snapshot」的折叠契约在截断场景重新成立）。
+- **stdio 反向桥监听器泄漏修复**：`process.stdout` 的 EPIPE 吞错监听随 `close()` 摘除
+  （此前只挂不摘，多次 `createMcpServer` 累积进程级监听器）。
+- **MCP 反向桥补 trace 闸**：`createMcpServer` 的选项新增 `traceLimits`（每次
+  `tools/call` 那棵 trace 的事件数上限，构造期校验、坏值抛 TypeError）与
+  `maxEventChars`（事件正文截断上限，`false` = 不截断）—— 缺省与引擎缺省逐字一致，
+  子 agent 类工具在桥内长跑时 trace 体积不再无界。
 
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 

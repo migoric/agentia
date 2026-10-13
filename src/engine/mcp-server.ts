@@ -13,7 +13,8 @@ import { startHttpTransport } from './mcp-server-http.js';
 import { startStdioTransport } from './mcp-server-stdio.js';
 import { buildToolRunContext } from './tool-context.js';
 import { toolInputPayload, toolOutputPayload } from './tool-events.js';
-import { TraceRecorder } from './tracer.js';
+import { TraceRecorder, resolveTraceLimits } from './tracer.js';
+import type { TraceLimits } from './tracer.js';
 
 /**
  * Agentia —— **MCP 反向桥**（R8-P5）：把 app 的能力菜单暴露成 MCP server
@@ -85,6 +86,18 @@ export interface McpServerOptions {
   client?: ModelClient;
   /** trace 出口：每次 `tools/call` 收尾投递（抛错被吞，观测不击穿业务） */
   sinks?: TraceSink[];
+  /**
+   * 每次 `tools/call` 那棵 trace 的事件数闸（语义与引擎 `traceLimits` **同款**：
+   * 超限停记 + run 根两笔 `trace.truncated` 簿记；缺省 = 不限）。子 agent 类工具
+   * 在桥内长跑时，没有这道闸 trace 体积就无界。坏值在**构造期**抛 TypeError
+   * （与 run 入口的 `resolveTraceLimits` 同一个判定器）。
+   */
+  traceLimits?: TraceLimits;
+  /**
+   * 事件正文截断上限；语义与引擎 `maxEventChars` **同款**（`false` = 不截断，
+   * 缺省 = 引擎缺省 `DEFAULT_EVENT_CHARS`）。透传给 tool.input / tool.output 的载荷装配。
+   */
+  maxEventChars?: number | false;
   /**
    * 单次 `tools/call` 的工具执行超时（毫秒），语义与引擎 `toolTimeoutMs` **同款**：
    * 非正数 / 不设 = 不限；超时 = **放弃等待**（abort `abandoned` 通知工具自行收尾，
@@ -160,6 +173,10 @@ interface CallDeps {
   readonly sinks: readonly TraceSink[];
   /** 单次执行的超时（见 `McpServerOptions.toolTimeoutMs`）；undefined = 不限 */
   readonly toolTimeoutMs: number | undefined;
+  /** 每次调用那棵 trace 的事件数闸（见 `McpServerOptions.traceLimits`）；undefined = 不限 */
+  readonly traceLimits: TraceLimits | undefined;
+  /** 事件正文截断上限（见 `McpServerOptions.maxEventChars`）；undefined = 引擎缺省 */
+  readonly maxEventChars: number | false | undefined;
   /** client 惰性构造（见 `McpServerOptions.client`）：第一次 `tools/call` 才建 */
   readonly clientOf: () => ModelClient;
 }
@@ -201,8 +218,10 @@ async function callTool(
   /** 入站链路（SEP-414）：调用方经 `params._meta.traceparent` 带来的上游 span；undefined = 孤立根 */
   link: TraceContext | undefined,
 ): Promise<Record<string, unknown>> {
-  const { sinks, toolTimeoutMs } = deps;
-  const recorder = new TraceRecorder();
+  const { sinks, toolTimeoutMs, maxEventChars } = deps;
+  const recorder = new TraceRecorder({
+    ...(deps.traceLimits?.maxEvents !== undefined ? { maxEvents: deps.traceLimits.maxEvents } : {}),
+  });
   const rootId = recorder.begin('run', 'mcp.tools/call', null);
   // 与引擎 run 入口（loop.ts 的 traceContext）同形状：上游被**链接**而不是被继承成
   // 父 span —— 这棵 trace 永远自洽（`traceId == runId` 不变），因果关系仍然可查
@@ -216,7 +235,7 @@ async function callTool(
   // tool_use_id 与引擎同义（同名工具并行时靠 id 配对入参/出参事件）
   const use = { type: 'tool_use' as const, id: randomUUID(), name: tool.name, input: args };
   const startedAt = Date.now();
-  recorder.event(capId, TOOL_INPUT_EVENT, toolInputPayload(use));
+  recorder.event(capId, TOOL_INPUT_EVENT, toolInputPayload(use, maxEventChars));
   // 超时「放弃等待」的通知信号（与引擎 executeOneTool 同款：判超时分支里 abort）
   const abandonAc = new AbortController();
   const toolCtx: ToolRunContext = buildToolRunContext({
@@ -261,7 +280,7 @@ async function callTool(
   recorder.event(
     capId,
     TOOL_OUTPUT_EVENT,
-    toolOutputPayload({ use, ok, errorKind, startedAt, now: Date.now(), content }),
+    toolOutputPayload({ use, ok, errorKind, startedAt, now: Date.now(), content, maxEventChars }),
   );
   recorder.end(
     capId,
@@ -414,6 +433,9 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
     serverInfo: { name: opts.name ?? 'agentia', version: SERVER_INFO_VERSION },
     sinks: opts.sinks ?? [],
     toolTimeoutMs: opts.toolTimeoutMs,
+    // 构造期校验（坏值响亮抛 TypeError，与 run 入口同一个判定器）
+    traceLimits: resolveTraceLimits(opts.traceLimits, 'createMcpServer'),
+    maxEventChars: opts.maxEventChars,
     clientOf: () => {
       cachedClient ??= opts.client ?? createAnthropicClient();
       return cachedClient;

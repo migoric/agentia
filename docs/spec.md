@@ -4229,7 +4229,8 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    且真截断」时**一直**不成立：收尾摘要**不**经 `emit()` 派出，⑧ 的起点标记也只派进增量流、
    不进 `span.events` ⇒ 两个视图各缺一笔、谁也不等于谁。此前没人发现，是因为**默认不设上限**
    —— 折叠用例永远碰不到截断路径。修法：起点标记**记进 run 根 span 的事件**（两处同一份载荷），
-   收尾摘要**也在交付那一刻派一次**（`#truncationSummarySent` 保证只派一次）。
+   收尾摘要**也在交付那一刻派一次**（`truncationSummary` 缓存保证只生成、只派一次 ——
+   2026-10-13 ① 起它还是「多次 snapshot 逐字一致」的单源）。
    ⇒ 折叠规则**无例外地**成立；`trace-events.test.ts` 补了一条「设上限 + 真截断」的折叠用例
    （这一条必须显式跑截断，默认路径必然绿）。折叠侧的帧类型分派同时改成**编译期穷尽**
    （`const _never: never = e`）—— 此前最后那支是无条件 `else`（默认按 link 处理），
@@ -6648,6 +6649,40 @@ CLI 移植对拍三套件（diff / export / harvest，22 条）绿 —— 对拍
 标注收紧不影响；W5 变异验证（往 `dist/inspector` 丢一个白名单外的 `graph.js` ⇒ 恰该条红，
 删除还原绿）；layering 换扫描器后 10 条用例全绿（含阳性对照与解析计数下限），另做反向
 验证（注释 / 块注释 / 模板里的假 `from` 不再被读成依赖边）。
+### 2026-10-13 ⑧：深度评审低等项收口（engine）—— 耗尽出口留文本 / 取消窗口 / 截断摘要单源 / stdio 监听摘除 / 反向桥 trace 闸
+
+
+**起因**：2026-10-13 五路深度评审（`docs/reviews/2026-10-13/project-deep-review.md`）的五条
+低等项，全部落在 engine 的「非正常路径口径不一致」上：
+
+1. **`max_iterations` 出口丢 `finalText`**：循环耗尽时 `finalText` 保持 `''`，而
+   `max_tokens` / `refusal` / `budget_exceeded` 都保留已产出文本。修法：主循环每回合
+   先刷新 `finalText = textOf(message)`，各终态分支再按终态语义覆写 —— 耗尽出口自然带上
+   最后一回合的文本，与其他出口同口径。
+2. **「消息已收、工具未跑」窗口不查 signal**：`streamTurn` 成功返回后到 `executeTurnTools`
+   之间没有 `signal.aborted` 检查，abort 落在窗口内整批工具副作用照跑（续跑入口同场景
+   明确拒绝，两处口径不对称）。修法：进工具执行前补一次检查，已取消则按 `aborted` 收尾
+   （带结构化 error），一个工具的副作用都不发生。
+3. **`snapshot()` 截断摘要每次调用生成新时间戳**：多次调用彼此不一致、且都与增量流里那一条
+   对不上（`core/trace.ts` 的折叠契约在「设了 maxEvents 且真截断」的 run 上变假）。修法：
+   摘要在首次 `snapshot()` 时生成并缓存，同一对象复用于后续每次 snapshot 与增量出口
+   （增量仍只派一次）。
+4. **stdio 反向桥 stdout error 监听器只挂不摘**：监听器挂在进程级 `process.stdout` 上，
+   `close()` 只摘 stdin 的 ⇒ 多次 `createMcpServer` 累积。修法：close 时一并
+   `process.stdout.off('error', …)`。
+5. **MCP 反向桥不暴露 `traceLimits` / `maxEventChars`**：每次 `tools/call` 一棵 trace
+   无事件数闸，子 agent 类工具在桥内长跑时 trace 体积无界。修法：`McpServerOptions` 补
+   这两个旋钮 —— `traceLimits` 构造期过 `resolveTraceLimits`（与 run 入口同一个判定器，
+   坏值响亮抛 TypeError）、透传进桥内 `TraceRecorder`；`maxEventChars` 透传给
+   `tool.input` / `tool.output` 载荷装配。缺省与引擎缺省逐字一致（不设 = 不限 /
+   `DEFAULT_EVENT_CHARS`）。
+
+**影响面**：`src/engine/`（loop.ts / tracer.ts / mcp-server.ts / mcp-server-stdio.ts）+
+各自测试。无公共导出增删（只给既有 `McpServerOptions` 加字段）。
+**验证**：`tests/engine/loop.test.ts`（耗尽留文本、窗口内 abort 不跑工具）、
+`tests/engine/trace-limits.test.ts`（多次 snapshot 摘要逐字一致且与增量流同一份）、
+`tests/engine/mcp-server.test.ts`（listenerCount 不累积 / 构造期坏值 / 闸与截断透传）；
+`npm run e2e:mcp:server` 全绿。
 
 ## 11. 开放项
 
