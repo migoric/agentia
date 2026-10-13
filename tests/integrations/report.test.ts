@@ -148,7 +148,13 @@ describe('G1 buildRunReport', () => {
         attributes: { subagent: 'researcher' },
         startedAt: 100,
         endedAt: 400,
-        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.002 },
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.002,
+        },
       }),
       span({
         spanId: 'cap-inner',
@@ -159,7 +165,13 @@ describe('G1 buildRunReport', () => {
         startedAt: 150,
         endedAt: 300,
         // 框架语义：这是外层那笔的子集（同一批 token 的再聚合）
-        usage: { inputTokens: 4, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costEstimate: 0.001 },
+        usage: {
+          inputTokens: 4,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.001,
+        },
       }),
     ]);
     const r = buildRunReport(trace);
