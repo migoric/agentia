@@ -86,6 +86,30 @@ describe('traceLimits.maxEvents（事件总量闸）', () => {
     );
   });
 
+  it('收尾摘要只生成一次：多次 snapshot 逐字一致，且与增量流那一条是同一个对象', () => {
+    const r = new TraceRecorder({ maxEvents: 1 });
+    const seen: Array<{ name?: string; event?: unknown }> = [];
+    r.subscribe((e) => {
+      if (e.type === 'span.event') seen.push({ name: e.event.name, event: e.event });
+    });
+    fill(r, 5);
+    const first = r.snapshot('ok');
+    const second = r.snapshot('ok');
+    const summaryOf = (t: typeof first) =>
+      t.spans[0]!.events.filter(
+        (e) => e.name === 'trace.truncated' && 'droppedEvents' in (e.body as object),
+      );
+    const s1 = summaryOf(first);
+    const s2 = summaryOf(second);
+    assert.equal(s1.length, 1, '每次 snapshot 恰有一条收尾摘要');
+    assert.equal(s2.length, 1, '重复 snapshot 不得累积出第二条摘要');
+    assert.deepEqual(s2, s1, '多次调用的摘要必须逐字一致（含 time —— 增量流里只有那一份）');
+    // 折叠契约：增量流收到的摘要与 snapshot 里的是同一份（同 time 同 body）
+    const emitted = seen.filter((e) => e.name === 'trace.truncated').map((e) => e.event);
+    assert.equal(emitted.length, 2, '起点标记 + 收尾摘要各一条');
+    assert.deepEqual(emitted[1], s1[0], '增量流的摘要与 snapshot 的摘要必须逐字一致');
+  });
+
   it('maxEvents: 0 = 一条都不记，但计数是全部（0 是有意义的值）', () => {
     const r = new TraceRecorder({ maxEvents: 0 });
     fill(r, 4);

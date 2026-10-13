@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { executeRun, runAgent, TraceRecorder } from '../../src/index.js';
 import type { JsonSchema, MessageParam, Span } from '../../src/index.js';
-import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
+import { mockClient, toolUseMsg, endTurnMsg, U } from '../helpers.js';
 // 内部工具（刻意不进公共导出面，故不走 index.js）
 import { replaceMessages } from '../../src/engine/turn.js';
 // 真吐文本的脚本化 client（eval 公共面）：onText 链路按真实路径走
@@ -242,6 +242,72 @@ describe('agentLoop 边界与失败路径', () => {
       assert.ok(root.error, '根 span 必须带结构化 error');
       assert.equal(typeof root.error?.message, 'string');
     }
+  });
+
+  it('max_iterations：循环耗尽也保留已产出文本（与 max_tokens / refusal 同口径）', async () => {
+    // 每回合都是「文本 + tool_use」：既有产出又永不给终态，maxIterations=2 耗尽
+    const textToolUse = (text: string, id: string) => ({
+      id: `m-${id}`,
+      model: 'claude-opus-5',
+      stop_reason: 'tool_use' as const,
+      usage: U,
+      content: [
+        { type: 'text', text },
+        { type: 'tool_use', id, name: 'echo', input: {} },
+      ],
+    });
+    const { client } = mockClient([
+      textToolUse('第一回合的话', 'tt1'),
+      textToolUse('第二回合的话', 'tt2'),
+    ]);
+    const { result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [{ name: 'echo', description: 'd', inputSchema: OBJ, run: () => 'ok' }],
+      client,
+      maxIterations: 2,
+    });
+    assert.equal(result.stopReason, 'max_iterations');
+    assert.equal(result.finalText, '第二回合的话', '耗尽出口不该把已产出文本丢成空串');
+  });
+
+  it('「消息已收、工具未跑」窗口内 abort ⇒ 整批工具不执行，aborted 收尾', async () => {
+    // 与续跑入口（resumeUses 分支）「已取消不执行任何工具」同口径：
+    // abort 若落在 streamTurn 成功返回之后、executeTurnTools 之前，
+    // 这批 tool_use 的副作用一个都不该发生。
+    const ac = new AbortController();
+    let ran = 0;
+    const client = {
+      messages: {
+        stream: () => ({
+          on() {},
+          finalMessage: async () => {
+            ac.abort(); // 消息到手、尚未进循环体的最后一刻取消 ⇒ 必然落在那个窗口里
+            return toolUseMsg('echo', {}, 'tu-win');
+          },
+        }),
+      },
+    } as never;
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [
+        {
+          name: 'echo',
+          description: 'd',
+          inputSchema: OBJ,
+          run: () => {
+            ran += 1;
+            return 'ok';
+          },
+        },
+      ],
+      client,
+      signal: ac.signal,
+      rethrow: false,
+    });
+    assert.equal(result.stopReason, 'aborted');
+    assert.equal(result.error?.type, 'aborted');
+    assert.equal(ran, 0, '取消后整批工具的副作用都不该发生');
+    assert.equal(run.status, 'failed');
   });
 
   it('signal 预先中止 → stopReason=aborted、run 失败，且不发起模型请求', async () => {

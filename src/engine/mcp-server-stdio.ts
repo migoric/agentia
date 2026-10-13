@@ -54,9 +54,12 @@ export function startStdioTransport(core: McpCore): McpServer {
   // 「对端没了」的次生现象，不是根因。正向连接器对子进程 stdin 是同一处置
   // （`integrations/mcp-stdio.ts` 的 `p.stdin?.on('error', () => {})`），方向对称。
   // 吞掉 ≠ 静默：真该知道的人（宿主）已经从自己的管道拿到 EOF 了。
-  process.stdout.on('error', () => {
+  // 监听器挂在**进程级** stdout 上 ⇒ close 时必须摘掉，否则多次 createMcpServer 会累积
+  // （stdin 的 data 监听是 per-close 摘的，stdout 这条漏了 —— 深度评审 2026-10-13 低等项）。
+  const onStdoutError = (): void => {
     /* EPIPE：对端已走 */
-  });
+  };
+  process.stdout.on('error', onStdoutError);
   let buf = '';
   let closed = false;
   /**
@@ -111,6 +114,7 @@ export function startStdioTransport(core: McpCore): McpServer {
       closed = true;
       core.abortAll();
       process.stdin.off('data', onData);
+      process.stdout.off('error', onStdoutError); // 进程级监听：不摘会随多次 create 累积
       process.stdin.pause(); // 摘掉读端，宿主进程的事件循环不再被我们吊住
       return Promise.resolve();
     },

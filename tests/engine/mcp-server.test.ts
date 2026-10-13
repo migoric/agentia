@@ -112,6 +112,80 @@ describe('createMcpServer —— 构造期校验', () => {
   });
 });
 
+describe('createMcpServer —— trace 闸（traceLimits / maxEventChars 透传到每次 tools/call 的那棵 trace）', () => {
+  const chatty: AgentTool = {
+    name: 'chatty',
+    description: '在 ctx.recorder 上记一串事件',
+    inputSchema: { type: 'object' },
+    run: (_input, ctx) => {
+      // 桥内 ctx 恒在场（callTool 装配），这里只多记几条事件
+      for (let i = 0; i < 5; i++) ctx?.recorder.event(ctx.parentSpanId, 'chat', i);
+      return 'done';
+    },
+  };
+  const long: AgentTool = {
+    name: 'long_output',
+    description: '回一段长文本',
+    inputSchema: { type: 'object' },
+    run: () => 'x'.repeat(5000),
+  };
+
+  it('traceLimits 坏值在构造期抛 TypeError（与 run 入口同一个判定器）', () => {
+    for (const bad of [Number.NaN, -1, 1.5]) {
+      assert.throws(
+        () =>
+          createMcpServer({ tools: [] }, { transport: 'http', traceLimits: { maxEvents: bad } }),
+        TypeError,
+        `坏值没拦住：${String(bad)}`,
+      );
+    }
+  });
+
+  it('traceLimits.maxEvents 生效：超限停记 + run 根两笔 trace.truncated（计数如实）', async () => {
+    const { sink, traces } = collectTraces();
+    const s = await startHttp([chatty], { sinks: [sink], traceLimits: { maxEvents: 2 } });
+    const r = await post(s.url as string, rpc(1, 'tools/call', { name: 'chatty', arguments: {} }));
+    assert.equal(r.status, 200);
+    assert.equal(traces.length, 1, '每次 tools/call 一棵 trace');
+    const events = traces[0]!.spans.flatMap((sp) => sp.events);
+    // 记录事件恰好停在配额：tool.input + 第 1 条 chat（其余 4 条 chat 与 tool.output 被丢弃）
+    assert.equal(
+      events.filter((e) => e.name !== 'trace.truncated').length,
+      2,
+      '事件数闸没透传进桥内的 recorder',
+    );
+    assert.deepEqual(
+      events.filter((e) => e.name === 'trace.truncated').map((e) => e.body),
+      [{ limit: 2 }, { droppedEvents: 5, limit: 2 }],
+      '截断必须留痕且计数如实（4 条 chat + tool.output）',
+    );
+  });
+
+  it('maxEventChars 透传到 tool.input/tool.output 载荷；false = 不截断', async () => {
+    const outputOf = (t: Trace): string => {
+      const ev = t.spans.flatMap((sp) => sp.events).find((e) => e.name === 'tool.output')!;
+      return (ev.body as { content: string }).content;
+    };
+    const full = 'x'.repeat(5000);
+    {
+      const { sink, traces } = collectTraces();
+      const s = await startHttp([long], { sinks: [sink], maxEventChars: 50 });
+      await post(s.url as string, rpc(1, 'tools/call', { name: 'long_output', arguments: {} }));
+      assert.equal(
+        outputOf(traces[0]!),
+        `${'x'.repeat(50)}…(+4950)`,
+        'trace 事件正文应按 maxEventChars 截断（MCP 应答本身不截断，只影响账目）',
+      );
+    }
+    {
+      const { sink, traces } = collectTraces();
+      const s = await startHttp([long], { sinks: [sink], maxEventChars: false });
+      await post(s.url as string, rpc(1, 'tools/call', { name: 'long_output', arguments: {} }));
+      assert.equal(outputOf(traces[0]!), full, 'false = 不截断（与引擎同款语义）');
+    }
+  });
+});
+
 describe('createMcpServer —— StreamableHTTP 协议面', () => {
   it('initialize 回 protocolVersion / capabilities.tools / serverInfo，并铸 mcp-session-id 头', async () => {
     const s = await startHttp([hello]);
@@ -634,6 +708,25 @@ describe('createMcpServer —— SEP-414 入站（`params._meta.traceparent` →
 });
 
 describe('createMcpServer —— stdio（真子进程，夹具走 createApp + @Tool 真装配）', () => {
+  it('stdio 的 stdout error 监听随 close 摘除：多次 create 不累积（进程级监听）', async () => {
+    // stdout 是进程级对象：监听器只挂不摘 ⇒ 多次 createMcpServer 累积（Node 到 10 条起告警）。
+    // 本用例在**本进程**直接起 stdio 传输（不走子进程 —— 这里量的是 listenerCount，不需要协议面）。
+    const before = process.stdout.listenerCount('error');
+    const servers = [0, 1, 2].map(() => createMcpServer({ tools: [] }, { transport: 'stdio' }));
+    open.push(...servers);
+    assert.equal(
+      process.stdout.listenerCount('error'),
+      before + servers.length,
+      '每个 stdio server 应各挂一条 EPIPE 吞错监听',
+    );
+    await Promise.all(servers.map((s) => s.close()));
+    assert.equal(
+      process.stdout.listenerCount('error'),
+      before,
+      'close 后必须全部摘掉（只挂不摘就是泄漏）',
+    );
+  });
+
   it('连接器握手 → listTools → callTool → isError 转抛错；每次调用一棵 trace 落盘', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-mcp-server-'));
     const traceFile = join(dir, 'trace.jsonl');

@@ -96,11 +96,19 @@ export class TraceRecorder {
   /** 因超限被丢弃的事件数（交付时写进 run 根的 `trace.truncated`） */
   private droppedEvents = 0;
   /**
-   * 收尾摘要是否已派给增量出口。`snapshot()` 交付时派**一次**（见该方法的注释）：
-   * 一次 run 只交付一次，但这个方法可以被调用多次（错误出口 / MCP / 引擎各一处），
-   * 重复派发会让增量流里出现两条摘要 ⇒ 折回的树与交付的树又对不上。
+   * 截断收尾摘要（`trace.truncated { droppedEvents, limit }`），**只生成一次**。
+   *
+   * 它是「交付时才写得出的结论」，由 `snapshot()` 首次调用时生成：同一个对象既进
+   * `span.events`（此后每次 snapshot 都带它）、也走增量出口（见 snapshot 的注释）。
+   * ⚠️ 不可每次调用都新建 —— 那样摘要的 `time` 每次不同，增量流里的那一条与
+   * 任何一次 snapshot 都对不上（`core/trace.ts` 的折叠契约当场变假），且多次
+   * snapshot 彼此也不一致。
    */
-  private truncationSummarySent = false;
+  private truncationSummary: {
+    time: number;
+    name: 'trace.truncated';
+    body: { droppedEvents: number; limit: number | undefined };
+  } | null = null;
   /** 记账事件订阅者（增量出口，见 `core/trace.ts` 的 `TraceRecordEvent`） */
   private readonly listeners: Array<(e: TraceRecordEvent) => void> = [];
   /**
@@ -383,23 +391,26 @@ export class TraceRecorder {
       ...(s.links ? { links: [...s.links] } : {}),
     }));
     // 截断摘要：**交付时**才写得出的结论（与 totalUsage 同族），写在 run 根上。
-    // 它也**走增量出口**（2026-09-28 PR #164 复核 §4）：否则「按 seq 折回的那棵树」会少这一笔
-    // —— 只要设了 `maxEvents` 且真截断，`core/trace.ts` 那条折叠规则就是**假的**（此前没有
-    // 用例覆盖到：默认不设上限，折叠用例永远碰不到截断）。同一对象两处用 ⇒ 时间戳逐字一致；
-    // 只派一次 ⇒ 重复交付不会让增量流里多出一条。
+    // 只生成一次（`this.truncationSummary` 缓存）：同一个对象既进 span.events、也走增量出口 ——
+    // 否则「按 seq 折回的那棵树」会少这一笔 / 每次 snapshot 的摘要时间戳互不相同，
+    // `core/trace.ts` 那条折叠规则就是**假的**。
+    // 增量出口只派一次 ⇒ 重复交付不会让增量流里多出一条。
     if (this.droppedEvents > 0) {
       const root = spans.find((s) => s.spanId === this.rootSpanId);
       if (root) {
-        const summary = {
-          time: Date.now(),
-          name: 'trace.truncated',
-          body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
-        };
-        root.events.push(summary);
-        if (!this.truncationSummarySent) {
-          this.truncationSummarySent = true;
-          this.emit({ type: 'span.event', spanId: this.rootSpanId, event: { ...summary } });
+        if (this.truncationSummary === null) {
+          this.truncationSummary = {
+            time: Date.now(),
+            name: 'trace.truncated',
+            body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
+          };
+          this.emit({
+            type: 'span.event',
+            spanId: this.rootSpanId,
+            event: { ...this.truncationSummary },
+          });
         }
+        root.events.push(this.truncationSummary);
       }
     }
     return {
