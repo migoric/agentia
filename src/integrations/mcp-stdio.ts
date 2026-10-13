@@ -284,13 +284,23 @@ export function createStdioMcpConnector(
   const ensureReady = (): Promise<void> => {
     if (ready) return ready;
     ready = (async () => {
-      const init = await guard(
-        send('initialize', { protocolVersion, capabilities: {}, clientInfo }),
-        'initialize',
-      );
-      // 协商结果以 server 回的那个为准（协议允许 server 降级或选自己的版本）
-      void init;
-      write({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+      // 握手自带 abandoned 信号：guard 超时只是「放弃等待」，send 里的 pending 条目
+      // 要靠这个信号回收（否则「活着但不回包」的 server 每超时一次就泄漏一条）。
+      const handshake = new AbortController();
+      try {
+        const init = await guard(
+          send('initialize', { protocolVersion, capabilities: {}, clientInfo }, handshake.signal),
+          'initialize',
+        );
+        // 协商结果以 server 回的那个为准（协议允许 server 降级或选自己的版本）
+        void init;
+        write({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+      } catch (e) {
+        // 触发 send 里的 abandoned 清理（删 pending 条目 + reject 那张没人等的
+        // promise —— 已 settle 时两者都是 no-op，正常路径踩不到这里）
+        handshake.abort();
+        throw e;
+      }
     })();
     return ready;
   };
@@ -305,8 +315,15 @@ export function createStdioMcpConnector(
   };
 
   const listTools = async (): Promise<McpToolInfo[]> => {
-    const r = await guard(request('tools/list', {}), 'tools/list');
-    return parseToolList(r);
+    // 与握手同款：guard 超时只是放弃等待，pending 条目靠 abandoned 信号回收
+    const abandoned = new AbortController();
+    try {
+      const r = await guard(request('tools/list', {}, abandoned.signal), 'tools/list');
+      return parseToolList(r);
+    } catch (e) {
+      abandoned.abort();
+      throw e;
+    }
   };
 
   const callTool = async (

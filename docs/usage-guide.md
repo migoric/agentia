@@ -248,6 +248,10 @@ agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 
 ## 3. 装饰器 spec 字段速查
 
+四个装饰器都只接**实例方法**：私有方法（`#method`）与静态方法（`static`）都在装饰期直接抛错
+—— 能力收集沿实例原型链扫描（调用要绑定 `this`），私有名不可见、静态方法挂在构造函数上，
+不拦的话能力会静默从菜单里消失。唯一例外是 `@Prompt`（纯文本资产），静态方法同样收集（见下）。
+
 ### `@Tool(spec: ToolSpec)`
 
 | 字段 | 说明 |
@@ -321,7 +325,7 @@ agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 | `retry` | 缺省模型请求重试策略（可被单次 run 覆盖）：缺省**开启**（`DEFAULT_RETRY`：maxAttempts=3、指数退避 + 抖动）；`false` 关闭 |
 | `contextPolicy` | 上下文预算策略（`createBudgetPolicy(...)`）；带状态的策略应实现 `forRun()` 按 run 隔离（见 §长上下文） |
 | `toolSources` | 白名单：只把这些 provider 的能力放进主菜单 |
-| `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与能力**同过中间件、同进重名查重**，不是旁路 |
+| `tools` | 直接追加到主菜单的**裸工具**（`AgentTool[]`）：给「构造期才知道有哪些工具」的场合（典型：MCP 桥，见 §6）。与能力**同过中间件、同进重名查重**，不是旁路。重名查重覆盖**主菜单 + 子菜单**（@SubAgent/@Skill 的 `tools` 引用展开结果也查，报错指到哪个能力的哪个引用片） |
 | `middleware` | 能力调用中间件（洋葱链，链序 = 注册顺序） |
 | `sinks` | trace 出口，run 收尾投递 |
 | `onTraceEvent` | **增量记账出口的缺省值**：run **进行中**逐笔回调（`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`），给等不了收尾的消费者（面板 / SSE / 任务流）。与 `sinks` 是**两条缝**、可同时配；单次 run 给了自己的那个是**叠加**（应用级在前）而非覆盖。⚠️ **不保证送达**（宿主自己的流断了就断了），也不替代 `sinks` |
@@ -985,7 +989,7 @@ class OrderTools {
 | `intervalMs` | OTLP 导出间隔（毫秒，缺省 60000）；`0` = 每次 run 收尾立即导出。定时器已 `unref()`，不阻止进程退出 |
 | `resourceAttributes` / `serviceName` | OTLP resource 属性（`service.name` 缺省 `agentia`） |
 | `timeoutMs` | OTLP 单次导出请求超时（毫秒，缺省 10000，非正数 = 不限）——collector 半开连接时兜底，`intervalMs: 0` 模式不被挂死；超时按导出失败处理 |
-| `onExportError` | 导出失败回调（缺省吞掉 —— 观测失败不得击穿业务） |
+| `onExportError` | 导出失败回调（缺省每次失败落一条 `console.warn` —— 观测失败不得击穿业务，但不零信号） |
 | `windowSize` | 时长分位保留的样本数（环形窗口，缺省 1024，**run / 能力 / 模型各自独立**）；非正数抛错 |
 | `prefix` | 指标名前缀，缺省 `agentia_` |
 | `labelMode` | 能力标签粒度：`'capability'`（缺省，`tool:search` 这种）/ `'kind'`（只按类型，基数极小）/ `'none'`（不产出能力指标） |
@@ -1058,7 +1062,7 @@ class OrderTools {
 | API | 说明 |
 |---|---|
 | `buildRunReport(trace)` | 一条 trace → `RunReport`：能力排行（按总耗时降序）、模型归因、未定价模型清单 |
-| `mergeRunReports(reports)` | 跨 run 汇总（**分位只在多条 run 上才有统计意义**） |
+| `mergeRunReports(reports)` | 跨 run 汇总（**分位只在多条 run 上才有统计意义**）；按 `traceId` 去重、同一 traceId 只留最后一份（append-only 落盘的同一棵 trace 会被写多次，与 `agentia report` 同口径） |
 | `renderRunReport(report)` | 人类可读的纯文本表（CLI / 日志用） |
 
 ```ts
@@ -1813,7 +1817,7 @@ const callable = {
 | MCP 工具不能进 DI 容器 | 它没有 provider token，也不能被别的能力的 `tools` 引用（两种引用粒度都要先有 token） |
 | 指标分位是窗口内精确值 | `*_last{quantile=...}` 只反映最近 `windowSize`（缺省 1024）条样本；要跨实例聚合请用直方图（`*_bucket` / `_sum` / `_count`，累积语义） |
 | 指标是**进程内**累加 | 不做分布式聚合与持久化：多实例各算各的（直方图可相加），重启即清零。要长期保留请把 `render()` 抓走或用 `export:'otlp'` 推给采集端 |
-| OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省吞掉，不重试、不阻塞 run）。`reset()` 语义是**开启新窗口**：计数清零**且**数据点起点前移（同一 `startTime` 下 counter 只能单调不减，只清零会让后端算出负增量或丢样本） |
+| OTLP metrics 只推当前累计 | 按 `intervalMs` 周期导出**累积值**（CUMULATIVE），不做增量/背压；导出失败按 `onExportError` 处理（缺省每次失败落一条 `console.warn`，不重试、不阻塞 run）。`reset()` 语义是**开启新窗口**：计数清零**且**数据点起点前移（同一 `startTime` 下 counter 只能单调不减，只清零会让后端算出负增量或丢样本） |
 | OTLP trace 导出**只发 JSON**（直打 Phoenix 会 415） | `createOtlpExporter` 的 content-type 写死 `application/json`，`OtlpExporterOptions` **没有编码选项**；只收 `application/x-protobuf` 的接收端（Phoenix 的 traces 路由对别的 content-type 回 415，源码级核实 2026-10-12）**直打不进去** —— OTLP 规范对接收端只是 SHOULD 双收，Phoenix 未遵循推荐但不违规。处置：中间加一层 OTLP Collector 收 JSON、转 binary（最小配置见 `docs/observability.md` §7）。**不内建 protobuf 编码器**：零运行时依赖是硬约定，手写编码器几百行进核心不值 |
 | `GET /metrics` 不鉴权 | 与 `/healthz` 同档（拉取端在集群内网）。要保护请放反代之后，或不传 `metrics` 选项自行在外层挂路由 |
 | 工具没有 token/成本指标 | 工具是**你的代码**、本身不消耗 token，所以只产出调用数/失败数/耗时；token 与成本只对 `skill`/`subagent`（有 `capability` span）与模型维度产出 |
@@ -1851,7 +1855,7 @@ const callable = {
 | 症状 | 原因与修法 |
 |---|---|
 | 菜单里没有我的能力 | ① 方法没写装饰器；② 类没注册进 `providers`；③ 框架双实例（见第 2 节陷阱）；④ `toolSources` 白名单把它排除了 |
-| `菜单能力重名` 装配期抛错 | 四类能力**共用命名空间**，改名即可 |
+| `菜单能力重名` / `子菜单能力重名` 装配期抛错 | 四类能力**共用命名空间**，改名即可；查重覆盖主菜单与 @SubAgent/@Skill 的 `tools` 引用展开出的子菜单（两个 provider 各有同名能力被同一能力整片引用时，报错会指到哪个能力的哪个引用片，用能力级路径 `<token>/<能力名>` 收窄即可） |
 | 编译错 `不能把 X 赋给 Y` | 用了 `fromZod<T>`，方法签名与 `T` 不一致（这是护栏，不是 bug） |
 | 模型传的入参没被拦 | 只填了 `schema` 没写 `strict`；且框架的校验是**子集校验**（`format`/`minimum` 等不校验） |
 | `ctx.get('k')` 没有类型 | 没做 `Blackboard` 声明合并（见 5.1） |

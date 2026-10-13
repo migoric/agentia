@@ -244,6 +244,109 @@ describe('tools 能力级路径引用（<token>/<能力名>）', () => {
       /tools 引用未注册 provider: "ghost"/,
     );
   });
+
+  it('子菜单重名查重：两个 provider 的同名能力被同一 subagent 整片引用 → 装配期抛错', () => {
+    // 此前这条路径装配全绿、第一次模型调用才由 API 400 暴露（tool names must be unique）——
+    // 主菜单查重只管 sources 合并后的主菜单，子菜单是运行期展开的
+    class SearchA {
+      @Tool({ description: 'd', schema: OBJ })
+      search(): string {
+        return 'a';
+      }
+    }
+    class SearchB {
+      @Tool({ description: 'd', schema: OBJ })
+      search(): string {
+        return 'b';
+      }
+    }
+    class Agents {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['a', 'b'] })
+      researcher(_input: unknown): void {}
+    }
+    assert.throws(
+      () =>
+        createApp({
+          providers: [
+            { provide: 'a', useClass: SearchA },
+            { provide: 'b', useClass: SearchB },
+            { provide: 'agents', useClass: Agents },
+          ],
+          system: sys(),
+        }),
+      /子菜单能力重名：@SubAgent "researcher" 的 tools 引用展开后 "search"（来自 "a" \+ "b"）/,
+    );
+  });
+
+  it('子菜单重名查重：能力级路径与整片引用叠出同名也算（报错指到引用片）', () => {
+    class Tools {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'a';
+      }
+    }
+    class Extra {
+      @Tool({ description: 'd', schema: OBJ })
+      tool_a(): string {
+        return 'dup';
+      }
+    }
+    class Skills {
+      @Skill({ description: 'd', tools: ['tools', 'extra/tool_a'] })
+      worker(): string {
+        return 'x';
+      }
+    }
+    assert.throws(
+      () =>
+        createApp({
+          providers: [
+            { provide: 'tools', useClass: Tools },
+            { provide: 'extra', useClass: Extra },
+            { provide: 'skills', useClass: Skills },
+          ],
+          system: sys(),
+        }),
+      /子菜单能力重名：@Skill "worker" 的 tools 引用展开后 "tool_a"（来自 "tools" \+ "extra\/tool_a"）/,
+    );
+  });
+
+  it('子菜单查重的反向对照：同名能力引用收窄到不撞即放行（且运行时菜单正确）', async () => {
+    class SearchA {
+      @Tool({ description: 'd', schema: OBJ })
+      search(): string {
+        return 'a';
+      }
+    }
+    class SearchB {
+      @Tool({ description: 'd', schema: OBJ, name: 'search_v2' })
+      search(): string {
+        return 'b';
+      }
+    }
+    class Agents {
+      @SubAgent({ description: 'd', schema: OBJ, system: 's', tools: ['a', 'b/search_v2'] })
+      researcher(_input: unknown): void {}
+    }
+    const app = createApp({
+      providers: [
+        { provide: 'a', useClass: SearchA },
+        { provide: 'b', useClass: SearchB },
+        { provide: 'agents', useClass: Agents },
+      ],
+      system: sys(),
+    });
+
+    const { seen, client } = mockClient([
+      toolUseMsg('researcher', {}),
+      endTurnMsg('子报告'),
+      endTurnMsg('主收尾'),
+    ]);
+    const out = await app.run([{ role: 'user', content: 'go' }], { client });
+
+    assert.equal(out.result.stopReason, 'end_turn');
+    assert.deepEqual(toolNamesAt(seen, 1), ['search', 'search_v2']);
+  });
 });
 
 describe('能力引用成环：装配期即拒绝（2026-09-28）', () => {

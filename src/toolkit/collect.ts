@@ -52,26 +52,40 @@ export function scanDecoratedMethods<S>(
   return found;
 }
 
-/** 装饰器收到的标准 context 子集（本框架只用到这三个字段） */
+/** 装饰器收到的标准 context 子集（本框架只用到这四个字段） */
 export interface CapabilityDecoratorContext {
   kind: string;
   name: string | symbol;
   /** 标准装饰器 context 的私有方法标记（`#method` 的 kind 同样是 'method'） */
   private?: boolean;
+  /** 标准装饰器 context 的静态方法标记 */
+  static?: boolean;
 }
 
 /**
- * 四类能力装饰器共用的目标守卫：只接类方法，且**拒绝私有方法**。
+ * 四类能力装饰器共用的目标守卫：只接类方法，且**拒绝私有方法**；
+ * 除 @Prompt 外（纯文本资产，静态收集是显式支持形态，见 prompt.ts）同时**拒绝静态方法**。
  *
- * 收集走 `Reflect.ownKeys`，私有名（#method）在其中不可见 —— 不拦的话能力会
- * 静默从菜单里消失，作者只能靠「模型说没有这个工具」反推。
+ * 收集走 `Reflect.ownKeys`，私有名（#method）在其中不可见；静态方法挂在**构造函数**上，
+ * 而 `scanDecoratedMethods` 只扫实例原型链 —— 不拦的话能力会静默从菜单里消失，
+ * 作者只能靠「模型说没有这个工具」反推。
  */
-export function assertMethodTarget(context: CapabilityDecoratorContext, kind: string): void {
+export function assertMethodTarget(
+  context: CapabilityDecoratorContext,
+  kind: string,
+  opts?: { allowStatic?: boolean },
+): void {
   if (context.kind !== 'method') {
     throw new Error(`${kind} 只能修饰类方法，收到 kind=${String(context.kind)}`);
   }
   if (context.private) {
     throw new Error(`${kind} 不支持私有方法（#method）：收集用 Reflect.ownKeys，私有名不可见`);
+  }
+  if (context.static === true && opts?.allowStatic !== true) {
+    throw new Error(
+      `${kind} 不支持静态方法（static）：收集只扫实例原型链，静态方法挂在构造函数上不会被收进菜单` +
+        `（@Tool/@SubAgent/@Skill 的能力调用需要实例 this；@Prompt 是唯一支持静态的能力类）`,
+    );
   }
 }
 

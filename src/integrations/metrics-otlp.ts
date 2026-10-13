@@ -46,7 +46,7 @@ export interface OtlpFlushOptions extends OtlpMetricsOptions {
   endpoint: string;
   /** 单次导出请求超时（毫秒）；非正数 = 不限 */
   timeoutMs: number;
-  /** 导出失败回调（观测失败不得击穿业务） */
+  /** 导出失败回调（缺省 console.warn —— 观测失败不得击穿业务，但不零信号） */
   onExportError?: (err: unknown) => void;
 }
 
@@ -285,11 +285,18 @@ export function buildOtlpPayload(state: MetricsState, opts: OtlpMetricsOptions):
 }
 
 export async function flushOtlpMetrics(state: MetricsState, opts: OtlpFlushOptions): Promise<void> {
+  // 缺省不能零信号：与 traces 侧同款（flushSinks 吞掉前落一条 console.warn）——
+  // collector 天天拒收而面板一切如常，「指标根本没上去」要等看图时才发现。
+  const report =
+    opts.onExportError ??
+    ((e: unknown): void => {
+      console.warn('[agentia] OTLP metrics 导出失败:', e instanceof Error ? e.message : e);
+    });
   let payload: unknown;
   try {
     payload = buildOtlpPayload(state, opts);
   } catch (e) {
-    opts.onExportError?.(e);
+    report(e);
     return;
   }
   try {
@@ -310,6 +317,6 @@ export async function flushOtlpMetrics(state: MetricsState, opts: OtlpFlushOptio
       throw new MetricsExportError(200, `OTLP metrics 导出被部分接收（HTTP 200）: ${partial}`);
     }
   } catch (e) {
-    opts.onExportError?.(e); // 观测失败不得击穿业务
+    report(e); // 观测失败不得击穿业务（不抛出），但缺省有 console.warn（见上）
   }
 }

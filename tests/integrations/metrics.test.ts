@@ -571,7 +571,8 @@ describe('E5 OTLP/JSON 指标导出', () => {
   /*
    * 200 **不等于「全部接收」**（metrics 侧与 traces 侧同一处缺陷、同一个修法）：
    * collector 可以回 200 + `partialSuccess`（部分数据点被丢）。原先只查 `res.ok` ⇒
-   * 「指标少了一半而框架说一切正常」。metrics 侧的失败通道是 `onExportError`（缺省吞掉）。
+   * 「指标少了一半而框架说一切正常」。metrics 侧的失败通道是 `onExportError`（缺省落
+   * console.warn，见下一条用例）。
    */
   it('HTTP 200 + partialSuccess 真拒收 → 走 onExportError，不再当全成功', async () => {
     const { server, base } = await startCollector(
@@ -687,6 +688,28 @@ describe('E5 OTLP/JSON 指标导出', () => {
     } finally {
       await close(server);
     }
+  });
+
+  it('缺省（无 onExportError）时导出失败落 console.warn —— 不零信号（与 traces 侧 flushSinks 同款）', async () => {
+    // 反向验证：把 flushOtlpMetrics 的缺省回调退化回 `opts.onExportError?.(e)` ⇒
+    // 失败被 `?.` 吞掉连 warn 都没有，本用例红在 warns 为空。
+    const { server, base } = await startCollector(500);
+    const origWarn = console.warn;
+    const warns: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warns.push(args);
+    };
+    try {
+      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: 0 });
+      await m.export(traceOf({ durationMs: 5 })); // 不应抛出（观测不击穿业务）
+      m.stop();
+    } finally {
+      console.warn = origWarn;
+      await close(server);
+    }
+    assert.equal(warns.length, 1, '缺省必须有 warn，不能零信号');
+    assert.match(String(warns[0]![0]), /OTLP metrics 导出失败/);
+    assert.match(String(warns[0]![1]), /HTTP 500/);
   });
 
   it('prometheus 模式下 flush 是空操作（拉取式，无主动导出）', async () => {

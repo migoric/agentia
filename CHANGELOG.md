@@ -1129,6 +1129,37 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **验证**：`tests/engine/retry.test.ts` +6 条（含深评实测路径的入口校验用例与 catch 判别
   用例）、`tests/engine/loop.test.ts` +1 条（两个真实触发点的 trace 形状）、
   `tests/limits.test.ts` +4 探针 + 4 文案对账 case。
+### 装配期静默缺口收口：静态方法装饰期拒 + 子菜单重名查重（2026-10-13 ③④）
+
+- **③ @Tool/@SubAgent/@Skill 装饰静态方法 → 装饰期即抛**（此前能力静默从菜单消失：
+  装饰器正常登记、装配零报错，但收集只扫实例原型链，静态方法挂在构造函数上永远扫不到）。
+  与私有方法守卫同款落点（`assertMethodTarget` 加 `context.static` 判定）；`@Prompt` 是唯一
+  例外（纯文本资产，静态收集是它的文档化形态，经 `allowStatic` 显式放行）。**非破坏性**：
+  静态装饰这三类此前本就是死资产，现在只是从「静默失踪」变成「类定义期响亮报错」。
+- **④ 子菜单重名查重**：主菜单的「菜单能力重名」查重此前管不到 @SubAgent/@Skill 的
+  `tools` 引用展开结果（运行期展开）—— 两个 provider 各有同名能力被同一能力整片引用时
+  装配全绿、第一次模型调用才由 API 400 暴露。现在装配期逐引用片展开查重，报错指到
+  「哪个能力的哪几片引用」（`子菜单能力重名：@SubAgent "x" 的 tools 引用展开后 "search"
+  （来自 "a" + "b"）`），修法引导（能力级路径收窄 / 改名）写进文案。
+- **依据**：`docs/spec.md` §10 2026-10-13 ③④；usage-guide §3（装饰器只接实例方法）、
+  §4 `tools` 行与 §8 常见错误行（重名查重口径补「主菜单+子菜单」）同步。
+
+### 四处低等静默/口径收口：报告去重下沉、握手簿记回收、metrics 失败出声、Span.name 注释（2026-10-13 ⑤⑥）
+
+- **`mergeRunReports` 按 `traceId` 去重下沉到框架公共面**：2026-10-12 ⑧ 的去重落在 CLI 层，
+  框架公共 API 喂同样的 append-only 导出照样翻倍计数。现在框架函数自身去重（同口径：
+  只留最后一份、保序；`merged(n runs)` 是合成 id 不参与去重）。CLI 侧不动 —— 它作用在
+  原始 trace 行上，与框架函数不是同一份代码。
+- **stdio 连接器握手 / tools/list 超时后 pending 簿记回收**：guard 只是「放弃等待」，
+  超时的 initialize 条目此前永远留在 pending（server 活着但不回包时每超时一次泄漏一条）。
+  握手与 list 各持一个 AbortController，失败分支 abort 复用 `send` 里既有的 abandoned 清理。
+- **metrics OTLP 导出失败缺省落 `console.warn`**（此前无 `onExportError` 时被 `?.` 吞掉、
+  零信号），与 traces 侧 `flushSinks` 同款（每次失败一条）。
+- **`core/trace.ts` 的 `Span.name` 注释对齐实现**：capability span 的 name 是**裸能力名**
+  （无 `subagent:` 前缀；区分类型看 attributes，见 `capabilityKindOf`）—— 旧注释的
+  `${capabilityType}:${capabilityName}` 口径曾让 otlp.ts 按前缀判、生产上一条 gen_ai.* 都没发出去。
+- **依据**：`docs/spec.md` §10 2026-10-13 ⑤⑥；usage-guide（metricsSink `onExportError` 行 /
+  已知边界行 / §6 `mergeRunReports` 速查行）同步。
 
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 

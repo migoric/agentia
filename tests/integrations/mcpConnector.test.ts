@@ -167,6 +167,37 @@ describe('createStdioMcpConnector —— stdio 连接器', () => {
     );
   });
 
+  it('握手超时 ⇒ initialize 的 pending 簿记同步回收（guard 只是放弃等待，条目要靠信号删）', async () => {
+    // 反向验证：摘掉 ensureReady 里的 handshake.abort() ⇒ server 是 noinit（活着但永不回
+    // initialize），条目永远留在 pending 里，本用例红在 deletes 为空。
+    // pending 是闭包私有，与上面「裁判放弃等待」用例同款观测法：patch Map.prototype 按
+    // 「请求 id（number 键）」计数，入簿一次就必须出簿一次。
+    const sets: number[] = [];
+    const deletes: number[] = [];
+    const origSet = Map.prototype.set;
+    const origDelete = Map.prototype.delete;
+    Map.prototype.set = function <K, V>(this: Map<K, V>, k: K, v: V): Map<K, V> {
+      if (typeof k === 'number') sets.push(k);
+      return origSet.call(this, k, v);
+    } as typeof Map.prototype.set;
+    Map.prototype.delete = function <K, V>(this: Map<K, V>, k: K): boolean {
+      if (typeof k === 'number') deletes.push(k);
+      return origDelete.call(this, k);
+    } as typeof Map.prototype.delete;
+    try {
+      const c = stdio('noinit', { timeoutMs: 60 });
+      await assert.rejects(() => c.listTools(), /timeout|超时/i);
+      assert.equal(sets.length, 1, 'initialize 的请求条目应当入簿（number 键）');
+      assert.ok(
+        deletes.includes(sets[0] as number),
+        `guard 超时后 id=${sets[0]} 的簿记必须被回收（deletes=${JSON.stringify(deletes)}）`,
+      );
+    } finally {
+      Map.prototype.set = origSet;
+      Map.prototype.delete = origDelete;
+    }
+  });
+
   it('server 进程意外退出 → 在途请求被拒绝（不挂死）', async () => {
     const c = stdio('die');
     await assert.rejects(() => c.listTools(), /已退出/);

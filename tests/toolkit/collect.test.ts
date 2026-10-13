@@ -177,7 +177,7 @@ describe('collect*（装饰器能力收集）', () => {
     );
     assert.throws(() => Prompt({ description: 'd' })(() => {}, ctx), /不支持私有方法/);
 
-    // 非私有（含静态）照常登记
+    // 非私有的实例方法照常登记
     assert.doesNotThrow(() =>
       Tool({ description: 'd', schema: OBJ })(() => {}, {
         kind: 'method',
@@ -185,6 +185,32 @@ describe('collect*（装饰器能力收集）', () => {
         private: false,
       }),
     );
+  });
+
+  it('@Tool / @SubAgent / @Skill 装饰期拒绝静态方法（收集只扫实例原型链）；@Prompt 是唯一例外', () => {
+    // 直接以标准 context 形态调用（静态方法的 kind 同样是 'method'，只是 static: true）
+    const ctx = { kind: 'method', name: 'x', static: true };
+    assert.throws(() => Tool({ description: 'd', schema: OBJ })(() => {}, ctx), /不支持静态方法/);
+    assert.throws(() => Skill({ description: 'd' })(() => {}, ctx), /不支持静态方法/);
+    assert.throws(
+      () => SubAgent({ description: 'd', schema: OBJ, system: 's' })(() => {}, ctx),
+      /不支持静态方法/,
+    );
+    // @Prompt 的静态收集是显式支持形态（prompt.ts 扫构造函数链）
+    assert.doesNotThrow(() => Prompt({ description: 'd' })(() => {}, ctx));
+  });
+
+  it('真实装饰器路径：静态 @Tool 在类定义期即抛（不等到装配）', () => {
+    assert.throws(() => {
+      // biome-ignore lint/complexity/noStaticOnlyClass: 测试夹具 —— 被测的正是这个形态
+      class BadStatic {
+        @Tool({ description: 'd', schema: OBJ })
+        static hidden_tool(): string {
+          return 'x';
+        }
+      }
+      return BadStatic;
+    }, /@Tool 不支持静态方法/);
   });
 
   it('多层级继承：中间层未装饰 override 继承祖父 spec 且调到中间层实现', async () => {
