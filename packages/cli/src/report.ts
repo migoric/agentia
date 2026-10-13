@@ -126,11 +126,11 @@ function runMs(t: TraceLike): number {
 /**
  * 单条 run 的成本（美元）。
  *
- * ⚠️ **刻意不把 `summarizeTrace` 的能力行 `costUsd` 相加**（设计稿初稿那么写过）：capability
- * span 的 usage 是**其子孙 `llm.turn` 的聚合**，嵌套时（`@SubAgent` 里套 `@Skill`）两者都带
- * 同一批 token ⇒ 相加**重复计数**。`Trace.totalUsage` 的注释写明它刻意不含 capability 聚合，
- * 正是为免重（`src/core/trace.ts`）。读不出（手工写的 trace / 未定价模型）⇒ null（渲染成 `-`），
- * **不伪装成 0**。
+ * ⚠️ **刻意不从 `summarizeTrace` 的能力行反加**：能力行只覆盖进了 capability 的
+ * `llm.turn`，run 根直属的回合（主 agent 自己问的）不在任何能力行里 ⇒ 反加会**漏**。
+ * `Trace.totalUsage` 才是权威口径（各 `llm.turn` 之和，刻意不含 capability 聚合以免
+ * 重复计数，`src/core/trace.ts`）。读不出（手工写的 trace / 未定价模型）⇒ null
+ * （渲染成 `-`），**不伪装成 0**。
  */
 function runCostUsd(t: TraceLike): number | null {
   const c = t.totalUsage?.costEstimate;

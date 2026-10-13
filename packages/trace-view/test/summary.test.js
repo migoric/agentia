@@ -99,6 +99,47 @@ describe('trace-view summarizeTrace（G2 能力排行）', () => {
     assert.equal(rows[2].errors, 1, 'skill span status=error');
   });
 
+  it('嵌套 capability（@SubAgent 套 @Skill）：usage 只计顶层，内层行保留 calls/errors/耗时', () => {
+    // 框架侧 capability.usage 是子孙 llm.turn 的聚合 ⇒ 外层 subagent 的 usage 已含内层
+    // skill 那一份；两行都累加 = 同一批 token 数两遍（E1）。
+    const t = trace();
+    t.spans.push(
+      // 内层 skill：挂在 subagent（s2）之下，usage 是 s2 的子集
+      {
+        spanId: 's4',
+        parentSpanId: 's2',
+        kind: 'capability',
+        name: 'nested-skill',
+        startedAt: 150,
+        endedAt: 200,
+        status: 'ok',
+        usage: {
+          inputTokens: 6,
+          outputTokens: 3,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          costEstimate: 0.001,
+        },
+        attributes: { skill: 'nested-skill' },
+        events: [],
+      },
+    );
+    const rows = summarizeTrace(t);
+    const sub = rows.find((r) => r.capability === 'subagent:researcher');
+    const skill = rows.find((r) => r.capability === 'skill:nested-skill');
+    assert.deepEqual(
+      { calls: sub.calls, tokens: sub.tokens, costUsd: sub.costUsd },
+      { calls: 1, tokens: 15, costUsd: 0.002 },
+      '顶层 capability 照计（usage 已是子孙聚合）',
+    );
+    assert.equal(skill.calls, 1, '内层行仍在 —— 这次调用真实发生过');
+    assert.equal(skill.totalMs, 50, '耗时是它自己的真账，不重复');
+    assert.equal(skill.tokens, null, '内层不计 tokens —— 那批 token 已在顶层行里');
+    assert.equal(skill.costUsd, null);
+    const tokenSum = rows.reduce((n, r) => n + (r.tokens ?? 0), 0);
+    assert.equal(tokenSum, 15, '各行 tokens 可加总（== 顶层行之和），不重复计数');
+  });
+
   it('空/畸形输入不抛错', () => {
     assert.deepEqual(summarizeTrace({}), []);
     assert.deepEqual(summarizeTrace(null), []);

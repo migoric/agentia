@@ -1221,6 +1221,23 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **验证**：新增 `tests/store/taskStore-copy.test.ts` / `tests/transport/cancel-race.test.ts` /
   `tests/transport/resume-scanner.test.ts` 三份套件 + scheduler drain 用例；既有依赖
   「改 poll 返回值即生效」的三处用例改为显式 `save`（副本契约的推论）。
+### 修复：能力排行嵌套能力重复计数（E1）+ 文档 drift 收口（2026-10-13 ⑬）
+
+- **病灶**：`@migor/trace-view` 的 `summarizeTrace` 对每个 capability span 累加 usage，
+  而框架侧 capability.usage 是其**子孙 llm.turn 的聚合** ⇒ `@SubAgent` 套 `@Skill` 时
+  同一批 token 在外层与内层行**各计一次**，tokens / costUsd 列不可加总（与
+  `core/trace.ts`「capability 聚合不进 totalUsage」的纪律冲突）。CLI `agentia report`、
+  `agentia dev` 面板、官网 playground 三处共用同一份实现，同漏。
+- **修法**：能力排行的 usage **只认顶层 capability**（没有 capability 祖先的）；内层行仍计
+  calls / errors / 耗时（那是它自己这次调用的真账），tokens / cost 显示 `-` ⇒ 各行可加总。
+  引擎与 tracer 行为不动。依据见 `docs/spec.md` §10 2026-10-13 ⑬。
+- **同批修复**：`examples/deploy` 补上脚手架模板同款的 PORT 校验（`PORT=''` 空串曾被
+  `Number('')` 静默变成 0 = 随机端口）；usage-guide 的「CLI 三件套」统一为四件套口径
+  （补 `export`），能力排行补「嵌套只认顶层」口径说明。
+- **同批守护**：doctor 的 `ENTRY_CANDIDATES`（CLI 侧双写）与框架 `discover.ts` 加源码级
+  逐字对拍；AGENTS.md 十条 drift 对账修正（数字改为指向真源）；trace-view 结构棘轮
+  summary.js 130 → 153。
+- **验证**：嵌套夹具 + 变异验证（去掉顶层判定 ⇒ 新用例红）；`verify-all.sh` 8/8。
 
 ### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
 

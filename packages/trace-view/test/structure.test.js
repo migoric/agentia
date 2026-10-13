@@ -63,8 +63,13 @@ describe('trace-view 结构守卫（W1 规模棘轮）', () => {
      * （续跑入口把 run 根 id 当 turnId）。净 +4 全是**注释**（头注 +2、循环内判据注 +2）：
      * 代码行数**零增长**（`const isTurn` 换掉 `if (span.kind !== 'llm.turn') continue;`，
      * 工具分支的判据内移成 `!isTurn || e.name !== 'tool.output'`）。
+     *
+     * 2026-10-13 ③（E1 嵌套 capability 重复计数的**修复**）：130 → 153（+23）。
+     * usage 只认顶层 capability（没有 capability 祖先的）：spanId 索引 + 上爬判定
+     * `hasCapabilityAncestor`（约 12 行代码），其余是头注口径说明。棘轮上调是**显式**的
+     * —— 判据本身需要一张 parent 表，没有更省的写法。
      */
-    'summary.js': 130,
+    'summary.js': 153,
     /** 纯 re-export（4 个导出面），本就该极小 —— 它一变大就是导出面在乱长。 */
     'index.js': 14,
   };
