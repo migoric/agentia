@@ -1067,7 +1067,7 @@ class OrderTools {
 
 | API | 说明 |
 |---|---|
-| `buildRunReport(trace)` | 一条 trace → `RunReport`：能力排行（按总耗时降序）、模型归因、未定价模型清单 |
+| `buildRunReport(trace)` | 一条 trace → `RunReport`：能力排行（按总耗时降序；嵌套能力的 usage **只计顶层行** —— 内层行的 `tokens`/`costUsd` 为 `null`，各行可加总，与 `agentia report` 同口径）、模型归因、未定价模型清单 |
 | `mergeRunReports(reports)` | 跨 run 汇总（**分位只在多条 run 上才有统计意义**）；按 `traceId` 去重、同一 traceId 只留最后一份（append-only 落盘的同一棵 trace 会被写多次，与 `agentia report` 同口径） |
 | `renderRunReport(report)` | 人类可读的纯文本表（CLI / 日志用） |
 

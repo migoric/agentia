@@ -6828,6 +6828,25 @@ tokens / costUsd 列不可加总 —— 与 `core/trace.ts`「capability 聚合�
 **验证**：嵌套夹具断言「内层行 tokens / cost 为 null、各行可加总」；变异（去掉顶层判定）
 当场咬住；`verify-all.sh` 8/8。
 
+### 2026-10-13 ⑭：`buildRunReport` 的嵌套去重补齐 —— 与 ⑬ 同款判定下沉到框架公共面
+
+**起因**：⑬ 修的是 trace-view 的 `summarizeTrace`（CLI report / dev 面板 / playground 三处
+同源的展示层）；施工中发现 `src/integrations/report.ts` 的 `buildRunReport` 有**同款**
+嵌套累加（对每个 capability span 累加 `span.usage`，而 capability.usage 是子孙 llm.turn
+的聚合 ⇒ `@SubAgent` 套 `@Skill` 时同一批 token 内外层各计一次）。⑬ 当时刻意不碰它
+（评审未点名、且它是 `src/index.ts` 导出的**公共 API**，改口径 = 改公共面输出形状），
+本条是它的收口。
+
+**决策**：与 ⑬ 完全同款 —— 建 spanId 索引沿 `parentSpanId` 上爬判 capability 祖先
+（带防环），嵌套行的 usage 不累加（`tokens` / `tokensTotal` / `costUsd` 为 `null`），
+calls / errors / 耗时照计（它自己这次调用的真账）⇒ 各行可加总。同样不选「从 llm.turn
+重算」：手写 / 外来 trace 可能只在 capability span 上带 usage。消费方
+`examples/observability-mcp`（`report_trace` 工具）随之得到正确口径，无需改代码。
+
+**影响面**：`src/integrations/report.ts`（嵌套判定 + 头注口径）、
+`tests/integrations/report.test.ts`（+1 嵌套夹具：去掉顶层判定即红）、
+`docs/usage-guide.md`（§6 的 `buildRunReport` 行补口径）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
