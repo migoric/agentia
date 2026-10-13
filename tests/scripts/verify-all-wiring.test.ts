@@ -60,7 +60,7 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
@@ -362,6 +362,67 @@ describe('verify-all.sh ↔ ci.yml：工具链的自我描述必须互为真值'
       !withoutSha.includes(marker),
       `没设 GITHUB_SHA 时 robots.txt.ts 仍然输出了 \`${marker}\` ——\n` +
         '  ⇒ 那等于给判据编了个假缺省值（它又会恒真）。本地构建就该没有这一行。',
+    );
+  });
+
+  // ── 分片 ↔ 本地钩子 ↔ 文档：三处必须互指（2026-10-14）────────────────────────
+  //
+  // 加这条是因为「分片」**天然的失效形态是静默**：按名字选步的分片在步骤改名之后会
+  // **选不到任何一步**，跑完、打印「全绿」—— 而它正是 pre-push 钩子调用的那条路。
+  // 脚本自己已挡了一道（选到 0 步 ⇒ exit 2，见脚本里的注释），这里补的是**仓内三处的一致性**：
+  // 脚本的分片定义 / `.githooks/pre-push` 调的确实是它 / `CONTRIBUTING.md` 教了怎么开。
+  it('分片定义自洽，且与 .githooks/pre-push、CONTRIBUTING 三处互指', () => {
+    const names = bashArray(script, 'step_names');
+    assert.equal(
+      names.length,
+      steps.length,
+      `step_names 有 ${names.length} 条、steps 有 ${steps.length} 条 —— 分片按名字选步，条数不等就会错位`,
+    );
+    assert.equal(
+      new Set(names).size,
+      names.length,
+      `step_names 里有重名（${names.join(' / ')}）—— 重名会让分片只选到顺序上的第一个，另一个被静默跳过`,
+    );
+
+    // 分片定义写成 `<名字>) shard_want="<空格分隔的步骤名>" ;;`
+    const shards = [...script.matchAll(/^\s*(\w+)\)\s*shard_want="([^"]*)"\s*;;/gm)].map((m) => ({
+      name: m[1],
+      want: m[2].trim().split(/\s+/).filter(Boolean),
+    }));
+    assert.ok(
+      shards.length >= 1,
+      '一个分片定义都没解析到 —— 解析锚点失效了，下面的断言会空转（真空变绿）',
+    );
+    assert.ok(
+      shards.some((s) => s.name === 'rapid'),
+      '脚本里没有 `rapid` 分片 —— 而 .githooks/pre-push 与 CONTRIBUTING.md 都指着它',
+    );
+    const badShard = shards.flatMap((s) =>
+      s.want.filter((w) => !names.includes(w)).map((w) => `${s.name} → ${w}`),
+    );
+    assert.deepEqual(
+      badShard,
+      [],
+      `这些分片里的步骤名不存在：${badShard.join(' · ')} —— 步骤改名后分片会**静默少跑**（脚本里那条自证只挡「0 步」这一种）`,
+    );
+
+    // ① 钩子必须真的存在且**可执行** —— git 对不可执行的钩子是**静默跳过**，比报错更难发现
+    const hookPath = join(repoRoot, '.githooks', 'pre-push');
+    const hook = readFileSync(hookPath, 'utf8');
+    assert.ok(
+      (statSync(hookPath).mode & 0o111) !== 0,
+      '.githooks/pre-push 不可执行 —— git 会**静默跳过**它（`git push` 看起来正常，什么也没验）',
+    );
+    assert.ok(
+      /verify-all\.sh\s+rapid/.test(hook),
+      '.githooks/pre-push 里找不到 `verify-all.sh rapid` —— 钩子与分片脱钩了（改名/改参数都会走到这里）',
+    );
+
+    // ② 文档必须教怎么开 —— git 缺省不读仓库里的钩子，不写出来它只对本机有效且无人知道
+    assert.ok(
+      readRel('CONTRIBUTING.md').includes('core.hooksPath .githooks'),
+      'CONTRIBUTING.md 里没有开钩子的那一条（`core.hooksPath .githooks`）——\n' +
+        '  ⇒ git **不会**自动启用仓库里的钩子：不写出来，别人克隆下来永远不会跑它。',
     );
   });
 });

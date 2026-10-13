@@ -1,0 +1,42 @@
+#!/bin/bash
+# 本地 pre-push 钩子：推送前跑**静态三步**（`bash scripts/verify-all.sh rapid`），把「本地全绿、
+# CI 挂静态检查」这类返工挡在推送之前。
+#
+# ── 为什么默认不启用 ──────────────────────────────────────────────────────────
+# git **不会**自动启用仓库里的钩子（`core.hooksPath` 缺省指 `.git/hooks`），所以这里不接进任何
+# 构建流程 —— 想用的人自己开一次（文档在 CONTRIBUTING.md「提交前必须跑」）：
+#     git config core.hooksPath .githooks
+#
+# ⚠️ 三条边界（改这个文件前先读）：
+#   ① 它**不是门禁**：只覆盖静态三步，且**本地可跳过**（`SKIP_VERIFY=1 git push`）。
+#      真正的门禁是 CI 里那条分支保护的必需检查，谁也绕不过。
+#   ② 钩子只在**本机**生效：别人的克隆、CI 上的 checkout 都不会跑它 ⇒
+#      **别把任何「必须发生」的事只放在这里**。
+#   ③ 依赖没装时**响亮警告后放行**（见下）—— 与 packages/cli/test/dist-guard.mjs 的本地分支
+#      同款纪律：**不静默 skip**（要说出「这次没验」），但也不把一个「还没 npm install」的
+#      推送挡死（那样只会让人 `--no-verify` 一把梭，把纪律一起丢掉）。
+set -uo pipefail
+# 钩子的 cwd 已经是工程根，但仍从脚本位置推一次 —— 用 `--work-tree` 或从子目录调用时不至于找错。
+cd "$(dirname "$0")/.." || exit 0
+
+if [ "${SKIP_VERIFY:-}" = "1" ]; then
+  echo "⚠ pre-push：SKIP_VERIFY=1 —— 本次跳过静态检查（CI 上仍会跑全链，别当已经验过）"
+  exit 0
+fi
+
+if [ ! -d node_modules ]; then
+  echo "⚠ pre-push：没找到 node_modules ⇒ **本次没有验任何东西**（先 npm install 才会生效）"
+  exit 0
+fi
+
+echo "pre-push：跑静态三步（typecheck + lint / typecheck:types / typecheck:tests）…"
+if bash scripts/verify-all.sh rapid; then
+  echo "pre-push：静态三步全绿。⚠ 只覆盖三步 —— 推送后仍以 CI 的全链为准。"
+  exit 0
+fi
+
+echo ""
+echo "✖ pre-push：静态检查没过，已拦下这次推送。"
+echo "  · 想看完整输出：bash scripts/verify-all.sh rapid"
+echo "  · 确实要跳过：  SKIP_VERIFY=1 git push"
+exit 1

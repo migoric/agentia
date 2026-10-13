@@ -9,6 +9,32 @@ cd "$(dirname "$0")/.."
 #    否则 PR 会卡死等一个永不出现的检查。所以新增的检查一律**折进已有步骤**，不加步骤。
 #
 #    这次就是照这条规矩做的：lint 折进第 1 步，而不是变成第 9 步。
+#
+# ── 用法（2026-10-14 加分片）──────────────────────────────────────────────────
+#
+#   bash scripts/verify-all.sh            # 缺省 = 全链（与 CI **逐字同一条链**）
+#   bash scripts/verify-all.sh rapid      # 只跑静态三步：类型 / lint / 两处类型检查
+#
+# 为什么要分片：**不给人一个官方子集，他就会自己手敲其中两条命令** —— 而那些手敲的命令
+# 与链上那条迟早分叉（本仓踩过：lint 只活在 CI 的独立 job 里，于是「本地全绿、CI 挂 Biome」
+# 真的发生过）。分片把「先跑一点」变成**有名字、有自证**的一件事，而它跑的就是 `steps` 里
+# **同一条**命令 —— 不存在第二份命令清单。
+#
+# ⚠️ 三条边界，改本脚本前先读：
+#   ① **CI 永远跑缺省（全链）**。分片只服务本地（`.githooks/pre-push`）与「改一处想快点验」；
+#   ② 分片**不改** CI job 名里那个数字 —— 那个数字是步骤总数，不是被选中的步数；
+#   ③ 分片**不是门禁**：跑 `rapid` 全绿**不等于**可以推 PR，它只覆盖静态检查那三步。
+shard="${1:-all}"
+case "$shard" in
+  all | rapid) ;;
+  *)
+    # ⚠️ `$shard` 后面紧跟全角字符时必须写成 `${shard}` —— 否则 bash 会把「（可用」当成
+    #    变量名的一部分（`shard（可用：...: unbound variable`）。本仓踩过同款。
+    echo "✖ 未知分片：${shard}（可用：all / rapid —— 见本脚本顶部「用法」）"
+    exit 2
+    ;;
+esac
+
 steps=(
   # 第 1 步 = 类型检查 + lint。lint 此前只活在 CI 的独立 job 里，本地这条链不跑它 ——
   # 于是「本地 8/8 全绿、CI 挂 Biome」**真的发生过**（2026-09-14：本地全绿，CI 的 lint job
@@ -33,8 +59,67 @@ steps=(
   "npm run build:website && node scripts/check-website-agent-readiness.mjs"
 )
 
+# 每步的名字 —— **分片按名字选步，不按下标**。下标会在插入/重排步骤时**静默错位**：那时
+# 分片跑的是别的步骤，而它照样打印「全绿」。名字与 `steps` 一一对应，条数不等即当场失败。
+#
+# ⚠️ 这份清单**只给分片用**（CI 与缺省路径都不读它）。步骤名不必与命令里的词一一对应，
+# 但**不许重名** —— 重名会让分片选到两个下标（顺序上的第一个），而另一个被静默跳过。
+step_names=(
+  "typecheck+lint"
+  "build"
+  "types"
+  "tests-types"
+  "build-cli"
+  "test"
+  "e2e"
+  "website"
+)
+if [ "${#steps[@]}" -ne "${#step_names[@]}" ]; then
+  echo "✖ steps 有 ${#steps[@]} 条、step_names 有 ${#step_names[@]} 条 —— 加/删步骤时两处都要改，否则分片按名字选步会错位"
+  exit 2
+fi
+
+# 分片定义：`名字列表`，空格分隔。`rapid` = 静态检查三步（秒级、零网络、不需要构建产物）。
+if [ "$shard" = all ]; then
+  selected=()
+  for i in "${!steps[@]}"; do selected+=("$i"); done
+else
+  case "$shard" in
+    rapid) shard_want="typecheck+lint types tests-types" ;;
+  esac
+  selected=()
+  missed=""
+  for name in $shard_want; do
+    found=""
+    for i in "${!step_names[@]}"; do
+      if [ "${step_names[$i]}" = "$name" ]; then
+        found="$i"
+        break
+      fi
+    done
+    if [ -z "$found" ]; then
+      missed="$missed $name"
+    else
+      selected+=("$found")
+    fi
+  done
+  # ⚠️ 选不到就**响亮失败**，两条都查：
+  #   ① 名字不存在（步骤改名了）—— 否则分片会「跑得少」而没人知道；
+  #   ② 选到 0 步 —— 那会跑完什么都不做然后打印「全绿」，**正是 pre-push 钩子最坏的失效形态**
+  #      （它看起来验过了）。宁可红。
+  if [ -n "$missed" ]; then
+    echo "✖ 分片 '$shard' 里的这些步骤名不存在：$missed —— 步骤改名了？分片定义已失效"
+    exit 2
+  fi
+  if [ "${#selected[@]}" -eq 0 ]; then
+    echo "✖ 分片 '$shard' 一个步骤都没选到 —— 它会跑完什么都不做然后报绿，故此处判失败"
+    exit 2
+  fi
+fi
+
 fail=0
-for s in "${steps[@]}"; do
+for i in "${selected[@]}"; do
+  s="${steps[$i]}"
   # ⚠️ 步骤经 `bash -c` 执行，**不要**写成 `if out=$($s 2>&1)`：$s 是词展开，
   #    里面的 shell 运算符（`&&`）不会生效，而是原样变成**命令的实参** ——
   #    第 1 步挤 `npm run typecheck && npx biome ci .` 时就成了
@@ -70,7 +155,13 @@ echo "------------------------------"
 if [ $fail -eq 0 ]; then
   # 计数**算出来**而不是写死：写死的那个数字在加步骤后会变成假话（而这个数字与 CI 的 job 名
   # 是同一个约定，尤其不能各说各话）。
-  echo "${#steps[@]}/${#steps[@]} 全绿"
+  if [ "$shard" = all ]; then
+    echo "${#selected[@]}/${#steps[@]} 全绿"
+  else
+    # ⚠️ 分片不许打印「N/N 全绿」那个形状 —— 本仓多处文档抄写的是「8/8 全绿」，
+    #    分片打印同样的形状会被读成「全链过了」。这里刻意写成另一种形状。
+    echo "分片 ${shard}：${#selected[@]}/${#steps[@]} 步全绿（其余 $(( ${#steps[@]} - ${#selected[@]} )) 步未跑 —— 全链请不带参数跑）"
+  fi
   # 本地绿 ≠ CI 绿。下面这几个必需检查不由本链把关 —— 但**本地跑得动**，只是没人替你跑
   # （跑法见 CONTRIBUTING 的坑表）。这里曾写「本地无法等价复现」，而**那句话本身没验过**：
   # 2026-09-26 实测两条都能在本机复现 ——
@@ -90,9 +181,12 @@ if [ $fail -eq 0 ]; then
     'e2e-mcp-server|e2e:mcp:server —— 本机跑：npm run e2e:mcp:server（离线零网络，CI 与本机同一条路）'
     'import-floor|导入下限（Node 18 / 20）—— 本机跑：npx node@18 scripts/check-import-floor.mjs'
   )
-  echo "ℹ 分支保护共 $(( ${#ci_only[@]} + 1 )) 个必需检查 —— 本链 = verify，另有 ${#ci_only[@]} 个："
-  # `${arr[@]#*|}` = 逐元素去掉 `|` 之前的那半截（id），只打印给人看的部分。
-  printf '   · %s\n' "${ci_only[@]#*|}"
+  # 分片只覆盖链上的一部分 ⇒ 这段「其余必需检查」的说明对它有误导（它连本链都没跑完）。
+  if [ "$shard" = all ]; then
+    echo "ℹ 分支保护共 $(( ${#ci_only[@]} + 1 )) 个必需检查 —— 本链 = verify，另有 ${#ci_only[@]} 个："
+    # `${arr[@]#*|}` = 逐元素去掉 `|` 之前的那半截（id），只打印给人看的部分。
+    printf '   · %s\n' "${ci_only[@]#*|}"
+  fi
 else
   echo "有步骤失败"
 fi
