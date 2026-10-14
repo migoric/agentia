@@ -42,7 +42,7 @@ npm run dev                          # = agentia dev：本地 inspector 面板�
 > 只 import app.ts、从不执行入口 —— 写错一侧会让 `npm run dev` 静默读不到 `.env` 而 `npm start` 读得到。
 > 真实环境变量优先（CI / docker / 命令行永远赢过文件），`loadEnvFile({ override: true })` 才反过来。
 
-> **版本**：`0.10.2`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
+> **版本**：`0.10.3`（`@migor/agentia` 与 `@migor/cli` 均已发布到 npm）。`examples/` **刻意**用
 > `file:../..` 指向本仓库而不是 npm 版本 —— 跑的是**工作区代码**，理由见
 > [`examples/README.md`](examples/README.md) 的「依赖说明」。
 

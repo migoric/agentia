@@ -1,6 +1,6 @@
 {
   "name": "@migor/cli",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Agentia 框架命令行工具：create 脚手架 + g 能力生成 + dev 本地可观测面板（trace inspector）",
   "type": "module",
   "bin": {

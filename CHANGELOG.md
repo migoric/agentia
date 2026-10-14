@@ -5,6 +5,521 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.3] - 2026-10-14
+
+> 本版主题（窗口 `0.10.2 → 0.10.3`）：**把「可观测」从「能导出」推进到「跨进程接得上、agent 自己查得到」**，
+> 外加五轮深评的静默项收口与一轮门禁加固。三块 —— ① **链路**：MCP 桥按 SEP-414 出入站携带
+> `traceparent`（跨进程 trace 第一次接得上；载体是 `params._meta` 的**裸键**，缺失/畸形静默降级）、
+> OTLP 导出对齐 semconv（三个缓存/压缩键 + 可选的 `execute_tool` 投影，**默认关**）；
+> ② **可读面**：CLI `agentia report` 加会话 / 任务维度、交接与护栏四个 `agentia.*` 属性
+> （**additive**，不造新 span kind）、两个 MCP 只读工具 —— 让 agent 自己查「上一轮慢在哪」；
+> ③ **缺陷与门禁**：深评静默项收口（retry 坏值不再谎报「用户取消」、嵌套能力重复计数、护栏行在真实
+> HITL 流程零产出、`sessionId` 静默失效改为出声）+ 门禁加固（文档预算闸 / 副本闸 / verify-all 分片 /
+> pre-push 钩子）+ 决策引用从「日期 + 圈号」迁到「日期 + slug」（302 处，守卫只认 slug）。
+>
+> **无破坏性变更 ⇒ 既有使用者不需要任何动作、无需迁移**：公共导出面**零增删改**（`src/index.ts`
+> 本版只动版本常量那一行）；`McpClientLike.callTool` 第三参与 `TaskStore` 的新方法都是
+> **可选 / 有默认实现**的加法。
+> ⚠️ **但有三条读数会变（变小），升级后看到数字变小不是坏了**：① 嵌套 capability 的 tokens / cost
+> 此前在**外层与内层各计一次**（列不可加总），现在**只认顶层**、内层显示 `-` —— 影响
+> `buildRunReport`、`@migor/trace-view` 能力排行、CLI `agentia report`、`agentia dev` 面板与官网
+> playground（五处共用同一份实现）；② `agentia report` 按 `traceId` 去重，append-only 导出里
+> 同一棵 trace 的多行不再翻倍；③ `retry` 的配置坏值不再被归类成「用户取消」。
+
+### 修复：retry 配置坏值被误报成「用户取消」+ 入口段抛错时 run 根 span 不合拢（2026-10-13 ①②）
+
+- **病灶①（深评 A1）**：`retry: { baseDelayMs: NaN }` + 一次 429 ⇒ 退避算出 NaN ⇒
+  `sleep` 抛 RangeError ⇒ `turn.ts` 的裸 `catch` 吞成 `stopReason: 'aborted'`（配置错被
+  谎报成用户取消）；`maxAttempts: NaN` 则让重试被**静默关闭**（`!(NaN >= 1)` 成立）。
+- **修法①**：`RetryOptions` 四个数值旋钮登记进 `core/limits.ts` 真源表并加构造期校验
+  （`resolveRetry` 抛 `TypeError`，报错文案插 `zeroClauseOf`；`runAgent` 入口同款校验，
+  与 labels / fallbacks 同落点 —— 配置错响亮抛，不收成失败的 run）；退避处 catch 只认
+  AbortError，其他错误原样抛出归类；`backoffDelay` 上界夹在 `MAX_TIMER_DELAY_MS`
+  （正向抖动曾能把它推过 Node 定时器上限）。0 的读法：`maxAttempts: 0` = 关闭重试、
+  `baseDelayMs: 0` = 不退避、`maxDelayMs: 0` = 封顶为零、`jitter: 0` = 不加抖动。
+- **病灶②（深评 A2）**：`runAgent` 入口段（菜单摘要 / 模型链 / 标签校验）抛错时 run 根
+  span 已开却永不 end —— 交付 sink 的 trace 里 `status='error'` 而根 span 是 ok、无
+  endedAt、无结构化 error，违反「非正常收尾必带结构化 error」。
+- **修法②**：入口段包 try/catch，catch 给根 span 收尾（error 状态 + 结构化 error）
+  后原样 rethrow —— 对外行为不变（照样抛），trace 不再说谎。
+- **验证**：`tests/engine/retry.test.ts` +6 条（含深评实测路径的入口校验用例与 catch 判别
+  用例）、`tests/engine/loop.test.ts` +1 条（两个真实触发点的 trace 形状）、
+  `tests/limits.test.ts` +4 探针 + 4 文案对账 case。
+### 装配期静默缺口收口：静态方法装饰期拒 + 子菜单重名查重（2026-10-13 ③④）
+
+- **③ @Tool/@SubAgent/@Skill 装饰静态方法 → 装饰期即抛**（此前能力静默从菜单消失：
+  装饰器正常登记、装配零报错，但收集只扫实例原型链，静态方法挂在构造函数上永远扫不到）。
+  与私有方法守卫同款落点（`assertMethodTarget` 加 `context.static` 判定）；`@Prompt` 是唯一
+  例外（纯文本资产，静态收集是它的文档化形态，经 `allowStatic` 显式放行）。**非破坏性**：
+  静态装饰这三类此前本就是死资产，现在只是从「静默失踪」变成「类定义期响亮报错」。
+- **④ 子菜单重名查重**：主菜单的「菜单能力重名」查重此前管不到 @SubAgent/@Skill 的
+  `tools` 引用展开结果（运行期展开）—— 两个 provider 各有同名能力被同一能力整片引用时
+  装配全绿、第一次模型调用才由 API 400 暴露。现在装配期逐引用片展开查重，报错指到
+  「哪个能力的哪几片引用」（`子菜单能力重名：@SubAgent "x" 的 tools 引用展开后 "search"
+  （来自 "a" + "b"）`），修法引导（能力级路径收窄 / 改名）写进文案。
+- **依据**：`docs/spec.md` §10 2026-10-13 ref-reject-static-methods ref-submenu-name-check；usage-guide §3（装饰器只接实例方法）、
+  §4 `tools` 行与 §8 常见错误行（重名查重口径补「主菜单+子菜单」）同步。
+
+### 四处低等静默/口径收口：报告去重下沉、握手簿记回收、metrics 失败出声、Span.name 注释（2026-10-13 ⑤⑥）
+
+- **`mergeRunReports` 按 `traceId` 去重下沉到框架公共面**：2026-10-12 ⑧ 的去重落在 CLI 层，
+  框架公共 API 喂同样的 append-only 导出照样翻倍计数。现在框架函数自身去重（同口径：
+  只留最后一份、保序；`merged(n runs)` 是合成 id 不参与去重）。CLI 侧不动 —— 它作用在
+  原始 trace 行上，与框架函数不是同一份代码。
+- **stdio 连接器握手 / tools/list 超时后 pending 簿记回收**：guard 只是「放弃等待」，
+  超时的 initialize 条目此前永远留在 pending（server 活着但不回包时每超时一次泄漏一条）。
+  握手与 list 各持一个 AbortController，失败分支 abort 复用 `send` 里既有的 abandoned 清理。
+- **metrics OTLP 导出失败缺省落 `console.warn`**（此前无 `onExportError` 时被 `?.` 吞掉、
+  零信号），与 traces 侧 `flushSinks` 同款（每次失败一条）。
+- **`core/trace.ts` 的 `Span.name` 注释对齐实现**：capability span 的 name 是**裸能力名**
+  （无 `subagent:` 前缀；区分类型看 attributes，见 `capabilityKindOf`）—— 旧注释的
+  `${capabilityType}:${capabilityName}` 口径曾让 otlp.ts 按前缀判、生产上一条 gen_ai.* 都没发出去。
+- **依据**：`docs/spec.md` §10 2026-10-13 ref-merge-reports-dedupe ref-stdio-metrics-silent；usage-guide（metricsSink `onExportError` 行 /
+  已知边界行 / §6 `mergeRunReports` 速查行）同步。
+### 守卫射程轮：CLI 纳入 exactOptionalPropertyTypes、e2e:mcp:server 进 CI、三处货架补齐（2026-10-13 ⑦）
+
+- **D2（CLI 类型收紧）**：`packages/cli` 的 `tsconfig.json` 与 `tsconfig.templates.json`
+  此前**没开** `exactOptionalPropertyTypes`（根包 2026-09-18 起就开着），「显式 undefined
+  覆盖缺省」那类防线在 CLI 代码上无声缺位。现两份配置（连同发给用户的模板
+  `templates/tsconfig.json`）全部开启，并修掉暴露的 6 处类型错：结果记录型
+  （`SpanDiff` / `ToolIoEvent` / `ExportRecordMeta`）改必填 `T | undefined`（与框架侧
+  移植真源逐字对齐）、内部管道 `HarvestRow.messages` 改 `?: T | undefined`、公共入参
+  `harvestEvalCase` 签名不动、调用点条件展开。`tsconfig-strictness` 守卫射程扩到四份配置。
+- **D1（e2e:mcp:server 进 CI）**：MCP 反向桥端到端此前全仓零自动化；现为 CI 独立
+  **必需检查** job `e2e-mcp-server`（离线零网络、不需要 uv），并登记进 `verify-all.sh`
+  的 `ci_only` 与 CONTRIBUTING / AGENTS.md 的对应抄写。verify-all 仍是 8 步（不加第 9 步）。
+- **E2（inspector 白名单门禁）**：新增 W5 守卫 —— `dist/inspector` 里每个 `.js`/`.css`
+  都必须在 STATIC 白名单里（双向集合相等），trace-view 拆出新文件而白名单没跟上时
+  构建即红（此前表现为面板 404 白屏）。白名单本身保持显式人批。
+- **低等三项**：CI 各 job 补 `timeout-minutes`；guards-registry 货架补 `tests/scripts`；
+  `layering.test.ts` 的 import 解析改走 `lib/source-scan.ts` 遮蔽器（注释 / 模板里的
+  `from './x.js'` 不再造假依赖边）。
+- 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ref-guard-scope-round4。
+### 修复：engine 非正常路径口径对齐（深度评审 2026-10-13 低等项五件）（spec §10 2026-10-13 ref-deep-review-minor）
+
+- **`max_iterations` 出口保留已产出文本**：循环耗尽时 `finalText` 此前恒为 `''`，与
+  `max_tokens` / `refusal` / `budget_exceeded` 的「文本不丢」口径不一致；现在耗尽出口
+  带上最后一回合的模型文本。
+- **「消息已收、工具未跑」窗口内取消不再执行工具**：`streamTurn` 成功返回后、
+  `executeTurnTools` 之前补 `signal.aborted` 检查 —— abort 落在该窗口时整批工具的副作用
+  一个都不发生（与续跑入口「已取消不执行任何工具」同口径），run 以 `aborted` 收尾。
+- **trace 截断摘要多源漂移修复**：`snapshot()` 的收尾摘要（`trace.truncated` 的
+  `{ droppedEvents, limit }` 那笔）此前每次调用都新建时间戳，多次 snapshot 互不一致、
+  也都与增量流里那一条对不上；现在只生成一次、同一对象复用于两条缝
+  （「按 seq 折回 == snapshot」的折叠契约在截断场景重新成立）。
+- **stdio 反向桥监听器泄漏修复**：`process.stdout` 的 EPIPE 吞错监听随 `close()` 摘除
+  （此前只挂不摘，多次 `createMcpServer` 累积进程级监听器）。
+- **MCP 反向桥补 trace 闸**：`createMcpServer` 的选项新增 `traceLimits`（每次
+  `tools/call` 那棵 trace 的事件数上限，构造期校验、坏值抛 TypeError）与
+  `maxEventChars`（事件正文截断上限，`false` = 不截断）—— 缺省与引擎缺省逐字一致，
+  子 agent 类工具在桥内长跑时 trace 体积不再无界。
+### 修复：TaskStore 副本契约坐实 + cancel 与推进路径互斥（五路深评批次二，2026-10-13 ⑨–⑫）
+
+- **B2 · store 副本契约（⑨）**：`InMemoryTaskStore` / `FileTaskStore` 的 `save` 入库与
+  `get` / `byIdempotency` / `list` 出站统一走 `cloneTaskRecord`（深拷纯数据、AbortSignal /
+  函数等进程内对象按引用保留）。此前契约注释要求副本、实现交活引用 —— 「改 rec →
+  `await save`」的纪律下，save 失败时变异已污染内存（approve 重试撞 409、任务搁死）。
+  **行为变化**：终态落库失败时库里诚实停在最后一次落库成功的状态（此前被引用语义
+  原地推进遮掉）；`submit` / 幂等去重返回从浅拷贝升级为深拷贝（HITL 挂起会整体替换
+  `spec.messages`，浅拷贝快照照样被穿透）。
+- **B1 · cancel 互斥闸（⑩）**：新增 per-task `#cancelInflight`，与 approve / signalTask /
+  到期唤醒 / 审批超时四条推进路径互为对侧（先登记者赢，无死锁）；cancel 临界段落库改
+  **当场发生**（不再经微任务延迟）；`#executeInner` 起跑前加**取消意图闸**（意图在场
+  ⇒ 绝不起跑，记账归 cancel），`#cancelSettled` 覆盖面随之补齐。修掉两扇真实竞态窗：
+  cancel×approve 并发「取消后照常执行 + onFinished 双发」、cancel×槽位释放并发打破
+  「被取消的排队任务绝不起跑」。
+- **B3 + 低等 · 恢复路径落库失败（⑪）**：`resumePending` 认领 save 接同步抛错（不再逃出
+  启动路径；不派发、不计入推进数、warn）；认领 / 审批超时 / 到期唤醒三处落库失败的
+  catch 不再静默留尸，各补 `console.warn`。
+- **低等 · Scheduler drain 感知（⑫）**：runner 停机后 tick 静默跳过（此前每 tick 刷一条
+  `console.error`）。
+- **依据与取舍**（含副本克隆的成本评估）：`docs/spec.md` §10 2026-10-13 ref-taskstore-copy-contract ref-cancel-mutex ref-resume-save-guard ref-scheduler-aware-drain。
+- **验证**：新增 `tests/store/taskStore-copy.test.ts` / `tests/transport/cancel-race.test.ts` /
+  `tests/transport/resume-scanner.test.ts` 三份套件 + scheduler drain 用例；既有依赖
+  「改 poll 返回值即生效」的三处用例改为显式 `save`（副本契约的推论）。
+### 修复：能力排行嵌套能力重复计数（E1）+ 文档 drift 收口（2026-10-13 ⑬）
+
+- **病灶**：`@migor/trace-view` 的 `summarizeTrace` 对每个 capability span 累加 usage，
+  而框架侧 capability.usage 是其**子孙 llm.turn 的聚合** ⇒ `@SubAgent` 套 `@Skill` 时
+  同一批 token 在外层与内层行**各计一次**，tokens / costUsd 列不可加总（与
+  `core/trace.ts`「capability 聚合不进 totalUsage」的纪律冲突）。CLI `agentia report`、
+  `agentia dev` 面板、官网 playground 三处共用同一份实现，同漏。
+- **修法**：能力排行的 usage **只认顶层 capability**（没有 capability 祖先的）；内层行仍计
+  calls / errors / 耗时（那是它自己这次调用的真账），tokens / cost 显示 `-` ⇒ 各行可加总。
+  引擎与 tracer 行为不动。依据见 `docs/spec.md` §10 2026-10-13 ref-ranking-top-capability。
+- **同批修复**：`examples/deploy` 补上脚手架模板同款的 PORT 校验（`PORT=''` 空串曾被
+  `Number('')` 静默变成 0 = 随机端口）；usage-guide 的「CLI 三件套」统一为四件套口径
+  （补 `export`），能力排行补「嵌套只认顶层」口径说明。
+- **同批守护**：doctor 的 `ENTRY_CANDIDATES`（CLI 侧双写）与框架 `discover.ts` 加源码级
+  逐字对拍；AGENTS.md 十条 drift 对账修正（数字改为指向真源）；trace-view 结构棘轮
+  summary.js 130 → 153。
+- **验证**：嵌套夹具 + 变异验证（去掉顶层判定 ⇒ 新用例红）；`verify-all.sh` 8/8。
+
+### 修复：`buildRunReport` 的嵌套能力重复计数（2026-10-13 ⑭）
+
+- **病灶**：⑬ 修的是 trace-view 展示层；框架公共 API `buildRunReport`
+  （`src/integrations/report.ts`）有同款嵌套累加 —— `@SubAgent` 套 `@Skill` 时同一批
+  token 在外层与内层行各计一次，能力排行的 tokens/costUsd 不可加总。消费方
+  `examples/observability-mcp` 的 `report_trace` 工具同漏。
+- **修法**：与 ⑬ 完全同款 —— 沿 `parentSpanId` 上爬判 capability 祖先（带防环），
+  嵌套行的 usage 不累加（`tokens`/`tokensTotal`/`costUsd` 为 `null`），calls/errors/耗时
+  照计 ⇒ 各行可加总。依据见 `docs/spec.md` §10 2026-10-13 ref-build-report-dedupe。
+- **验证**：`tests/integrations/report.test.ts` 新增嵌套夹具（去掉顶层判定即红）。
+
+### 工程：引用完整性轮 —— 22 个圈号归位 + 体量闸头注表自审 + 圈号引用守卫（2026-10-14）
+
+- **病灶①（引用层）**：全仓指回 `docs/spec.md` §10 的 `（日期 圈号）` 写法**没有任何守卫**。
+  实测三类真实形态共 **22 行 / 23 处引用**：**(a) 重排后未同步（14 行 / 15 处）** —— 批次二自己的
+  分支已把四件事编成 ⑨⑩⑪⑫，**同一分支**的 `tests/**` 与 `AGENTS.md` 仍写 ①②③④（偏差恒为
+  +8，**落地当天就自相矛盾**，与合并无关）；另一轮同理，`spec.md` 内一处 ① 应作 ⑧。
+  **(b) 幽灵锚点（7 处）** —— `src/` 的注释与 `export` 的移植副本引该日 ⑧ 之后的号，而该日
+  只有 ①–⑧（`git log -S` 限 `docs/spec.md` 查过：从来没有过）；另一处在本文件里 ——
+  有个已发布的版本节标题引了该日的 ⑲，而 ⑲ 在 §10 **从未存在过**（还做过正对照：`-S` 搜
+  同一日的 ⑳ 能命中发版提交，搜 ⑲ 为空）。
+  **(c) 给字母编号的日子硬加圈号（1 处）** —— `spec.md` 内一处引该日条目号时写成了圈号形式，
+  而**2026-09-11 的 §10 条目用 R1–R6**（不是圈号）；**同一个提交**（#40）里另一处已经写着
+  「见 §10 2026-09-11 R1 条」⇒ 两处自相矛盾，从写下那天起就不成立。
+- **病灶②（读数层）**：`source-size.test.ts` 头注表写 `async.ts` **627** 代码行，实测 **680**；
+  而 `AGENTS.md` 的导览图明确写着「当前真值以这张表为准、别在这里数」。根因**不是**「抄了旧纸」：
+  改这张表的那个 PR 落地时，**它自己分支上的 `async.ts` 已经是 680**（另一批先合）——
+  **答案就在磁盘上**。这是「假账」的典型形状：语义上没撒谎，数字没现算。
+- **修法**：① 22 行圈号按**主题**认锚点归位（不按位置猜：幽灵号分别落到当日的反向桥条目、
+  导出条目；字母编号那处改写成 `R1`；CHANGELOG 那处**删掉幽灵括号**）；② 头注表按实测重算
+  （680 / 524 / 493），「留多少余量」不再在正文另记一份数；
+  `AGENTS.md` 那行**去掉读数、只留指针**（它烂过两次：行数差一、代码行被同日抽件改掉）。
+  ⚠️ 本轮**零语义改动**（全部落在注释 / 文档 / 测试），故不写 §10。
+- **新守卫（两条，都做过反向验证）**：
+  - **头注表自审**（`tests/architecture/source-size.test.ts`）：实测与表里的数逐行对拍、口径复用
+    同一个 `codeLineCount`。变异：表里 680→679 ⇒ **恰好那条红**（体量闸本体仍绿 ⇒ 两条断言
+    **独立**）；表行去掉反引号 ⇒ 真空护栏红（`只从表里解析到 2 行`）。
+  - **圈号引用**（`tests/docs/circle-refs.test.ts`，新）：射程内「日期在 §10 **有条目** ⇒ 圈号必须
+    存在」。「条目」看**行首形态**（`### 日期` / `**日期` / `- 日期：`）、**不看有没有编号** ——
+    取「有条目」而非「有圈号锚点」是有意的：后者会把「日期有条目、但条目用字母编号」那一类
+    （即上面 (c)）整片漏出射程。引用按「日期 + **紧跟的一整串**圈号」吃（`（日期 ②③）` 指两条
+    决策，只认第一个会让后面那些**变裸的**；实测多校验 14 处、新增违规 0）。变异 5 轮：源码注释
+    改回幽灵号 ⇒ 恰好报出该行（`该日共 8 个锚点`）；把锚点正则打瞎 ⇒ 真空护栏红（`只解析出
+    6 个锚点`）；`spec.md` 那处改回圈号 ⇒ **恰好只报 `docs/spec.md:1236` 一行**；把「条目」判据的
+    列表项分支打瞎 ⇒ 真空护栏红（`只解析出 1 个「有条目但无圈号锚点」的日期`）；把 `resume-scanner`
+    那串的**第二个**号改成不存在的（`⑩⑱`）⇒ 恰好报出 `resume-scanner.test.ts:9` 那处的 `⑱`
+    （只认第一个的版本对它是瞎的）。⚠️ 它只判「**号在不在**」、判不了「**号指得对不对**」
+    —— 指向错主题但号存在的（如把 ⑩⑪ 写成 ②③，而 ②③ 也是该日的号）机器判不了 ⇒ **本仓
+    最大的一类错引（14 行）从来不是本守卫的功劳**，是人逐条读出来的。CHANGELOG 只查带 `§10`
+    标记的引用：其裸标签**两节两种惯例**（`[0.10.0]` 照抄 §10 的号、`[0.10.2]` 用本节自己的
+    条目序号），全查会在后者误报。已登记 `docs/guards.md` §1.4。
+- **顺带记录**：§10 同日编号有 9 处不连续 —— 3 处是「同日首条不编号」的风格、
+  4 处是 09-18 的 ③–⑥ 跳号，另有 09-14 缺 ①、09-29 缺 ⑲（成因未定）。其中 **09-29 缺 ⑲ 只被
+  CHANGELOG 引过一次**（PR #203 把「推广稿重写成定稿」那条按 §10 圈号写成了 ⑲，而 §10 从未
+  为它立条目）⇒ 本轮**删掉那个幽灵括号**（该条日期由所属版本节标题 `[0.10.0] - 2026-09-29`
+  给出，不丢信息）。**不做「同日编号必须连续」这条更硬的闸**：它要求回头给这些段补号，
+  而补号本身会撞死引用（本轮修的正是这类撞伤）——收益抵不过风险，登记为已知边界。
+- **验证**：`verify-all.sh` 8/8；两条新守卫共 7 轮变异逐条咬中后 `sha256` 逐字节还原。
+
+### 工程：门禁加固轮 —— 文档预算闸 + 副本闸 + verify-all 分片 + pre-push 钩子（2026-10-14）
+
+- **出发点**是一个方法论问题：多模型参与后守卫的**数量**在涨，但守卫的**有效性**没涨。归纳出三个
+  病根：**① 守卫声称的「理由」没人守** —— 活证据是 `circle-refs.test.ts` 的「档 B」原写着「CHANGELOG
+  的圈号是它自己的条目序号」，实测是错的（`[0.10.0]` 那一节的 15 条与 §10 逐条对得上）；**写错的
+  理由，守卫照样绿**。**② 同一事实多处副本**（本轮三个实例：`source-size.test.ts` 头注表读数 /
+  `CHANGELOG` 两节圈号惯例 / `spec.md` 里同一天两种编号写法），此前**零守卫**。**③ 编号是「位置号」，
+  位置会变** —— 上一轮修的 14 行错引**全部**由「按天编号 + 合并重排」产生（偏差恒为 +8），**落地
+  当天即自相矛盾**。下面 ①–⑤ 对治前两条，⑥ 是 ③ 的根因消除。
+- **① 常驻文档预算闸**（`tests/docs/doc-budget.test.ts`，新）—— 对标业界做法里的 `verify-doc-budgets`。
+  口径是**码点**而不是字节、也不是行：中文一字三字节 ⇒ 按字节设闸读数没有可比性；而按**行**设闸对
+  `docs/guards.md` 完全无效（504 行里躺着 125KB，平均 250 字符/行、最长一行 3423）。两个维度：
+  `AGENTS.md` / `CONTRIBUTING.md` **整份**设上限（它们是散文、必须从头读到尾 ⇒ 总长就是读取成本），
+  `guards.md` 这类**注册表的单行**设上限（行数随守卫数增长是**设计**，只有单条长度才是病灶）。
+  头注明写**三类刻意不设上限**：`spec.md`（决策日志，只增不改）/ `usage-guide.md`（完备性已由
+  `boundary-table.test.ts` 守）/ `docs/plans`·`docs/reviews`（带日期的快照）—— 三者共有的性质是
+  「它们的长度不是读取成本，而是完备性」。超了有两条路且**必须显式**：精简（首选）或提上限（改的
+  就是本文件里那个数字 ⇒ review 时一定看得见）。
+- **②+③ 副本闸**（`tests/architecture/duplicated-blocks.test.ts`，新）—— 滚窗找**生产源码**里的
+  成段逐字重复。归一化丢空行与整行注释、**折缩进**（跨文件副本常因所在层级不同整块差一级，不折就
+  对「抄了一个方法到另一个类里」完全瞎）。`WINDOW = 12` 是**量出来的**不是拍的：同一量具在
+  N = 8 / 12 / 16 / 20 各跑一遍 —— N=8 得 7 对（多出 `skill.ts ↔ subagent.ts`、`mcp-http.ts ↔
+  mcp-stdio.ts` 这类**结构性同形**）、**N=12 得 5 对**（全是**真会一起改**的那种：三份移植副本 +
+  两份共享样板）、N=16 得 4、N=20 得 3（`store.ts ↔ fsStore.ts` 那份 12 行的同源实现会漏出去）。
+  `KNOWN` 表 5 条各带 `why`（≥ 30 字）+ 可选的 `syncedBy × symbol` **联合核对** —— 点**符号名**
+  而不是文件名（本仓移植副本的守卫文件点的是 `exportRun` / `diffTraces` 这类导出名；第一版按文件名
+  判，两条都误红）。三条护栏防「闸变哑」（文件数下限 / 已知的 diff 移植副本必须在探测结果里 /
+  重复对数下限），外加一条**幽灵豁免**（登记了但实际已不重复 ⇒ 红）与「未登记重复 ⇒ 红」互为对侧。
+- **④ verify-all 分片**（`scripts/verify-all.sh`）—— 加 `shard="${1:-all}"` + 新增 `step_names`
+  数组与 `steps` 一一对应（条数不等即 exit 2），**按名字选步、不按下标**（下标会在插入/重排时
+  **静默错位**，而分片照样打印「全绿」）。`rapid` 片 16–20 秒（全链约 18 分钟，卡在 `npm test`）。
+  ⚠️ **`steps=(` 数组形状逐字未动** —— 它既是 `verify-all-wiring.test.ts` 的解析锚点，也是 CI job 名
+  （分支保护的必需状态检查）里那 8 步的来源。两条自证：未知分片 exit 2；**选到 0 步也 exit 2**
+  （「它会跑完什么都不做然后报绿」，正是 pre-push 钩子最坏的失效形态）。分片**不打印「N/N 全绿」**
+  那个形状（本仓多处文档抄写的就是它），改打「分片 rapid：3/8 步全绿（其余 5 步未跑）」。
+- **⑤ pre-push 钩子**（`.githooks/pre-push`，新，约 20 秒）—— 调 `rapid` 片；`SKIP_VERIFY=1` 逃生门；
+  `node_modules` 缺失时**响亮警告后放行**（不静默 skip）。已在本仓用 `git config core.hooksPath
+  .githooks` 启用，`CONTRIBUTING.md` 写了怎么开（git **不会**自动启用仓库里的钩子，不写出来别人
+  克隆下来永远不会跑它）。
+- **⑥ 编号脱位设计稿**（`docs/plans/2026-10-14-ref-slug-migration.md`，新，**P1 未开工**）——
+  `（日期 圈号）` → `（日期 + slug）`：圈号是**位置号**，重排即腐烂；slug 由标题派生、可校验。
+  射程实测 **119 个锚点 / 508 处引用 / 500+ 行跨约 40 文件**，分 P1（加名）/ P2（换引用）/ P3（收口）
+  三步走。⚠️ 设计稿里**刻意用占位符** —— 论证「位置号会腐烂」的文档，自己不该先写一个位置号。
+- **三处登记同步**：`docs/guards.md` §1.1 加副本闸行、§1.4 加文档预算闸行、§2 待守加一行
+  （`cli/harvest.ts ↔ cli/export.ts` 的样板重复**尚无同步机制** —— 免得「登记过」被读成「已经安全」）。
+- **验证**：`verify-all.sh` 8/8；四个守卫 `doc-budget` 3/3 · `guards-registry` 3/3 ·
+  `duplicated-blocks` 5/5 · `verify-all-wiring` 15/15，`biome` 全仓 514 文件 0 error；
+  **15 项变异逐条咬中**（每个新断言各一：必读集超预算 / 注册表单行超限 / 注册表变空 / 删登记项 /
+  加幽灵项 / `symbol` 写错一个字母 / `WINDOW` 放宽到 8 / 射程清空 / 两处清单条数不等 / 分片名写错 /
+  文档删掉「怎么开钩子」那条 / 钩子去掉可执行位 / 未知分片 / 选到 0 步 / `steps` 与 `step_names`
+  条数不等），恢复后 `sha256` 逐字节一致、钩子权限回到 755。
+- ⚠️ **如实标注射程**：副本闸只判**逐字**重复，判不了**语义副本**（本仓三次实例那种「同一事实两种
+  写法」一行都不重复 ⇒ 它挡不住）；分片**不是门禁**（`rapid` 全绿 ≠ 可以推 PR，它只覆盖静态三步）。
+
+### 工程：决策锚点加 slug（P1 加名）—— 把「位置号」换成稳定地址（2026-10-14）
+
+- **接上一条的 ⑥**：`（日期 + 圈号）` → `（日期 + slug）` 的迁移，**P1（加名）已落地**。设计稿里
+  那 4 个开放问题在它的 §7.1 逐条定稿，锚点形态定在 §7.2。
+- **改了什么**：§10 的 **120 行**带圈号锚点行，各在「日期 + 圈号」之后插一个 `ref-` 前缀的 slug
+  （形态 `### <日期> <圈号> ref-<名>：<标题>`）；**引用一处未动**（P1 的铁律）。加上本条目自己在 §10
+  的那一行也带 slug ⇒ 落地后共 **121 行**有 slug。§10 章节头加了一段
+  读者指引，它自带全仓**第一条**真 slug 引用。`docs/spec.md` §10 另加本决策条目 —— 引用形态是对外
+  约定的一部分（`AGENTS.md` 与 PR 模板里都出现过），按 `CONTRIBUTING.md` 的判据这是**语义变更** ⇒ 要写。
+- **守卫**（`tests/docs/circle-refs.test.ts`）**同时放宽与收紧**。放宽：引用键接受「一串圈号」或
+  「一个 slug」。收紧四条：**有圈号必有 slug**（挡「只加 slug、圈号被误删」的半迁移）、**slug 全局
+  唯一**、**slug 锚点数下界**（119 —— 是**量级**护栏、**不是**逐条计数；单条丢失改由另两条路咬，
+  见守卫注释）、**射程内 slug 引用 ≥ 1**（后者是「新形态真的通了」的活证据 —— 掉了就说明新支路成了
+  死代码）。**退出条件（P3 删掉圈号那一支）写在代码里**，不靠谁记得。
+- **实测**：带圈号的锚点**定义行 121 行**、圈号**唯一键 120** —— 差的那一个正是 `2026-09-14 ②` 的
+  **同日重号**（slug 能区分它、圈号不能，这本身就是位置号失效的一个具体证据；该重号在射程内的引用
+  数 = **0** ⇒ 不产生 P2 换引用的歧义）。§10 另有 **4 条无编号锚点**与 **45 条** `- 日期：…` 条目行
+  **不在 P1 射程**（无圈号 ⇒ 无锚点可引 ⇒ 不给它起名）。
+- **验证**：`circle-refs` 2/2（新增一条锚点侧用例）；**6 项变异逐条咬中** —— 改某条锚点的 slug 名 ⇒
+  **恰好**引用它的那两行红；造重名 slug ⇒ 唯一性红；打瞎 `SLUG_ANCHOR` 正则 ⇒ 真空护栏红（**不是**
+  「全绿」）；把 3 处 slug 引用全打瞎 ⇒ 「新形态通了」红；删某条锚点的 slug ⇒ 半迁移红；删某条锚点
+  的圈号 ⇒ 那一行滑出锚点射程、自己成了一条查不到的 slug 引用 ⇒ `bad` 红。恢复后 `sha256` 逐字节一致。
+- ⚠️ **自审逮到一处「守卫理由腐烂」**（正是本轮要防的病根 1）：下界一开始写成「取紧值 120 ⇒ 能挡住
+  『有人删掉某条锚点的圈号』」——**这句话在本轮内就过期了**：我随后往 §10 加了一条决策（它自己也带
+  圈号 + slug），实测变 121，下界于是有了 1 的余量，那句理由不再成立。⇒ 已改成**量级**下界（119）
+  并明写「它**挡不住**单条丢失，那由 `bad` / `anchorNoSlug` 咬」。教训：**紧值型断言会把「理由」一起
+  钉死**，加一条数据就失效，而失效时**没有任何东西会响**。
+- ⚠️ **落地过程本身踩了三次同一个坑**（如实记）：守卫头注 → 设计稿 §3.2 的示例 → §10 条目的示例，
+  都因为**把示例写成「具体日期 + 具体 slug」**而变成一条指向不存在锚点的**真引用**，被守卫当场咬红。
+  ⇒ 规矩：这类**形态示例一律用占位符**（`<日期>` / `ref-<名>`），本守卫**自己也在射程内**。
+- ⚠️ **射程边界**：slug 只解决「地址会漂」，**不解决「地址指错了」** —— 键存在但指错主题的仍然只能
+  人读（守卫挡的是「查不到」，不挡「查错了」）。**P2（换引用）与 P3（守卫只认 slug）均未开工**；
+  P2 的射程**现算**（`circle-refs` 守卫口径、逐圈号、**只算 git 跟踪文件**）：
+  **483 处引用 / 473 行 / 100 个文件**（P1 落地前是 474 / 464 / 99）。⚠️ 设计稿 §4 原记的
+  「508 处 / 约 40 个文件」**用任何探针都复现不出来**（守卫口径在写稿那棵树上是 474 / 464 / 99，
+  其标注出处的探针是 412）⇒ 已在设计稿标为「不可复现」并以守卫口径为准。
+  ⚠️ **同一份读数必须连口径一起写**：射程里混着 `packages/cli/CHANGELOG.md`（48 处）等
+  **gitignored 生成物**，它们只在**本机**存在（CI / 新克隆 / `git worktree` 里都没有）⇒ 拿「本机读数」
+  与「对照树读数」相减会凭空多出 48 处，**看起来正好像引用被改了**（本轮据此差点把对的判成错的）。
+
+### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
+
+- **病灶**：真实审批流是「挂起 → 人批 → 带 approvals 恢复」；恢复段的工具执行走续跑入口
+  （`loop.ts` 把 **run 根 id 当 turnId**），`approval.decided` 记在 **run 根** span 上。
+  而 summary 聚它时只扫 `kind === 'llm.turn'` ⇒ 所有真实审批用法下 `guardrail:*` 行
+  **一行都没有**，只有「首段同步带 approvals」（基本只有测试这么干）才出行。
+  CLI `agentia report` 与 `agentia dev` 面板与 summary 同源，同样漏。
+- **修法**：`approval.decided` 的聚合**不限 span kind**（`tool.output` 仍限 `llm.turn`）。
+  落点因段而异是记账事实不是缺陷（与 `tool.input` / `tool.output` 同一纪律），事件体自带
+  `tool`；**一次决定只记一笔**（记账点只有 `executeOneTool` 一处，跨段是另一条 trace），
+  扫面放大不会双计。引擎行为不动。
+- **顺带订正文档口径**：`usage-guide.md` 的 `agentia.guardrail.*` 属性表原写「发起它的
+  `llm.turn` span」⇒ 与续跑再挂起场景矛盾，改为「与 `approval.requested` 同 span：首段
+  `llm.turn`、续跑段 run 根」。依据与「为什么不该限 kind」见 `docs/spec.md` §10 ⑨。
+- **验证**：`packages/trace-view/test/summary.test.js` 保留首段形状用例、补恢复段形状
+  （decided 在 run 根 ⇒ 行在场且数值对）与「两处都聚」；**变异验证**（恢复 kind 限制
+  ⇒ 两条新用例红；复原绿）。summary.js 棘轮 126 → 130（净 +4 全是注释，代码行零增长）。
+### observability-mcp 示例复审收口：分组键对齐 CLI、root=`/` 特判、sessions 截断（2026-10-12 ⑩）
+
+- **是什么**：`examples/observability-mcp/` 的三处低危修复（框架与 CLI **零改动**）：
+  ① 会话归组从两级补成**三级回退**（run 根 `session.id` → 外层记录的 `TaskRecord.taskId` →
+  `(无会话)`），与 CLI `agentia report` 逐字同口径 —— 此前 `readTraceFile` 丢掉外层 wrapper，
+  FileTaskStore / SqliteTaskStore 导出的记录在示例侧全坍进 `(无会话)`；
+  ② 只读边界的 root=`/` 特判（`root + sep` 变成 `//` 曾把根下**所有**文件误拒）；
+  ③ `report_trace` 的 `sessions` 加截断天花板（`MAX_SESSION_ROWS = 40`，与 diff 侧同档），
+  新增 `sessionGroups` / `sessionsTruncated` 两个字段如实报出截断（**加法**，兼容）。
+- **守护形态**：这份移植（本仓第四份）配的是**源码级双钉**
+  （`tests/observability-mcp-parity.test.ts`：三段 canonical 行在两份源码里逐字都在场），
+  而不是前三份的运行时逐字对拍 —— 示例必须可整目录拷走单用、且示例 dist 在 `npm test`
+  时未构建，两个对拍落点都不成立（理由见 `docs/spec.md` §10 2026-10-12 ref-g8-example-closeout）。
+- **验证**：示例 `npm run verify` 17 → 26 条 check（新增 §8 三级回退 / §9 root=`/` /
+  §10 截断）；**3 条变异各咬住预期断言**（去 taskId 层 / 去特判 / 去截断，各红）。
+  README 边界节补两条如实标注（TOCTOU 时间窗；入站 `traceparent` 缝合是引擎层白得的、
+  本示例未做端到端断言）。
+
+### 观测面给 agent 的入口：两个 MCP 只读工具（G8）（2026-10-12 ⑦）
+
+- **是什么**：新示例 `examples/observability-mcp/`（本地小包，`private`）用现成的反向桥
+  `createMcpServer` 把调优报告包成两个只读工具：`report_trace`（能力排行 + 会话维度的成功率
+  与「每成功任务成本」）与 `diff_traces`（两条 run 的结构化差异）。任何 MCP 宿主（编辑器 /
+  桌面客户端 / 另一个 agent）接上来，agent 就能自己查「我上一轮慢在哪 / 贵在哪」。
+  **核心零改动**：两个工具是 `buildRunReport` / `mergeRunReports` / `diffTraces` 的薄壳。
+- ⚠️ **这是分发面，不是功能面**（本仓瓶颈在产品面 / 分发面）：验收标准是「外部客户端接得上」，
+  不是「新增了多少能力」。`npm run verify` 起真 HTTP server + 出厂连接器 + `mcpTools`
+  连回去跑通 17 条 check（report / diff / 缺侧 / 截断 / 越界拒绝）。
+- **三条口径**：① 只读 **trace 根**（`AGENTIA_TRACE_ROOT`，缺省 cwd）**内**的文件 —— 工具参数
+  由模型给 ⇒ 不设边界等于对外发一个任意文件读原语，判据是 realpath 比前缀（不是 `startsWith`，
+  后者挡不住 `../` 与同前缀兄弟目录）；② 进模型上下文的东西有天花板（差异 span 最多 40 条，
+  截掉多少如实报出）；③ 读不出就说读不出（一条 trace 都认不出 ⇒ 报错而不是空表；成本给
+  `null` 而不是 0）。
+- **门禁**：示例进了 `tsconfig.tests.json`（按仓库根那套严格开关类型检查，含
+  `exactOptionalPropertyTypes`）与 `e2e:examples` 第 10 轮；`examples/README.md` 表行由
+  `examples-table` 守卫双向核。
+
+### 交接与护栏：四个 `agentia.*` 属性 + 护栏进能力排行（G7）（2026-10-12 ⑥）
+
+- **是什么**：交接（agent → agent）在这个框架里就是一条 capability span 本身，护栏（审批）则
+  **只是事件**（`approval.requested` / `approval.decided`）—— 两者对外部 OTLP 消费者都要解析
+  trace 才看得见。现在各补一个 additive 属性当入口（**不造 span kind**，核心零改动）：
+  `agentia.handoff.from` / `.to` 写在被调 `@SubAgent` 的 capability span 上；
+  `agentia.guardrail.name`（待决的**首个**工具名）/ `.triggered`（`true`）写在发起审批的
+  `llm.turn` span 上。名字来源：run 根用 `runName`（与 OTLP 的 `gen_ai.agent.name` 同源）、
+  子 agent 用它注册的 `name`；嵌套交接**逐层换名**。
+- **视图**：`@migor/trace-view` 的 summary（CLI `agentia report` 与 `agentia dev` 面板同源）把
+  `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、`err` =
+  **被拒**次数、`total` / `max` = 等审批时长。此前「哪个工具卡在审批上、被拒了几次」在排行上
+  **完全看不见**。
+- ⚠️ **只发一半是口径不是遗漏**：`guardrail.*` **只在触发时发**，不设 `false`（与
+  `gen_ai.conversation.compacted` 同款）；`handoff.*` 拿不到调用方身份时（宿主手搓 recorder +
+  ctx 直调 `subagentToTool`）**两个键都不发**。⚠️ 护栏行**只聚 `decided`**：只有
+  `approval.requested` 而始终没恢复的挂起不产出行；缺 `waitedMs` 记 0 不编造。
+- ⭐ **一处实现上的补空（设计稿没说清）**：「调用方 agent 名」在调用点**拿不到** ——
+  `RecorderBackend` **只写不读**（查不了 span 树）、`ctx.parentSpanId` 反查不出名字。唯一来源是
+  「当前调用期」作用域 ⇒ `SpanScope` 加可选 `agentName`，并把 `withCurrentSpan` 从**整条替换**
+  改成**合并**（夹在中间的 `llm.turn` 谁都不知道身份，替换会把名字抹掉）。收窄语义逐字不变。
+- **影响面**：`src/engine/{span-scope,loop,turn}.ts`、`src/toolkit/subagent.ts`、
+  `packages/trace-view/src/summary.js`（棘轮 106 → 126）。公共导出面 `src/index.ts` **零变化**。
+  约定与读法写进 `docs/usage-guide.md` §6.4「交接与护栏」。
+- **验证**：`tests/toolkit/subagent.test.ts`（嵌套逐层换名 / 无作用域时不发）、
+  `tests/engine/approval.test.ts`（在场 + 不在场两态）、`packages/trace-view/test/summary.test.js`
+  （护栏行三态）。**变异 4 条：3 条当场咬住，第 4 条先没咬住 → 抓出的是我自己的自证样本**
+  （`approved` 一真一假时，把判据取反仍是 1）⇒ 补样本后才咬住，已写进用例注释。
+
+### CLI `agentia report` 加会话 / 任务维度（G6）（2026-10-12 ⑤）
+
+- **是什么**：`agentia report` 此前只有**能力维度**（`capabilities[]`）+ run 级**计数**
+  （`runs` / `failed`），而 `failed` 是**次数不是分母** ⇒ 「这一段跑得好不好」的第一问
+  （成功率）在输出上**根本算不出来**。现在另打一张按**分组键**归组的表，`--json` 里是
+  `sessions: SessionRow[]`（**加法**，兼容）。
+- **分组键三选一、不混排**（一条 run 只进一个组）：run 根 span 的 `session.id`
+  （宿主传 `session: { store, id }` 才写）→ 记录里的 `TaskRecord.taskId` → `(无会话)` 桶。
+  ⚠️ 会话一般聚多条 run，而 `taskId` **逐任务唯一** ⇒ 后一路通常是「一组一条」，它是给单任务
+  批跑逐条标成本，**不是**多轮聚合。
+- **口径**：`runs` / `ok` / `fail` 三个数**一起出列**（只报百分比在小组成上是噪声）；
+  ⚠️ **成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
+  成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和、**不含** capability 聚合
+  ⇒ `@SubAgent` 里套 `@Skill` 不会把同一批 token 数两遍）。⚠️ 设计稿原写「该组各能力行
+  `costUsd` 相加」，落地时**改掉**了 —— 理由见 `docs/spec.md` §10 2026-10-12 ref-report-session-dimension。
+- **影响面**：`packages/cli/src/report.ts`（194 → 339 行，棘轮账 LINE/TOTAL 同步）；
+  `docs/usage-guide.md` §6.4 的 `--json` 形状列表加 `sessions`。**框架侧 `src/` 零改动。**
+- **验证**：`report.test.mjs` +6 条（归组 / `(无会话)` 桶 / `taskId` 回退键 / 降序 /
+  **「成功数为 0 ⇒ `-`」的反向断言** / 成本读不出 ⇒ `-`）；**变异 4 条各咬住预期的那一条**
+  （`> 0` → `>= 0` / 丢掉 `taskId` 回退 / 把「读不出」写成 `0` / `session.id` 读成 `sessionId`）。
+
+### OTLP 导出：三个缓存/压缩 semconv 键 + 可选的 execute_tool span 投影（2026-10-12 ②）
+
+- **G3（additive、双发不替换）**：`llm.turn` 缓存读数 > 0 时另发
+  `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`
+  （0 = 没走缓存 ⇒ 不留键）；父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ 发
+  `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，不设 false）。
+  键名逐字核自 `semantic-conventions-genai @ 6fd0d763` 的 `client-inference.md`。
+- **G2（`OtlpExporterOptions.projectToolSpans`，默认关）**：开启后把 span 上按 `tool_use_id`
+  配对的 `tool.input` / `tool.output` 事件投影成 `execute_tool <工具名>` child span
+  （`gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`；start/end 取两事件的真实记账时刻；
+  `ok:false` → status Error + `error.type`）。**导出侧投影**：engine 记账点不动、本地 trace
+  形状不变、原事件保留在父 span 上；关闭时导出产物与既往一致。孤儿 input
+  （`traceLimits.maxEvents` 截断可造出）→ 不写 `endTimeUnixNano` / status +
+  `agentia.projection.orphan: true`，不编零时长。
+- 顺带：`context.budget` 事件名上移为 `core/trace.ts` 的 `CONTEXT_BUDGET_EVENT` 单源常量
+  （第一次有了跨层消费方）。
+
+### run 级 `sessionId` 的静默失效改成出声（2026-10-12 ③）
+
+- **是什么**：程序内 `app.run(messages, { sessionId })`（不带 `session`）此前**静默丢弃** ——
+  run 根没有 `session.id`（OTLP 的 `gen_ai.conversation.id` 也就不会有）、会话历史接不上、
+  零信号（可观测深钻 §2 行 7）。现在 `AgentApp.run` 入口 `console.warn` 一次，文案指出正确写法：
+  要会话维度 + 历史用 `session: { store, id }`；只要 trace 标记不要历史，直连
+  `executeRun` / `runAgent` 的引擎级 `sessionId`（那一层本就生效）。
+- **内部链路不误伤**：`AsyncRunner` 的续跑段刻意不注入 `session`，`buildRunCallOptions`
+  不再把任务里的 `sessionId` 透传进 `app.run`（它在本层已被消费 —— 换成 `session` 注入，
+  或没配 `sessionStore` 时在 submit 已响亮报错）。
+- **无破坏性变更**：行为面只多一条告警；`sessionId` 的类型与异步宿主语义逐字未变。
+  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ref-session-id-warn。
+
+### MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键）（2026-10-12 ④）
+
+- **出站**：run 内经 MCP 桥调 `tools/call` 时，两个出厂连接器自动把当前 span 的 W3C
+  `traceparent` 放进 `params._meta`（SEP-414 定的载体：裸键、不加前缀、**不进 `arguments`**）——
+  认出它的 server（MCP Python SDK、agentia 反向桥等）就能把这次调用链回你的 trace。
+  不在 run 内（桥脱离引擎单用）则不带：不造空上下文。
+- **入站**：`createMcpServer` 认 `tools/call` 的 `params._meta.traceparent`，合法即记成该次
+  trace run 根的一条 `links`（与 HTTP `traceparent` 头同款缝合）；缺失 / 畸形静默当作
+  没有上游 —— 不报错、不影响调用成败。
+- **无破坏性变更**：`McpClientLike.callTool` 第三参新增可选 `traceparent` 字段（鸭子类型，
+  只实现两个参数的旧客户端照常兼容，只是链路断在它的传输上）；公共导出面零变化。
+  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ref-sep414-trace-context。
+
+### 可观测文档：四条「缝外配方」类缺口收口（2026-10-12）
+
+依据 `docs/reviews/2026-10-12/observability-deep-dive.md` 的 G9 / G10 / G4 / G5，**纯文档**，`src/` 一行未动：
+
+- `docs/observability.md` 新增四节：**§6 投递纪律**（sink 内攒批 + 定时 flush 的骨架、关停时
+  先 `handler.drain()` 再 `sink.drain()`、后端不可达就丢遥测不丢可用性；并明说**为什么不把
+  `flushSinks` 改成 fire-and-forget** —— sink 的语义是「有兜底、会投递」，改了等于删掉一条
+  已有承诺）；**§7 OTLP 只发 JSON ⇒ 直打 Phoenix 会 415**（已知边界 + collector 转码配方，
+  含最小可用配置；为什么不内建 protobuf 编码器）；**§8 步数与环**（纯 trace 函数配方：
+  数 `llm.turn` span、按回合归属成本、`tool_use_id` 配对、识别「同一工具同参数连调 N 次」）；
+  **§9 轨迹评测**（确定性检查优先 —— 签名相等 / 步数上限，`agentia diff` / `harvest` /
+  `defineEval` 拼合，LLM-judge 殿后）。
+- **顺带订正一处事实错误**：§2.6 原把 Arize Phoenix 列进「平台支持 OTLP ⇒ 用内置导出器即可」
+  —— Phoenix 只收 `application/x-protobuf`，内置导出器（只发 `application/json`）打不进去。
+- `docs/usage-guide.md` §7 已知边界表新增一行（OTLP trace 导出只发 JSON ⇒ 直打 Phoenix 会 415，
+  按 choice 登记）；`tests/docs/boundary-table.test.ts` 登记表同步（93 条：pin 57 / choice 11 /
+  gap 25）。
+
+### `agentia report` 按 `traceId` 去重：append-only 导出不再翻倍计数（2026-10-12 ⑧）
+
+- **修什么**：`FileTaskStore` 是 append-only（每次 save 追加一行），审批流任务的导出里同一棵
+  挂起段 trace 会出现多行（挂起 / approve / 接管各 save 一次），而 `report` 按行计 ⇒
+  runs / 成功数 / 成本全部翻倍（实测实际 2 段 0.02 的任务报出 runs=3、cost=0.03）。
+  现在按 **`traceId` 去重、只留最后一行**（append-only 里后面的是新状态）；能力表与 runs 总计
+  也走同一份去重后的输入（存量问题一并修）。去重键是 traceId 而不是 taskId：一个任务可跨多段
+  run，每段一棵新 trace —— 按 taskId 去重会把不同段错并成一条。
+- **无破坏性变更**：`ReportJson` 形状未动，只有计数口径修正（同 traceId 的重复行此前本就是
+  同一棵 trace 的重复书写）；无 traceId 的行（手写 trace）照原样全保留。
+- **文档同步**：usage-guide §6.4 的 FileTaskStore 段落点明去重口径；会话维度段落点名
+  「**挂起计入 ok**」（与引擎「挂起不是失败」同口径 ⇒ 全挂审批上会报成功率 100%，刻意取舍
+  但需写明）。决策依据见 `docs/spec.md` §10 2026-10-12 ref-report-dedupe-traceid。
+
+### 工程：决策引用换成 slug + 守卫收口（P2 / P3）（2026-10-14）
+
+- **接上一条的 ①**：`（日期 + 圈号）` → `（日期 + slug）` 的三步迁移**已走完**（设计稿
+  `docs/plans/2026-10-14-ref-slug-migration.md`）：上一轮 P1 给 §10 的每条锚点加了 slug（引用一处未动），
+  本轮 P2 把引用换成 slug、P3 把守卫收成只认 slug。
+- **P2 换引用**：射程 = 守卫射程 − 带日期的**快照**（`docs/plans/**` · `docs/reviews/**`，写于迁移之前
+  = 历史）− §10 **锚点定义行**（圈号在那里是显示编号）− **日期在 §10 无条目**的引用（那个号指别的文档
+  自己的编号）⇒ **302 处 / 84 个文件**，按文件分 5 批提交（便于 review 与单独 revert）。替换**按内容
+  不按行号**（§10 加了章节头，其后行号全漂过）。脚本带一条硬规则：**同日重号拒绝自动选**（源序先到
+  先得 = 脚本替引用挑一个含义，正是本设计要消灭的东西）⇒ 源头给一行显式覆盖表。
+- **守恒验证**：84 个文件**归一化后逐字节相同** ⇒ 除引用形态之外**一个字符都没动**；另有按
+  `(文件, 日期, 键串)` 的前后对拍（P1 的「引用一处未动」也这么验）。
+- **P3 收口**：守卫从「圈号**或** slug 都能解析」（P1 起的**有期限**放宽）收成**只认 slug**，并新增
+  判据「射程内（**除定义行、除快照、日期有条目**）的『日期 + 圈号』引用数 == 0」。**这不是新决定** ——
+  它是 P1 时就写在代码里的退出条件到期执行。三项排除写成**减法**（各自指向另一条已写明的规则），
+  而不是「给 `isDefLine` 加个开关」：读判据的人要能顺着三项去查。
+- **一处口径修正（如实记）**：`packages/cli/CHANGELOG.md` **移出射程** —— 它是构建产物、只在**本机
+  磁盘**存在（CI / 新克隆 / `git worktree` 里没有）。P3 首跑报「49 处残留」，其中 **46 处来自它**
+  ⇒ 校验它的后果就是**本机红、CI 绿**。去掉它不丢覆盖（根 `CHANGELOG.md` 那一档覆盖同一份内容）。
+- **另登记一条待守缺口（本轮量出、不在本轮做）**：**不带日期的引用**（`§10 ⑧` / `同日 ⑧` —— 日期写在
+  上一句里）**从来不在守卫射程**（它的形态要求日期**紧邻**键）。实测 **35 处**（探针
+  `.workbuddy/probes/2026-10-14-dateless-circ.mjs`，git 跟踪文件口径、可复跑）⇒ 已登记进
+  `docs/guards.md` §2 的「待守」表（含「为什么还没有守卫」与两种可能的守卫形状）。
+  「引用已全换成 slug」这句只对**带日期**的那一类成立 —— 这行缺口就是它的射程注脚。
+- **「怎么写引用」到 P3 才写**（设计稿 §7.1 第 4 问的定稿）：`AGENTS.md` 的「设计决策」与
+  `CONTRIBUTING.md` 的坑表各补一句。P1 期两种写法并存，那时教谁都是半对。
+- **验证**：`circle-refs` 3/3；**P3 变异 8/8 逐条咬中** —— 改锚点 slug 名 ⇒ **恰好**引它的那几行红；
+  造重名 slug ⇒ 唯一性红；把引用 / 锚点正则**分别**打瞎 ⇒ **真空护栏**红（**不是**「全绿」）；塞一处
+  「日期 + 圈号」⇒ 残留判据红；把引用的日期改错 ⇒ 「该 slug 属于」红；删 slug 留圈号 ⇒ 半迁移红；
+  **正对照**（M6）：「圈号是**可去掉**的显示编号」这条设计**真的生效** —— 删掉某条锚点的显示圈号后
+  锚点仍可引、守卫仍绿。每项都在输出里点到名，恢复后 `sha256` 逐字节一致。
+- **无使用者面变更**：本轮只动文档与一个守卫（`src/` 一个文件都没碰）⇒ 既有使用者不需要任何动作。
+
 ## [0.10.2] - 2026-10-11
 
 > 本版主题（窗口 `0.10.1 → 0.10.2`）：**对外那一面各做实一格 —— 一个人能不能找到它、
@@ -1109,500 +1624,6 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 没走」（抽块其实已走了三步）。
 
 ## [Unreleased]
-
-### 修复：retry 配置坏值被误报成「用户取消」+ 入口段抛错时 run 根 span 不合拢（2026-10-13 ①②）
-
-- **病灶①（深评 A1）**：`retry: { baseDelayMs: NaN }` + 一次 429 ⇒ 退避算出 NaN ⇒
-  `sleep` 抛 RangeError ⇒ `turn.ts` 的裸 `catch` 吞成 `stopReason: 'aborted'`（配置错被
-  谎报成用户取消）；`maxAttempts: NaN` 则让重试被**静默关闭**（`!(NaN >= 1)` 成立）。
-- **修法①**：`RetryOptions` 四个数值旋钮登记进 `core/limits.ts` 真源表并加构造期校验
-  （`resolveRetry` 抛 `TypeError`，报错文案插 `zeroClauseOf`；`runAgent` 入口同款校验，
-  与 labels / fallbacks 同落点 —— 配置错响亮抛，不收成失败的 run）；退避处 catch 只认
-  AbortError，其他错误原样抛出归类；`backoffDelay` 上界夹在 `MAX_TIMER_DELAY_MS`
-  （正向抖动曾能把它推过 Node 定时器上限）。0 的读法：`maxAttempts: 0` = 关闭重试、
-  `baseDelayMs: 0` = 不退避、`maxDelayMs: 0` = 封顶为零、`jitter: 0` = 不加抖动。
-- **病灶②（深评 A2）**：`runAgent` 入口段（菜单摘要 / 模型链 / 标签校验）抛错时 run 根
-  span 已开却永不 end —— 交付 sink 的 trace 里 `status='error'` 而根 span 是 ok、无
-  endedAt、无结构化 error，违反「非正常收尾必带结构化 error」。
-- **修法②**：入口段包 try/catch，catch 给根 span 收尾（error 状态 + 结构化 error）
-  后原样 rethrow —— 对外行为不变（照样抛），trace 不再说谎。
-- **验证**：`tests/engine/retry.test.ts` +6 条（含深评实测路径的入口校验用例与 catch 判别
-  用例）、`tests/engine/loop.test.ts` +1 条（两个真实触发点的 trace 形状）、
-  `tests/limits.test.ts` +4 探针 + 4 文案对账 case。
-### 装配期静默缺口收口：静态方法装饰期拒 + 子菜单重名查重（2026-10-13 ③④）
-
-- **③ @Tool/@SubAgent/@Skill 装饰静态方法 → 装饰期即抛**（此前能力静默从菜单消失：
-  装饰器正常登记、装配零报错，但收集只扫实例原型链，静态方法挂在构造函数上永远扫不到）。
-  与私有方法守卫同款落点（`assertMethodTarget` 加 `context.static` 判定）；`@Prompt` 是唯一
-  例外（纯文本资产，静态收集是它的文档化形态，经 `allowStatic` 显式放行）。**非破坏性**：
-  静态装饰这三类此前本就是死资产，现在只是从「静默失踪」变成「类定义期响亮报错」。
-- **④ 子菜单重名查重**：主菜单的「菜单能力重名」查重此前管不到 @SubAgent/@Skill 的
-  `tools` 引用展开结果（运行期展开）—— 两个 provider 各有同名能力被同一能力整片引用时
-  装配全绿、第一次模型调用才由 API 400 暴露。现在装配期逐引用片展开查重，报错指到
-  「哪个能力的哪几片引用」（`子菜单能力重名：@SubAgent "x" 的 tools 引用展开后 "search"
-  （来自 "a" + "b"）`），修法引导（能力级路径收窄 / 改名）写进文案。
-- **依据**：`docs/spec.md` §10 2026-10-13 ref-reject-static-methods ref-submenu-name-check；usage-guide §3（装饰器只接实例方法）、
-  §4 `tools` 行与 §8 常见错误行（重名查重口径补「主菜单+子菜单」）同步。
-
-### 四处低等静默/口径收口：报告去重下沉、握手簿记回收、metrics 失败出声、Span.name 注释（2026-10-13 ⑤⑥）
-
-- **`mergeRunReports` 按 `traceId` 去重下沉到框架公共面**：2026-10-12 ⑧ 的去重落在 CLI 层，
-  框架公共 API 喂同样的 append-only 导出照样翻倍计数。现在框架函数自身去重（同口径：
-  只留最后一份、保序；`merged(n runs)` 是合成 id 不参与去重）。CLI 侧不动 —— 它作用在
-  原始 trace 行上，与框架函数不是同一份代码。
-- **stdio 连接器握手 / tools/list 超时后 pending 簿记回收**：guard 只是「放弃等待」，
-  超时的 initialize 条目此前永远留在 pending（server 活着但不回包时每超时一次泄漏一条）。
-  握手与 list 各持一个 AbortController，失败分支 abort 复用 `send` 里既有的 abandoned 清理。
-- **metrics OTLP 导出失败缺省落 `console.warn`**（此前无 `onExportError` 时被 `?.` 吞掉、
-  零信号），与 traces 侧 `flushSinks` 同款（每次失败一条）。
-- **`core/trace.ts` 的 `Span.name` 注释对齐实现**：capability span 的 name 是**裸能力名**
-  （无 `subagent:` 前缀；区分类型看 attributes，见 `capabilityKindOf`）—— 旧注释的
-  `${capabilityType}:${capabilityName}` 口径曾让 otlp.ts 按前缀判、生产上一条 gen_ai.* 都没发出去。
-- **依据**：`docs/spec.md` §10 2026-10-13 ref-merge-reports-dedupe ref-stdio-metrics-silent；usage-guide（metricsSink `onExportError` 行 /
-  已知边界行 / §6 `mergeRunReports` 速查行）同步。
-### 守卫射程轮：CLI 纳入 exactOptionalPropertyTypes、e2e:mcp:server 进 CI、三处货架补齐（2026-10-13 ⑦）
-
-- **D2（CLI 类型收紧）**：`packages/cli` 的 `tsconfig.json` 与 `tsconfig.templates.json`
-  此前**没开** `exactOptionalPropertyTypes`（根包 2026-09-18 起就开着），「显式 undefined
-  覆盖缺省」那类防线在 CLI 代码上无声缺位。现两份配置（连同发给用户的模板
-  `templates/tsconfig.json`）全部开启，并修掉暴露的 6 处类型错：结果记录型
-  （`SpanDiff` / `ToolIoEvent` / `ExportRecordMeta`）改必填 `T | undefined`（与框架侧
-  移植真源逐字对齐）、内部管道 `HarvestRow.messages` 改 `?: T | undefined`、公共入参
-  `harvestEvalCase` 签名不动、调用点条件展开。`tsconfig-strictness` 守卫射程扩到四份配置。
-- **D1（e2e:mcp:server 进 CI）**：MCP 反向桥端到端此前全仓零自动化；现为 CI 独立
-  **必需检查** job `e2e-mcp-server`（离线零网络、不需要 uv），并登记进 `verify-all.sh`
-  的 `ci_only` 与 CONTRIBUTING / AGENTS.md 的对应抄写。verify-all 仍是 8 步（不加第 9 步）。
-- **E2（inspector 白名单门禁）**：新增 W5 守卫 —— `dist/inspector` 里每个 `.js`/`.css`
-  都必须在 STATIC 白名单里（双向集合相等），trace-view 拆出新文件而白名单没跟上时
-  构建即红（此前表现为面板 404 白屏）。白名单本身保持显式人批。
-- **低等三项**：CI 各 job 补 `timeout-minutes`；guards-registry 货架补 `tests/scripts`；
-  `layering.test.ts` 的 import 解析改走 `lib/source-scan.ts` 遮蔽器（注释 / 模板里的
-  `from './x.js'` 不再造假依赖边）。
-- 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ref-guard-scope-round4。
-### 修复：engine 非正常路径口径对齐（深度评审 2026-10-13 低等项五件）（spec §10 2026-10-13 ref-deep-review-minor）
-
-- **`max_iterations` 出口保留已产出文本**：循环耗尽时 `finalText` 此前恒为 `''`，与
-  `max_tokens` / `refusal` / `budget_exceeded` 的「文本不丢」口径不一致；现在耗尽出口
-  带上最后一回合的模型文本。
-- **「消息已收、工具未跑」窗口内取消不再执行工具**：`streamTurn` 成功返回后、
-  `executeTurnTools` 之前补 `signal.aborted` 检查 —— abort 落在该窗口时整批工具的副作用
-  一个都不发生（与续跑入口「已取消不执行任何工具」同口径），run 以 `aborted` 收尾。
-- **trace 截断摘要多源漂移修复**：`snapshot()` 的收尾摘要（`trace.truncated` 的
-  `{ droppedEvents, limit }` 那笔）此前每次调用都新建时间戳，多次 snapshot 互不一致、
-  也都与增量流里那一条对不上；现在只生成一次、同一对象复用于两条缝
-  （「按 seq 折回 == snapshot」的折叠契约在截断场景重新成立）。
-- **stdio 反向桥监听器泄漏修复**：`process.stdout` 的 EPIPE 吞错监听随 `close()` 摘除
-  （此前只挂不摘，多次 `createMcpServer` 累积进程级监听器）。
-- **MCP 反向桥补 trace 闸**：`createMcpServer` 的选项新增 `traceLimits`（每次
-  `tools/call` 那棵 trace 的事件数上限，构造期校验、坏值抛 TypeError）与
-  `maxEventChars`（事件正文截断上限，`false` = 不截断）—— 缺省与引擎缺省逐字一致，
-  子 agent 类工具在桥内长跑时 trace 体积不再无界。
-### 修复：TaskStore 副本契约坐实 + cancel 与推进路径互斥（五路深评批次二，2026-10-13 ⑨–⑫）
-
-- **B2 · store 副本契约（⑨）**：`InMemoryTaskStore` / `FileTaskStore` 的 `save` 入库与
-  `get` / `byIdempotency` / `list` 出站统一走 `cloneTaskRecord`（深拷纯数据、AbortSignal /
-  函数等进程内对象按引用保留）。此前契约注释要求副本、实现交活引用 —— 「改 rec →
-  `await save`」的纪律下，save 失败时变异已污染内存（approve 重试撞 409、任务搁死）。
-  **行为变化**：终态落库失败时库里诚实停在最后一次落库成功的状态（此前被引用语义
-  原地推进遮掉）；`submit` / 幂等去重返回从浅拷贝升级为深拷贝（HITL 挂起会整体替换
-  `spec.messages`，浅拷贝快照照样被穿透）。
-- **B1 · cancel 互斥闸（⑩）**：新增 per-task `#cancelInflight`，与 approve / signalTask /
-  到期唤醒 / 审批超时四条推进路径互为对侧（先登记者赢，无死锁）；cancel 临界段落库改
-  **当场发生**（不再经微任务延迟）；`#executeInner` 起跑前加**取消意图闸**（意图在场
-  ⇒ 绝不起跑，记账归 cancel），`#cancelSettled` 覆盖面随之补齐。修掉两扇真实竞态窗：
-  cancel×approve 并发「取消后照常执行 + onFinished 双发」、cancel×槽位释放并发打破
-  「被取消的排队任务绝不起跑」。
-- **B3 + 低等 · 恢复路径落库失败（⑪）**：`resumePending` 认领 save 接同步抛错（不再逃出
-  启动路径；不派发、不计入推进数、warn）；认领 / 审批超时 / 到期唤醒三处落库失败的
-  catch 不再静默留尸，各补 `console.warn`。
-- **低等 · Scheduler drain 感知（⑫）**：runner 停机后 tick 静默跳过（此前每 tick 刷一条
-  `console.error`）。
-- **依据与取舍**（含副本克隆的成本评估）：`docs/spec.md` §10 2026-10-13 ref-taskstore-copy-contract ref-cancel-mutex ref-resume-save-guard ref-scheduler-aware-drain。
-- **验证**：新增 `tests/store/taskStore-copy.test.ts` / `tests/transport/cancel-race.test.ts` /
-  `tests/transport/resume-scanner.test.ts` 三份套件 + scheduler drain 用例；既有依赖
-  「改 poll 返回值即生效」的三处用例改为显式 `save`（副本契约的推论）。
-### 修复：能力排行嵌套能力重复计数（E1）+ 文档 drift 收口（2026-10-13 ⑬）
-
-- **病灶**：`@migor/trace-view` 的 `summarizeTrace` 对每个 capability span 累加 usage，
-  而框架侧 capability.usage 是其**子孙 llm.turn 的聚合** ⇒ `@SubAgent` 套 `@Skill` 时
-  同一批 token 在外层与内层行**各计一次**，tokens / costUsd 列不可加总（与
-  `core/trace.ts`「capability 聚合不进 totalUsage」的纪律冲突）。CLI `agentia report`、
-  `agentia dev` 面板、官网 playground 三处共用同一份实现，同漏。
-- **修法**：能力排行的 usage **只认顶层 capability**（没有 capability 祖先的）；内层行仍计
-  calls / errors / 耗时（那是它自己这次调用的真账），tokens / cost 显示 `-` ⇒ 各行可加总。
-  引擎与 tracer 行为不动。依据见 `docs/spec.md` §10 2026-10-13 ref-ranking-top-capability。
-- **同批修复**：`examples/deploy` 补上脚手架模板同款的 PORT 校验（`PORT=''` 空串曾被
-  `Number('')` 静默变成 0 = 随机端口）；usage-guide 的「CLI 三件套」统一为四件套口径
-  （补 `export`），能力排行补「嵌套只认顶层」口径说明。
-- **同批守护**：doctor 的 `ENTRY_CANDIDATES`（CLI 侧双写）与框架 `discover.ts` 加源码级
-  逐字对拍；AGENTS.md 十条 drift 对账修正（数字改为指向真源）；trace-view 结构棘轮
-  summary.js 130 → 153。
-- **验证**：嵌套夹具 + 变异验证（去掉顶层判定 ⇒ 新用例红）；`verify-all.sh` 8/8。
-
-### 修复：`buildRunReport` 的嵌套能力重复计数（2026-10-13 ⑭）
-
-- **病灶**：⑬ 修的是 trace-view 展示层；框架公共 API `buildRunReport`
-  （`src/integrations/report.ts`）有同款嵌套累加 —— `@SubAgent` 套 `@Skill` 时同一批
-  token 在外层与内层行各计一次，能力排行的 tokens/costUsd 不可加总。消费方
-  `examples/observability-mcp` 的 `report_trace` 工具同漏。
-- **修法**：与 ⑬ 完全同款 —— 沿 `parentSpanId` 上爬判 capability 祖先（带防环），
-  嵌套行的 usage 不累加（`tokens`/`tokensTotal`/`costUsd` 为 `null`），calls/errors/耗时
-  照计 ⇒ 各行可加总。依据见 `docs/spec.md` §10 2026-10-13 ref-build-report-dedupe。
-- **验证**：`tests/integrations/report.test.ts` 新增嵌套夹具（去掉顶层判定即红）。
-
-### 工程：引用完整性轮 —— 22 个圈号归位 + 体量闸头注表自审 + 圈号引用守卫（2026-10-14）
-
-- **病灶①（引用层）**：全仓指回 `docs/spec.md` §10 的 `（日期 圈号）` 写法**没有任何守卫**。
-  实测三类真实形态共 **22 行 / 23 处引用**：**(a) 重排后未同步（14 行 / 15 处）** —— 批次二自己的
-  分支已把四件事编成 ⑨⑩⑪⑫，**同一分支**的 `tests/**` 与 `AGENTS.md` 仍写 ①②③④（偏差恒为
-  +8，**落地当天就自相矛盾**，与合并无关）；另一轮同理，`spec.md` 内一处 ① 应作 ⑧。
-  **(b) 幽灵锚点（7 处）** —— `src/` 的注释与 `export` 的移植副本引该日 ⑧ 之后的号，而该日
-  只有 ①–⑧（`git log -S` 限 `docs/spec.md` 查过：从来没有过）；另一处在本文件里 ——
-  有个已发布的版本节标题引了该日的 ⑲，而 ⑲ 在 §10 **从未存在过**（还做过正对照：`-S` 搜
-  同一日的 ⑳ 能命中发版提交，搜 ⑲ 为空）。
-  **(c) 给字母编号的日子硬加圈号（1 处）** —— `spec.md` 内一处引该日条目号时写成了圈号形式，
-  而**2026-09-11 的 §10 条目用 R1–R6**（不是圈号）；**同一个提交**（#40）里另一处已经写着
-  「见 §10 2026-09-11 R1 条」⇒ 两处自相矛盾，从写下那天起就不成立。
-- **病灶②（读数层）**：`source-size.test.ts` 头注表写 `async.ts` **627** 代码行，实测 **680**；
-  而 `AGENTS.md` 的导览图明确写着「当前真值以这张表为准、别在这里数」。根因**不是**「抄了旧纸」：
-  改这张表的那个 PR 落地时，**它自己分支上的 `async.ts` 已经是 680**（另一批先合）——
-  **答案就在磁盘上**。这是「假账」的典型形状：语义上没撒谎，数字没现算。
-- **修法**：① 22 行圈号按**主题**认锚点归位（不按位置猜：幽灵号分别落到当日的反向桥条目、
-  导出条目；字母编号那处改写成 `R1`；CHANGELOG 那处**删掉幽灵括号**）；② 头注表按实测重算
-  （680 / 524 / 493），「留多少余量」不再在正文另记一份数；
-  `AGENTS.md` 那行**去掉读数、只留指针**（它烂过两次：行数差一、代码行被同日抽件改掉）。
-  ⚠️ 本轮**零语义改动**（全部落在注释 / 文档 / 测试），故不写 §10。
-- **新守卫（两条，都做过反向验证）**：
-  - **头注表自审**（`tests/architecture/source-size.test.ts`）：实测与表里的数逐行对拍、口径复用
-    同一个 `codeLineCount`。变异：表里 680→679 ⇒ **恰好那条红**（体量闸本体仍绿 ⇒ 两条断言
-    **独立**）；表行去掉反引号 ⇒ 真空护栏红（`只从表里解析到 2 行`）。
-  - **圈号引用**（`tests/docs/circle-refs.test.ts`，新）：射程内「日期在 §10 **有条目** ⇒ 圈号必须
-    存在」。「条目」看**行首形态**（`### 日期` / `**日期` / `- 日期：`）、**不看有没有编号** ——
-    取「有条目」而非「有圈号锚点」是有意的：后者会把「日期有条目、但条目用字母编号」那一类
-    （即上面 (c)）整片漏出射程。引用按「日期 + **紧跟的一整串**圈号」吃（`（日期 ②③）` 指两条
-    决策，只认第一个会让后面那些**变裸的**；实测多校验 14 处、新增违规 0）。变异 5 轮：源码注释
-    改回幽灵号 ⇒ 恰好报出该行（`该日共 8 个锚点`）；把锚点正则打瞎 ⇒ 真空护栏红（`只解析出
-    6 个锚点`）；`spec.md` 那处改回圈号 ⇒ **恰好只报 `docs/spec.md:1236` 一行**；把「条目」判据的
-    列表项分支打瞎 ⇒ 真空护栏红（`只解析出 1 个「有条目但无圈号锚点」的日期`）；把 `resume-scanner`
-    那串的**第二个**号改成不存在的（`⑩⑱`）⇒ 恰好报出 `resume-scanner.test.ts:9` 那处的 `⑱`
-    （只认第一个的版本对它是瞎的）。⚠️ 它只判「**号在不在**」、判不了「**号指得对不对**」
-    —— 指向错主题但号存在的（如把 ⑩⑪ 写成 ②③，而 ②③ 也是该日的号）机器判不了 ⇒ **本仓
-    最大的一类错引（14 行）从来不是本守卫的功劳**，是人逐条读出来的。CHANGELOG 只查带 `§10`
-    标记的引用：其裸标签**两节两种惯例**（`[0.10.0]` 照抄 §10 的号、`[0.10.2]` 用本节自己的
-    条目序号），全查会在后者误报。已登记 `docs/guards.md` §1.4。
-- **顺带记录**：§10 同日编号有 9 处不连续 —— 3 处是「同日首条不编号」的风格、
-  4 处是 09-18 的 ③–⑥ 跳号，另有 09-14 缺 ①、09-29 缺 ⑲（成因未定）。其中 **09-29 缺 ⑲ 只被
-  CHANGELOG 引过一次**（PR #203 把「推广稿重写成定稿」那条按 §10 圈号写成了 ⑲，而 §10 从未
-  为它立条目）⇒ 本轮**删掉那个幽灵括号**（该条日期由所属版本节标题 `[0.10.0] - 2026-09-29`
-  给出，不丢信息）。**不做「同日编号必须连续」这条更硬的闸**：它要求回头给这些段补号，
-  而补号本身会撞死引用（本轮修的正是这类撞伤）——收益抵不过风险，登记为已知边界。
-- **验证**：`verify-all.sh` 8/8；两条新守卫共 7 轮变异逐条咬中后 `sha256` 逐字节还原。
-
-### 工程：门禁加固轮 —— 文档预算闸 + 副本闸 + verify-all 分片 + pre-push 钩子（2026-10-14）
-
-- **出发点**是一个方法论问题：多模型参与后守卫的**数量**在涨，但守卫的**有效性**没涨。归纳出三个
-  病根：**① 守卫声称的「理由」没人守** —— 活证据是 `circle-refs.test.ts` 的「档 B」原写着「CHANGELOG
-  的圈号是它自己的条目序号」，实测是错的（`[0.10.0]` 那一节的 15 条与 §10 逐条对得上）；**写错的
-  理由，守卫照样绿**。**② 同一事实多处副本**（本轮三个实例：`source-size.test.ts` 头注表读数 /
-  `CHANGELOG` 两节圈号惯例 / `spec.md` 里同一天两种编号写法），此前**零守卫**。**③ 编号是「位置号」，
-  位置会变** —— 上一轮修的 14 行错引**全部**由「按天编号 + 合并重排」产生（偏差恒为 +8），**落地
-  当天即自相矛盾**。下面 ①–⑤ 对治前两条，⑥ 是 ③ 的根因消除。
-- **① 常驻文档预算闸**（`tests/docs/doc-budget.test.ts`，新）—— 对标业界做法里的 `verify-doc-budgets`。
-  口径是**码点**而不是字节、也不是行：中文一字三字节 ⇒ 按字节设闸读数没有可比性；而按**行**设闸对
-  `docs/guards.md` 完全无效（504 行里躺着 125KB，平均 250 字符/行、最长一行 3423）。两个维度：
-  `AGENTS.md` / `CONTRIBUTING.md` **整份**设上限（它们是散文、必须从头读到尾 ⇒ 总长就是读取成本），
-  `guards.md` 这类**注册表的单行**设上限（行数随守卫数增长是**设计**，只有单条长度才是病灶）。
-  头注明写**三类刻意不设上限**：`spec.md`（决策日志，只增不改）/ `usage-guide.md`（完备性已由
-  `boundary-table.test.ts` 守）/ `docs/plans`·`docs/reviews`（带日期的快照）—— 三者共有的性质是
-  「它们的长度不是读取成本，而是完备性」。超了有两条路且**必须显式**：精简（首选）或提上限（改的
-  就是本文件里那个数字 ⇒ review 时一定看得见）。
-- **②+③ 副本闸**（`tests/architecture/duplicated-blocks.test.ts`，新）—— 滚窗找**生产源码**里的
-  成段逐字重复。归一化丢空行与整行注释、**折缩进**（跨文件副本常因所在层级不同整块差一级，不折就
-  对「抄了一个方法到另一个类里」完全瞎）。`WINDOW = 12` 是**量出来的**不是拍的：同一量具在
-  N = 8 / 12 / 16 / 20 各跑一遍 —— N=8 得 7 对（多出 `skill.ts ↔ subagent.ts`、`mcp-http.ts ↔
-  mcp-stdio.ts` 这类**结构性同形**）、**N=12 得 5 对**（全是**真会一起改**的那种：三份移植副本 +
-  两份共享样板）、N=16 得 4、N=20 得 3（`store.ts ↔ fsStore.ts` 那份 12 行的同源实现会漏出去）。
-  `KNOWN` 表 5 条各带 `why`（≥ 30 字）+ 可选的 `syncedBy × symbol` **联合核对** —— 点**符号名**
-  而不是文件名（本仓移植副本的守卫文件点的是 `exportRun` / `diffTraces` 这类导出名；第一版按文件名
-  判，两条都误红）。三条护栏防「闸变哑」（文件数下限 / 已知的 diff 移植副本必须在探测结果里 /
-  重复对数下限），外加一条**幽灵豁免**（登记了但实际已不重复 ⇒ 红）与「未登记重复 ⇒ 红」互为对侧。
-- **④ verify-all 分片**（`scripts/verify-all.sh`）—— 加 `shard="${1:-all}"` + 新增 `step_names`
-  数组与 `steps` 一一对应（条数不等即 exit 2），**按名字选步、不按下标**（下标会在插入/重排时
-  **静默错位**，而分片照样打印「全绿」）。`rapid` 片 16–20 秒（全链约 18 分钟，卡在 `npm test`）。
-  ⚠️ **`steps=(` 数组形状逐字未动** —— 它既是 `verify-all-wiring.test.ts` 的解析锚点，也是 CI job 名
-  （分支保护的必需状态检查）里那 8 步的来源。两条自证：未知分片 exit 2；**选到 0 步也 exit 2**
-  （「它会跑完什么都不做然后报绿」，正是 pre-push 钩子最坏的失效形态）。分片**不打印「N/N 全绿」**
-  那个形状（本仓多处文档抄写的就是它），改打「分片 rapid：3/8 步全绿（其余 5 步未跑）」。
-- **⑤ pre-push 钩子**（`.githooks/pre-push`，新，约 20 秒）—— 调 `rapid` 片；`SKIP_VERIFY=1` 逃生门；
-  `node_modules` 缺失时**响亮警告后放行**（不静默 skip）。已在本仓用 `git config core.hooksPath
-  .githooks` 启用，`CONTRIBUTING.md` 写了怎么开（git **不会**自动启用仓库里的钩子，不写出来别人
-  克隆下来永远不会跑它）。
-- **⑥ 编号脱位设计稿**（`docs/plans/2026-10-14-ref-slug-migration.md`，新，**P1 未开工**）——
-  `（日期 圈号）` → `（日期 + slug）`：圈号是**位置号**，重排即腐烂；slug 由标题派生、可校验。
-  射程实测 **119 个锚点 / 508 处引用 / 500+ 行跨约 40 文件**，分 P1（加名）/ P2（换引用）/ P3（收口）
-  三步走。⚠️ 设计稿里**刻意用占位符** —— 论证「位置号会腐烂」的文档，自己不该先写一个位置号。
-- **三处登记同步**：`docs/guards.md` §1.1 加副本闸行、§1.4 加文档预算闸行、§2 待守加一行
-  （`cli/harvest.ts ↔ cli/export.ts` 的样板重复**尚无同步机制** —— 免得「登记过」被读成「已经安全」）。
-- **验证**：`verify-all.sh` 8/8；四个守卫 `doc-budget` 3/3 · `guards-registry` 3/3 ·
-  `duplicated-blocks` 5/5 · `verify-all-wiring` 15/15，`biome` 全仓 514 文件 0 error；
-  **15 项变异逐条咬中**（每个新断言各一：必读集超预算 / 注册表单行超限 / 注册表变空 / 删登记项 /
-  加幽灵项 / `symbol` 写错一个字母 / `WINDOW` 放宽到 8 / 射程清空 / 两处清单条数不等 / 分片名写错 /
-  文档删掉「怎么开钩子」那条 / 钩子去掉可执行位 / 未知分片 / 选到 0 步 / `steps` 与 `step_names`
-  条数不等），恢复后 `sha256` 逐字节一致、钩子权限回到 755。
-- ⚠️ **如实标注射程**：副本闸只判**逐字**重复，判不了**语义副本**（本仓三次实例那种「同一事实两种
-  写法」一行都不重复 ⇒ 它挡不住）；分片**不是门禁**（`rapid` 全绿 ≠ 可以推 PR，它只覆盖静态三步）。
-
-### 工程：决策锚点加 slug（P1 加名）—— 把「位置号」换成稳定地址（2026-10-14）
-
-- **接上一条的 ⑥**：`（日期 + 圈号）` → `（日期 + slug）` 的迁移，**P1（加名）已落地**。设计稿里
-  那 4 个开放问题在它的 §7.1 逐条定稿，锚点形态定在 §7.2。
-- **改了什么**：§10 的 **120 行**带圈号锚点行，各在「日期 + 圈号」之后插一个 `ref-` 前缀的 slug
-  （形态 `### <日期> <圈号> ref-<名>：<标题>`）；**引用一处未动**（P1 的铁律）。加上本条目自己在 §10
-  的那一行也带 slug ⇒ 落地后共 **121 行**有 slug。§10 章节头加了一段
-  读者指引，它自带全仓**第一条**真 slug 引用。`docs/spec.md` §10 另加本决策条目 —— 引用形态是对外
-  约定的一部分（`AGENTS.md` 与 PR 模板里都出现过），按 `CONTRIBUTING.md` 的判据这是**语义变更** ⇒ 要写。
-- **守卫**（`tests/docs/circle-refs.test.ts`）**同时放宽与收紧**。放宽：引用键接受「一串圈号」或
-  「一个 slug」。收紧四条：**有圈号必有 slug**（挡「只加 slug、圈号被误删」的半迁移）、**slug 全局
-  唯一**、**slug 锚点数下界**（119 —— 是**量级**护栏、**不是**逐条计数；单条丢失改由另两条路咬，
-  见守卫注释）、**射程内 slug 引用 ≥ 1**（后者是「新形态真的通了」的活证据 —— 掉了就说明新支路成了
-  死代码）。**退出条件（P3 删掉圈号那一支）写在代码里**，不靠谁记得。
-- **实测**：带圈号的锚点**定义行 121 行**、圈号**唯一键 120** —— 差的那一个正是 `2026-09-14 ②` 的
-  **同日重号**（slug 能区分它、圈号不能，这本身就是位置号失效的一个具体证据；该重号在射程内的引用
-  数 = **0** ⇒ 不产生 P2 换引用的歧义）。§10 另有 **4 条无编号锚点**与 **45 条** `- 日期：…` 条目行
-  **不在 P1 射程**（无圈号 ⇒ 无锚点可引 ⇒ 不给它起名）。
-- **验证**：`circle-refs` 2/2（新增一条锚点侧用例）；**6 项变异逐条咬中** —— 改某条锚点的 slug 名 ⇒
-  **恰好**引用它的那两行红；造重名 slug ⇒ 唯一性红；打瞎 `SLUG_ANCHOR` 正则 ⇒ 真空护栏红（**不是**
-  「全绿」）；把 3 处 slug 引用全打瞎 ⇒ 「新形态通了」红；删某条锚点的 slug ⇒ 半迁移红；删某条锚点
-  的圈号 ⇒ 那一行滑出锚点射程、自己成了一条查不到的 slug 引用 ⇒ `bad` 红。恢复后 `sha256` 逐字节一致。
-- ⚠️ **自审逮到一处「守卫理由腐烂」**（正是本轮要防的病根 1）：下界一开始写成「取紧值 120 ⇒ 能挡住
-  『有人删掉某条锚点的圈号』」——**这句话在本轮内就过期了**：我随后往 §10 加了一条决策（它自己也带
-  圈号 + slug），实测变 121，下界于是有了 1 的余量，那句理由不再成立。⇒ 已改成**量级**下界（119）
-  并明写「它**挡不住**单条丢失，那由 `bad` / `anchorNoSlug` 咬」。教训：**紧值型断言会把「理由」一起
-  钉死**，加一条数据就失效，而失效时**没有任何东西会响**。
-- ⚠️ **落地过程本身踩了三次同一个坑**（如实记）：守卫头注 → 设计稿 §3.2 的示例 → §10 条目的示例，
-  都因为**把示例写成「具体日期 + 具体 slug」**而变成一条指向不存在锚点的**真引用**，被守卫当场咬红。
-  ⇒ 规矩：这类**形态示例一律用占位符**（`<日期>` / `ref-<名>`），本守卫**自己也在射程内**。
-- ⚠️ **射程边界**：slug 只解决「地址会漂」，**不解决「地址指错了」** —— 键存在但指错主题的仍然只能
-  人读（守卫挡的是「查不到」，不挡「查错了」）。**P2（换引用）与 P3（守卫只认 slug）均未开工**；
-  P2 的射程**现算**（`circle-refs` 守卫口径、逐圈号、**只算 git 跟踪文件**）：
-  **483 处引用 / 473 行 / 100 个文件**（P1 落地前是 474 / 464 / 99）。⚠️ 设计稿 §4 原记的
-  「508 处 / 约 40 个文件」**用任何探针都复现不出来**（守卫口径在写稿那棵树上是 474 / 464 / 99，
-  其标注出处的探针是 412）⇒ 已在设计稿标为「不可复现」并以守卫口径为准。
-  ⚠️ **同一份读数必须连口径一起写**：射程里混着 `packages/cli/CHANGELOG.md`（48 处）等
-  **gitignored 生成物**，它们只在**本机**存在（CI / 新克隆 / `git worktree` 里都没有）⇒ 拿「本机读数」
-  与「对照树读数」相减会凭空多出 48 处，**看起来正好像引用被改了**（本轮据此差点把对的判成错的）。
-
-### 修复：护栏行在真实 HITL 主流程完全不产出（trace-view summary 的扫面不限 span kind）（2026-10-12 ⑨）
-
-- **病灶**：真实审批流是「挂起 → 人批 → 带 approvals 恢复」；恢复段的工具执行走续跑入口
-  （`loop.ts` 把 **run 根 id 当 turnId**），`approval.decided` 记在 **run 根** span 上。
-  而 summary 聚它时只扫 `kind === 'llm.turn'` ⇒ 所有真实审批用法下 `guardrail:*` 行
-  **一行都没有**，只有「首段同步带 approvals」（基本只有测试这么干）才出行。
-  CLI `agentia report` 与 `agentia dev` 面板与 summary 同源，同样漏。
-- **修法**：`approval.decided` 的聚合**不限 span kind**（`tool.output` 仍限 `llm.turn`）。
-  落点因段而异是记账事实不是缺陷（与 `tool.input` / `tool.output` 同一纪律），事件体自带
-  `tool`；**一次决定只记一笔**（记账点只有 `executeOneTool` 一处，跨段是另一条 trace），
-  扫面放大不会双计。引擎行为不动。
-- **顺带订正文档口径**：`usage-guide.md` 的 `agentia.guardrail.*` 属性表原写「发起它的
-  `llm.turn` span」⇒ 与续跑再挂起场景矛盾，改为「与 `approval.requested` 同 span：首段
-  `llm.turn`、续跑段 run 根」。依据与「为什么不该限 kind」见 `docs/spec.md` §10 ⑨。
-- **验证**：`packages/trace-view/test/summary.test.js` 保留首段形状用例、补恢复段形状
-  （decided 在 run 根 ⇒ 行在场且数值对）与「两处都聚」；**变异验证**（恢复 kind 限制
-  ⇒ 两条新用例红；复原绿）。summary.js 棘轮 126 → 130（净 +4 全是注释，代码行零增长）。
-### observability-mcp 示例复审收口：分组键对齐 CLI、root=`/` 特判、sessions 截断（2026-10-12 ⑩）
-
-- **是什么**：`examples/observability-mcp/` 的三处低危修复（框架与 CLI **零改动**）：
-  ① 会话归组从两级补成**三级回退**（run 根 `session.id` → 外层记录的 `TaskRecord.taskId` →
-  `(无会话)`），与 CLI `agentia report` 逐字同口径 —— 此前 `readTraceFile` 丢掉外层 wrapper，
-  FileTaskStore / SqliteTaskStore 导出的记录在示例侧全坍进 `(无会话)`；
-  ② 只读边界的 root=`/` 特判（`root + sep` 变成 `//` 曾把根下**所有**文件误拒）；
-  ③ `report_trace` 的 `sessions` 加截断天花板（`MAX_SESSION_ROWS = 40`，与 diff 侧同档），
-  新增 `sessionGroups` / `sessionsTruncated` 两个字段如实报出截断（**加法**，兼容）。
-- **守护形态**：这份移植（本仓第四份）配的是**源码级双钉**
-  （`tests/observability-mcp-parity.test.ts`：三段 canonical 行在两份源码里逐字都在场），
-  而不是前三份的运行时逐字对拍 —— 示例必须可整目录拷走单用、且示例 dist 在 `npm test`
-  时未构建，两个对拍落点都不成立（理由见 `docs/spec.md` §10 2026-10-12 ref-g8-example-closeout）。
-- **验证**：示例 `npm run verify` 17 → 26 条 check（新增 §8 三级回退 / §9 root=`/` /
-  §10 截断）；**3 条变异各咬住预期断言**（去 taskId 层 / 去特判 / 去截断，各红）。
-  README 边界节补两条如实标注（TOCTOU 时间窗；入站 `traceparent` 缝合是引擎层白得的、
-  本示例未做端到端断言）。
-
-### 观测面给 agent 的入口：两个 MCP 只读工具（G8）（2026-10-12 ⑦）
-
-- **是什么**：新示例 `examples/observability-mcp/`（本地小包，`private`）用现成的反向桥
-  `createMcpServer` 把调优报告包成两个只读工具：`report_trace`（能力排行 + 会话维度的成功率
-  与「每成功任务成本」）与 `diff_traces`（两条 run 的结构化差异）。任何 MCP 宿主（编辑器 /
-  桌面客户端 / 另一个 agent）接上来，agent 就能自己查「我上一轮慢在哪 / 贵在哪」。
-  **核心零改动**：两个工具是 `buildRunReport` / `mergeRunReports` / `diffTraces` 的薄壳。
-- ⚠️ **这是分发面，不是功能面**（本仓瓶颈在产品面 / 分发面）：验收标准是「外部客户端接得上」，
-  不是「新增了多少能力」。`npm run verify` 起真 HTTP server + 出厂连接器 + `mcpTools`
-  连回去跑通 17 条 check（report / diff / 缺侧 / 截断 / 越界拒绝）。
-- **三条口径**：① 只读 **trace 根**（`AGENTIA_TRACE_ROOT`，缺省 cwd）**内**的文件 —— 工具参数
-  由模型给 ⇒ 不设边界等于对外发一个任意文件读原语，判据是 realpath 比前缀（不是 `startsWith`，
-  后者挡不住 `../` 与同前缀兄弟目录）；② 进模型上下文的东西有天花板（差异 span 最多 40 条，
-  截掉多少如实报出）；③ 读不出就说读不出（一条 trace 都认不出 ⇒ 报错而不是空表；成本给
-  `null` 而不是 0）。
-- **门禁**：示例进了 `tsconfig.tests.json`（按仓库根那套严格开关类型检查，含
-  `exactOptionalPropertyTypes`）与 `e2e:examples` 第 10 轮；`examples/README.md` 表行由
-  `examples-table` 守卫双向核。
-
-### 交接与护栏：四个 `agentia.*` 属性 + 护栏进能力排行（G7）（2026-10-12 ⑥）
-
-- **是什么**：交接（agent → agent）在这个框架里就是一条 capability span 本身，护栏（审批）则
-  **只是事件**（`approval.requested` / `approval.decided`）—— 两者对外部 OTLP 消费者都要解析
-  trace 才看得见。现在各补一个 additive 属性当入口（**不造 span kind**，核心零改动）：
-  `agentia.handoff.from` / `.to` 写在被调 `@SubAgent` 的 capability span 上；
-  `agentia.guardrail.name`（待决的**首个**工具名）/ `.triggered`（`true`）写在发起审批的
-  `llm.turn` span 上。名字来源：run 根用 `runName`（与 OTLP 的 `gen_ai.agent.name` 同源）、
-  子 agent 用它注册的 `name`；嵌套交接**逐层换名**。
-- **视图**：`@migor/trace-view` 的 summary（CLI `agentia report` 与 `agentia dev` 面板同源）把
-  `approval.decided` 聚成 `guardrail:<工具名>` 一行 —— `calls` = 走到决定的次数、`err` =
-  **被拒**次数、`total` / `max` = 等审批时长。此前「哪个工具卡在审批上、被拒了几次」在排行上
-  **完全看不见**。
-- ⚠️ **只发一半是口径不是遗漏**：`guardrail.*` **只在触发时发**，不设 `false`（与
-  `gen_ai.conversation.compacted` 同款）；`handoff.*` 拿不到调用方身份时（宿主手搓 recorder +
-  ctx 直调 `subagentToTool`）**两个键都不发**。⚠️ 护栏行**只聚 `decided`**：只有
-  `approval.requested` 而始终没恢复的挂起不产出行；缺 `waitedMs` 记 0 不编造。
-- ⭐ **一处实现上的补空（设计稿没说清）**：「调用方 agent 名」在调用点**拿不到** ——
-  `RecorderBackend` **只写不读**（查不了 span 树）、`ctx.parentSpanId` 反查不出名字。唯一来源是
-  「当前调用期」作用域 ⇒ `SpanScope` 加可选 `agentName`，并把 `withCurrentSpan` 从**整条替换**
-  改成**合并**（夹在中间的 `llm.turn` 谁都不知道身份，替换会把名字抹掉）。收窄语义逐字不变。
-- **影响面**：`src/engine/{span-scope,loop,turn}.ts`、`src/toolkit/subagent.ts`、
-  `packages/trace-view/src/summary.js`（棘轮 106 → 126）。公共导出面 `src/index.ts` **零变化**。
-  约定与读法写进 `docs/usage-guide.md` §6.4「交接与护栏」。
-- **验证**：`tests/toolkit/subagent.test.ts`（嵌套逐层换名 / 无作用域时不发）、
-  `tests/engine/approval.test.ts`（在场 + 不在场两态）、`packages/trace-view/test/summary.test.js`
-  （护栏行三态）。**变异 4 条：3 条当场咬住，第 4 条先没咬住 → 抓出的是我自己的自证样本**
-  （`approved` 一真一假时，把判据取反仍是 1）⇒ 补样本后才咬住，已写进用例注释。
-
-### CLI `agentia report` 加会话 / 任务维度（G6）（2026-10-12 ⑤）
-
-- **是什么**：`agentia report` 此前只有**能力维度**（`capabilities[]`）+ run 级**计数**
-  （`runs` / `failed`），而 `failed` 是**次数不是分母** ⇒ 「这一段跑得好不好」的第一问
-  （成功率）在输出上**根本算不出来**。现在另打一张按**分组键**归组的表，`--json` 里是
-  `sessions: SessionRow[]`（**加法**，兼容）。
-- **分组键三选一、不混排**（一条 run 只进一个组）：run 根 span 的 `session.id`
-  （宿主传 `session: { store, id }` 才写）→ 记录里的 `TaskRecord.taskId` → `(无会话)` 桶。
-  ⚠️ 会话一般聚多条 run，而 `taskId` **逐任务唯一** ⇒ 后一路通常是「一组一条」，它是给单任务
-  批跑逐条标成本，**不是**多轮聚合。
-- **口径**：`runs` / `ok` / `fail` 三个数**一起出列**（只报百分比在小组成上是噪声）；
-  ⚠️ **成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
-  成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和、**不含** capability 聚合
-  ⇒ `@SubAgent` 里套 `@Skill` 不会把同一批 token 数两遍）。⚠️ 设计稿原写「该组各能力行
-  `costUsd` 相加」，落地时**改掉**了 —— 理由见 `docs/spec.md` §10 2026-10-12 ref-report-session-dimension。
-- **影响面**：`packages/cli/src/report.ts`（194 → 339 行，棘轮账 LINE/TOTAL 同步）；
-  `docs/usage-guide.md` §6.4 的 `--json` 形状列表加 `sessions`。**框架侧 `src/` 零改动。**
-- **验证**：`report.test.mjs` +6 条（归组 / `(无会话)` 桶 / `taskId` 回退键 / 降序 /
-  **「成功数为 0 ⇒ `-`」的反向断言** / 成本读不出 ⇒ `-`）；**变异 4 条各咬住预期的那一条**
-  （`> 0` → `>= 0` / 丢掉 `taskId` 回退 / 把「读不出」写成 `0` / `session.id` 读成 `sessionId`）。
-
-### OTLP 导出：三个缓存/压缩 semconv 键 + 可选的 execute_tool span 投影（2026-10-12 ②）
-
-- **G3（additive、双发不替换）**：`llm.turn` 缓存读数 > 0 时另发
-  `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.cache_write.input_tokens`
-  （0 = 没走缓存 ⇒ 不留键）；父 span 上有早于本回合开始的 `context.budget` 事件 ⇒ 发
-  `gen_ai.conversation.compacted: true`（上游口径：只在能可靠判定时置真，不设 false）。
-  键名逐字核自 `semantic-conventions-genai @ 6fd0d763` 的 `client-inference.md`。
-- **G2（`OtlpExporterOptions.projectToolSpans`，默认关）**：开启后把 span 上按 `tool_use_id`
-  配对的 `tool.input` / `tool.output` 事件投影成 `execute_tool <工具名>` child span
-  （`gen_ai.operation.name=execute_tool` + `gen_ai.tool.name`；start/end 取两事件的真实记账时刻；
-  `ok:false` → status Error + `error.type`）。**导出侧投影**：engine 记账点不动、本地 trace
-  形状不变、原事件保留在父 span 上；关闭时导出产物与既往一致。孤儿 input
-  （`traceLimits.maxEvents` 截断可造出）→ 不写 `endTimeUnixNano` / status +
-  `agentia.projection.orphan: true`，不编零时长。
-- 顺带：`context.budget` 事件名上移为 `core/trace.ts` 的 `CONTEXT_BUDGET_EVENT` 单源常量
-  （第一次有了跨层消费方）。
-
-### run 级 `sessionId` 的静默失效改成出声（2026-10-12 ③）
-
-- **是什么**：程序内 `app.run(messages, { sessionId })`（不带 `session`）此前**静默丢弃** ——
-  run 根没有 `session.id`（OTLP 的 `gen_ai.conversation.id` 也就不会有）、会话历史接不上、
-  零信号（可观测深钻 §2 行 7）。现在 `AgentApp.run` 入口 `console.warn` 一次，文案指出正确写法：
-  要会话维度 + 历史用 `session: { store, id }`；只要 trace 标记不要历史，直连
-  `executeRun` / `runAgent` 的引擎级 `sessionId`（那一层本就生效）。
-- **内部链路不误伤**：`AsyncRunner` 的续跑段刻意不注入 `session`，`buildRunCallOptions`
-  不再把任务里的 `sessionId` 透传进 `app.run`（它在本层已被消费 —— 换成 `session` 注入，
-  或没配 `sessionStore` 时在 submit 已响亮报错）。
-- **无破坏性变更**：行为面只多一条告警；`sessionId` 的类型与异步宿主语义逐字未变。
-  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ref-session-id-warn。
-
-### MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键）（2026-10-12 ④）
-
-- **出站**：run 内经 MCP 桥调 `tools/call` 时，两个出厂连接器自动把当前 span 的 W3C
-  `traceparent` 放进 `params._meta`（SEP-414 定的载体：裸键、不加前缀、**不进 `arguments`**）——
-  认出它的 server（MCP Python SDK、agentia 反向桥等）就能把这次调用链回你的 trace。
-  不在 run 内（桥脱离引擎单用）则不带：不造空上下文。
-- **入站**：`createMcpServer` 认 `tools/call` 的 `params._meta.traceparent`，合法即记成该次
-  trace run 根的一条 `links`（与 HTTP `traceparent` 头同款缝合）；缺失 / 畸形静默当作
-  没有上游 —— 不报错、不影响调用成败。
-- **无破坏性变更**：`McpClientLike.callTool` 第三参新增可选 `traceparent` 字段（鸭子类型，
-  只实现两个参数的旧客户端照常兼容，只是链路断在它的传输上）；公共导出面零变化。
-  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ref-sep414-trace-context。
-
-### 可观测文档：四条「缝外配方」类缺口收口（2026-10-12）
-
-依据 `docs/reviews/2026-10-12/observability-deep-dive.md` 的 G9 / G10 / G4 / G5，**纯文档**，`src/` 一行未动：
-
-- `docs/observability.md` 新增四节：**§6 投递纪律**（sink 内攒批 + 定时 flush 的骨架、关停时
-  先 `handler.drain()` 再 `sink.drain()`、后端不可达就丢遥测不丢可用性；并明说**为什么不把
-  `flushSinks` 改成 fire-and-forget** —— sink 的语义是「有兜底、会投递」，改了等于删掉一条
-  已有承诺）；**§7 OTLP 只发 JSON ⇒ 直打 Phoenix 会 415**（已知边界 + collector 转码配方，
-  含最小可用配置；为什么不内建 protobuf 编码器）；**§8 步数与环**（纯 trace 函数配方：
-  数 `llm.turn` span、按回合归属成本、`tool_use_id` 配对、识别「同一工具同参数连调 N 次」）；
-  **§9 轨迹评测**（确定性检查优先 —— 签名相等 / 步数上限，`agentia diff` / `harvest` /
-  `defineEval` 拼合，LLM-judge 殿后）。
-- **顺带订正一处事实错误**：§2.6 原把 Arize Phoenix 列进「平台支持 OTLP ⇒ 用内置导出器即可」
-  —— Phoenix 只收 `application/x-protobuf`，内置导出器（只发 `application/json`）打不进去。
-- `docs/usage-guide.md` §7 已知边界表新增一行（OTLP trace 导出只发 JSON ⇒ 直打 Phoenix 会 415，
-  按 choice 登记）；`tests/docs/boundary-table.test.ts` 登记表同步（93 条：pin 57 / choice 11 /
-  gap 25）。
-
-### `agentia report` 按 `traceId` 去重：append-only 导出不再翻倍计数（2026-10-12 ⑧）
-
-- **修什么**：`FileTaskStore` 是 append-only（每次 save 追加一行），审批流任务的导出里同一棵
-  挂起段 trace 会出现多行（挂起 / approve / 接管各 save 一次），而 `report` 按行计 ⇒
-  runs / 成功数 / 成本全部翻倍（实测实际 2 段 0.02 的任务报出 runs=3、cost=0.03）。
-  现在按 **`traceId` 去重、只留最后一行**（append-only 里后面的是新状态）；能力表与 runs 总计
-  也走同一份去重后的输入（存量问题一并修）。去重键是 traceId 而不是 taskId：一个任务可跨多段
-  run，每段一棵新 trace —— 按 taskId 去重会把不同段错并成一条。
-- **无破坏性变更**：`ReportJson` 形状未动，只有计数口径修正（同 traceId 的重复行此前本就是
-  同一棵 trace 的重复书写）；无 traceId 的行（手写 trace）照原样全保留。
-- **文档同步**：usage-guide §6.4 的 FileTaskStore 段落点明去重口径；会话维度段落点名
-  「**挂起计入 ok**」（与引擎「挂起不是失败」同口径 ⇒ 全挂审批上会报成功率 100%，刻意取舍
-  但需写明）。决策依据见 `docs/spec.md` §10 2026-10-12 ref-report-dedupe-traceid。
-
-### 工程：决策引用换成 slug + 守卫收口（P2 / P3）（2026-10-14）
-
-- **接上一条的 ①**：`（日期 + 圈号）` → `（日期 + slug）` 的三步迁移**已走完**（设计稿
-  `docs/plans/2026-10-14-ref-slug-migration.md`）：上一轮 P1 给 §10 的每条锚点加了 slug（引用一处未动），
-  本轮 P2 把引用换成 slug、P3 把守卫收成只认 slug。
-- **P2 换引用**：射程 = 守卫射程 − 带日期的**快照**（`docs/plans/**` · `docs/reviews/**`，写于迁移之前
-  = 历史）− §10 **锚点定义行**（圈号在那里是显示编号）− **日期在 §10 无条目**的引用（那个号指别的文档
-  自己的编号）⇒ **302 处 / 84 个文件**，按文件分 5 批提交（便于 review 与单独 revert）。替换**按内容
-  不按行号**（§10 加了章节头，其后行号全漂过）。脚本带一条硬规则：**同日重号拒绝自动选**（源序先到
-  先得 = 脚本替引用挑一个含义，正是本设计要消灭的东西）⇒ 源头给一行显式覆盖表。
-- **守恒验证**：84 个文件**归一化后逐字节相同** ⇒ 除引用形态之外**一个字符都没动**；另有按
-  `(文件, 日期, 键串)` 的前后对拍（P1 的「引用一处未动」也这么验）。
-- **P3 收口**：守卫从「圈号**或** slug 都能解析」（P1 起的**有期限**放宽）收成**只认 slug**，并新增
-  判据「射程内（**除定义行、除快照、日期有条目**）的『日期 + 圈号』引用数 == 0」。**这不是新决定** ——
-  它是 P1 时就写在代码里的退出条件到期执行。三项排除写成**减法**（各自指向另一条已写明的规则），
-  而不是「给 `isDefLine` 加个开关」：读判据的人要能顺着三项去查。
-- **一处口径修正（如实记）**：`packages/cli/CHANGELOG.md` **移出射程** —— 它是构建产物、只在**本机
-  磁盘**存在（CI / 新克隆 / `git worktree` 里没有）。P3 首跑报「49 处残留」，其中 **46 处来自它**
-  ⇒ 校验它的后果就是**本机红、CI 绿**。去掉它不丢覆盖（根 `CHANGELOG.md` 那一档覆盖同一份内容）。
-- **另登记一条待守缺口（本轮量出、不在本轮做）**：**不带日期的引用**（`§10 ⑧` / `同日 ⑧` —— 日期写在
-  上一句里）**从来不在守卫射程**（它的形态要求日期**紧邻**键）。实测 **35 处**（探针
-  `.workbuddy/probes/2026-10-14-dateless-circ.mjs`，git 跟踪文件口径、可复跑）⇒ 已登记进
-  `docs/guards.md` §2 的「待守」表（含「为什么还没有守卫」与两种可能的守卫形状）。
-  「引用已全换成 slug」这句只对**带日期**的那一类成立 —— 这行缺口就是它的射程注脚。
-- **「怎么写引用」到 P3 才写**（设计稿 §7.1 第 4 问的定稿）：`AGENTS.md` 的「设计决策」与
-  `CONTRIBUTING.md` 的坑表各补一句。P1 期两种写法并存，那时教谁都是半对。
-- **验证**：`circle-refs` 3/3；**P3 变异 8/8 逐条咬中** —— 改锚点 slug 名 ⇒ **恰好**引它的那几行红；
-  造重名 slug ⇒ 唯一性红；把引用 / 锚点正则**分别**打瞎 ⇒ **真空护栏**红（**不是**「全绿」）；塞一处
-  「日期 + 圈号」⇒ 残留判据红；把引用的日期改错 ⇒ 「该 slug 属于」红；删 slug 留圈号 ⇒ 半迁移红；
-  **正对照**（M6）：「圈号是**可去掉**的显示编号」这条设计**真的生效** —— 删掉某条锚点的显示圈号后
-  锚点仍可引、守卫仍绿。每项都在输出里点到名，恢复后 `sha256` 逐字节一致。
-- **无使用者面变更**：本轮只动文档与一个守卫（`src/` 一个文件都没碰）⇒ 既有使用者不需要任何动作。
 
 ## [0.9.5] - 2026-09-29
 
@@ -3739,7 +3760,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/retrychx/agentia/releases/tag/v0.10.3
 [0.10.2]: https://github.com/retrychx/agentia/releases/tag/v0.10.2
 [0.10.1]: https://github.com/retrychx/agentia/releases/tag/v0.10.1
 [0.10.0]: https://github.com/retrychx/agentia/releases/tag/v0.10.0

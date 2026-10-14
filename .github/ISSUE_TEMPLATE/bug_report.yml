@@ -12,7 +12,7 @@ body:
     attributes:
       label: 版本
       description: '@migor/agentia 的版本'
-      placeholder: '0.10.2'
+      placeholder: '0.10.3'
     validations:
       required: true
 

@@ -11,10 +11,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@migor/agentia": "^0.10.2"
+    "@migor/agentia": "^0.10.3"
   },
   "devDependencies": {
-    "@migor/cli": "^0.10.2",
+    "@migor/cli": "^0.10.3",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2",
     "@types/node": "^22.0.0"
