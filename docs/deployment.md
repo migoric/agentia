@@ -89,7 +89,7 @@
 
 - 回退框架版本前：读**当前版本**的迁移小节（CHANGELOG）——迁移多为「新代码读旧数据」方向的；
   **反方向（旧代码读新数据）不保证**。
-- 落盘记录的旧形状由 `parseTaskRecord` **读时归一**（已知改名有垫片，如 2026-09-28 ① 的
+- 落盘记录的旧形状由 `parseTaskRecord` **读时归一**（已知改名有垫片，如 2026-09-28 ref-suspend-state-reason 的
   `awaiting_approval` → `suspended`），但这是**逐案维护**的清单，不是通用兼容承诺。
 - 回退演练：拿 store 导出（如 `FileTaskStore` 的 JSONL）在新版本上 `agentia report` 一遍，确认
   读得回、状态认得出。

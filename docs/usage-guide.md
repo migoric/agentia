@@ -589,7 +589,7 @@ MCP stdio 只用标准库（`spawn` + 全局 `fetch`）⇒ **内置不新增一�
 gRPC 必须引第三方客户端（`@grpc/grpc-js`）⇒ 落在「可选能力一律 duck-typed / peer」那一侧。
 「零运行时依赖」是公开承诺（`package.json` 三个依赖字段全空），所以它只能以**配方 + 示例**存在。
 真有第二个使用方要同一份逻辑时再考虑独立包，且粒度是**一个第三方客户端一个包** ——
-不是把所有集成塞进一个「服务包」（理由见 spec §10 2026-09-18 ⑪）。
+不是把所有集成塞进一个「服务包」（理由见 spec §10 2026-09-18 ref-host-integration-recipe）。
 
 **宿主必须自己接上的四处**（漏掉任何一条都**不会报错**，只会静默丢东西）：
 
@@ -1146,7 +1146,7 @@ const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.js
 - **`@Prompt` 资产版本**：`@Prompt({ version })` 声明后，装配期把菜单里全部带版本的 @Prompt 收集成 `{ 能力名: 版本 }` 表（与主菜单同一条收集路径，`toolSources` 收窄同样生效），每次 run 落 run 根 span 的 `prompts.versions` attribute（`name@ver` 逗号拼接、按名排序、空表不记）—— 质量回归能定位到具体资产版本。直连 `runAgent` 时用引擎级选项 `promptVersions` 显式给。
 - **会话标识**：`app.run(..., { session })` / `executeRun` 给了 `session` 时，session id 自动落 run 根 span 的 `session.id` attribute（OTLP 导出时映射 `gen_ai.conversation.id`）—— 多轮对话的 run 由此可按会话聚合，不用手填。直连 `runAgent` / `executeRun` 时用引擎级选项 `sessionId` 显式给。⚠️ **别把 `sessionId` 传给 `app.run`**：那个字段是异步宿主的可序列化会话引用（见 §4 选项表），`app.run` 不消费它 —— 直传会 `console.warn` 一次且不生效。
 - **菜单签名**：每次 run 落 run 根 span 的 `tools.names`（装配后菜单的名字、按名排序、超长截断带 `…(+N)`）与 `tools.menuHash`（12 位摘要，材料 = 排序后的「名字 + **输入 schema**」规范序列化）—— 与 `prompts.versions` 同动机：质量回归能回答「这两段 run 跑在同一个菜单上吗」。口径：与菜单顺序、schema 键序无关；**`description` 不参与**（润色文案不算菜单变化，代价是「只改描述」看不见 —— 有意）。给了 `tools` 就自动记，无需开关。
-- **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ⑧。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
+- **菜单漂移（续跑时菜单变了）**：挂起段之后**续跑**时，未决 tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架记**三处信号**：`menu.drift` 事件（含 `{ missing, tool_use_ids, menu_size }`；时间线与 `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、一条 `console.warn`。⚠️ **run 照常收尾**（不判失败）：那些 tool_use 会以 `unknown tool` 回给模型 —— 为什么不做严格模式见 spec §10 2026-09-27 ref-menu-drift-signals。注意这与「回合内模型编了个不存在的工具名」不同：那个是幻觉，走既有 `unknown_tool` 路径、**不**报漂移。
 
 #### 交接与护栏（`agentia.handoff.*` / `agentia.guardrail.*`）
 
