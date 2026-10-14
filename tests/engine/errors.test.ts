@@ -33,7 +33,7 @@ describe('classifyError（鸭子类型分类 → SpanError）', () => {
     // 此前 `name === 'TimeoutError'` 走 isConnectionError ⇒ 归成 connection：与「连不上」混在一起，
     // 看板 / trace-diff 分不出两者。⚠️ 那条行为**有**用例守着（本文件「无 status 的网络型错误」
     // 条目的最后一段断言 `TimeoutError → connection`）—— 本 PR 改坏了那条断言，属**有意行为变更**：
-    // 错的契约被钉进了期望，改契约就得连期望一起改（spec §10 2026-09-17 ②）。
+    // 错的契约被钉进了期望，改契约就得连期望一起改（spec §10 2026-09-17 ref-timeout-error-type）。
     const dom = new DOMException('Anthropic 请求超过 100ms', 'TimeoutError');
     assert.deepEqual(classifyError(dom), {
       type: 'timeout',

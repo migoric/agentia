@@ -12,7 +12,7 @@ import {
 } from '../../scripts/soak-error-posture.js';
 
 /**
- * soak 的**错误分类判据**（`scripts/soak-error-posture.ts`）—— 2026-09-29 ⑤。
+ * soak 的**错误分类判据**（`scripts/soak-error-posture.ts`）—— 2026-09-29 ref-soak-error-taxonomy。
  *
  * 为什么这些断言值得存在：这轮 2 小时的 soak **整轮红了**，红的却不是被测的代码 ——
  * 是判据本体内手写的一份三名字白名单（`api` / `server` / `rate_limit`）漏了框架自己的

@@ -58,13 +58,13 @@ describe('trace-view 结构守卫（W1 规模棘轮）', () => {
      * 缺 waitedMs 记 0 不编造、被拒算 errors 但不是系统错误）。
      * ⚠️ 这一笔的性质：新功能，但**改动面很小**（审批不建 span ⇒ 只能从事件聚，反而省了）。
      *
-     * 2026-10-12 ⑨（护栏行在真实 HITL 主流程零产出的**修复**）：126 → 130（+4）。
+     * 2026-10-12 ref-guardrail-hitl-scan（护栏行在真实 HITL 主流程零产出的**修复**）：126 → 130（+4）。
      * `approval.decided` 的扫面从「限 llm.turn」放宽为不限 kind —— 恢复段把它记在 run 根
      * （续跑入口把 run 根 id 当 turnId）。净 +4 全是**注释**（头注 +2、循环内判据注 +2）：
      * 代码行数**零增长**（`const isTurn` 换掉 `if (span.kind !== 'llm.turn') continue;`，
      * 工具分支的判据内移成 `!isTurn || e.name !== 'tool.output'`）。
      *
-     * 2026-10-13 ③（E1 嵌套 capability 重复计数的**修复**）：130 → 153（+23）。
+     * 2026-10-13 ref-reject-static-methods（E1 嵌套 capability 重复计数的**修复**）：130 → 153（+23）。
      * usage 只认顶层 capability（没有 capability 祖先的）：spanId 索引 + 上爬判定
      * `hasCapabilityAncestor`（约 12 行代码），其余是头注口径说明。棘轮上调是**显式**的
      * —— 判据本身需要一张 parent 表，没有更省的写法。

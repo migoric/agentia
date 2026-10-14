@@ -259,7 +259,7 @@ describe('G1 mergeRunReports', () => {
 
   it('按 traceId 去重、只留最后一份（append-only 导出里同一棵 trace 占多行）', () => {
     // FileTaskStore 是 append-only：挂起 save / approve 落库 / 接管再 save 写出同一棵 trace
-    // 多份 ⇒ 按行计会把 runs / 成本翻倍（CLI report 已于 2026-10-12 ⑧ 修，本用例钉框架侧同口径）
+    // 多份 ⇒ 按行计会把 runs / 成本翻倍（CLI report 已于 2026-10-12 ref-report-dedupe-traceid 修，本用例钉框架侧同口径）
     const mk = (turns: number) =>
       buildRunReport(
         traceWith(

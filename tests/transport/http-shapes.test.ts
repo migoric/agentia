@@ -158,7 +158,7 @@ describe('parseApproveBody —— POST /tasks/<id>/approve 的形状闸', () => 
   });
 });
 
-describe('parseEventBody —— POST /tasks/<id>/events 的形状闸（2026-09-28 ⑥，白名单）', () => {
+describe('parseEventBody —— POST /tasks/<id>/events 的形状闸（2026-09-28 ref-run-event-input，白名单）', () => {
   it('合法体原样解析；eventId 缺席时键**不在场**', () => {
     assert.deepEqual(parseEventBody({ type: 'batch.done', payload: '批次 42' }), {
       type: 'batch.done',

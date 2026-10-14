@@ -49,7 +49,7 @@ describe('SSE 帧名：文档 ⇐ 实现（单向，文档不许说谎）', () =
    * 不是 SSE 帧的名字（见文件头）：
    * - `trace.truncated` 是 run 根的 **trace 事件名**（`traceLimits.maxEvents` 超限时的簿记：
    *   起点标记 + 收尾摘要两笔；它以 `trace.event` 帧体的形式流经 SSE，但本身不是帧名）；
-   * - `task.event` 是**续跑段 run 根的 trace 事件名**（2026-09-28 ⑥ 事件投入口的留痕），
+   * - `task.event` 是**续跑段 run 根的 trace 事件名**（2026-09-28 ref-run-event-input 事件投入口的留痕），
    *   与 SSE 的 `task.end` 帧同名族但不是帧 —— 它由 engine/loop.ts 的 recorder.event 发出。
    */
   const NOT_A_FRAME = new Set(['trace.truncated', 'task.event']);

@@ -102,7 +102,7 @@ describe('readClaimed —— 认领前重读（自 #executeInner 抽出）', () 
     const stored = mkRec({ taskId: 't9', status: 'cancelled' });
     await store.save(stored);
     const claimed = await readClaimed(store, mkRec({ taskId: 't9', status: 'running' }));
-    // 副本契约（2026-10-13 ⑨）下断言「内容与来源」而不是引用：store 交出的本就是快照
+    // 副本契约（2026-10-13 ref-taskstore-copy-contract）下断言「内容与来源」而不是引用：store 交出的本就是快照
     assert.deepEqual(
       claimed,
       stored,

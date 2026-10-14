@@ -6,7 +6,7 @@ import type { ResumeScannerDeps } from '../../src/transport/resume-scanner.js';
 import type { TaskRecord, TaskStore } from '../../src/store/store.js';
 
 /**
- * 恢复路径的落库失败防护（2026-10-13 ⑩⑪）：
+ * 恢复路径的落库失败防护（2026-10-13 ref-cancel-mutex ref-resume-save-guard）：
  * ① resumePending 的认领 save 对**同步抛错**无防护（同文件 wakeDue 有）—— FileTaskStore
  *    磁盘失败时异常逃出 resumePending，引用语义 store 下「queued + 本进程 ownerId」的变异
  *    已进内存 ⇒ 后续扫描按 own-process 跳过 ⇒ 任务搁死到重启；

@@ -27,7 +27,7 @@ class SyncThrowOnTerminalStore extends InMemoryTaskStore {
  * 模拟 sqlite/redisStore 这类**异步** store：方法返回 Promise，且 `list()` 交出的
  * 是**反序列化后的新对象**（改它不入库）。这正是 `#redispatch` 那个重复执行窗口的
  * 必要条件 —— 当年 `InMemoryTaskStore` 存对象引用恰好把问题掩盖了
- * （2026-10-13 ⑨ 起内建 store 也全部走副本，这个夹具仍管「异步」那一半）。
+ * （2026-10-13 ref-taskstore-copy-contract 起内建 store 也全部走副本，这个夹具仍管「异步」那一半）。
  */
 class AsyncCopyStore implements TaskStore {
   readonly #byTask = new Map<string, TaskRecord>();
@@ -250,7 +250,7 @@ describe('AsyncRunner', () => {
       await waitFor(() => app.calls === 2, '落库抛错后槽位必须仍被释放（第二条也跑得到）');
       await new Promise((r) => setTimeout(r, 20)); // 给潜在的 unhandled rejection 落地机会
       assert.deepEqual(rejections, []);
-      // 副本契约（2026-10-13 ⑨）坐实后，终态 save 抛错 ⇒ 内存**不再**被原地推进：
+      // 副本契约（2026-10-13 ref-taskstore-copy-contract）坐实后，终态 save 抛错 ⇒ 内存**不再**被原地推进：
       // 库里诚实地停在 running（最后一次落库成功的状态）—— 这正是 onPersistError
       // 要对账的那一格，不再被引用语义遮掉。
       const left = (store.list() as TaskRecord[]).map((r) => r.status);
@@ -272,7 +272,7 @@ describe('AsyncRunner', () => {
    *
    * 为什么必须要它：此前 `InMemoryTaskStore` 存**对象引用**，runner 就地改写 `rec` ⇒ 即便
    * `save` 抛错，库里那条也已经是终态 —— 「终态落库失败」当时根本看不见。
-   * 2026-10-13 ⑨ 起内建 store 全部坐实副本契约（`cloneTaskRecord`），这个测试夹具
+   * 2026-10-13 ref-taskstore-copy-contract 起内建 store 全部坐实副本契约（`cloneTaskRecord`），这个测试夹具
    * 仍在的理由是另两样：**异步**（Promise 分支）与**按谓词失败**（jitter 注入）。
    */
   class CopyStoreOnSave implements TaskStore {
@@ -366,7 +366,7 @@ describe('AsyncRunner', () => {
     assert.equal(
       store.get(t.taskId)?.status,
       'running',
-      '终态那次 save 抛了 ⇒ 库里停在最后一次落库成功的状态（副本契约 2026-10-13 ⑨：' +
+      '终态那次 save 抛了 ⇒ 库里停在最后一次落库成功的状态（副本契约 2026-10-13 ref-taskstore-copy-contract：' +
         '既不被回调的改写污染，也不再被 runner 的活引用原地推进）',
     );
     assert.equal(seen[0]!.phase, 'outcome');
@@ -613,7 +613,7 @@ describe('AsyncRunner', () => {
     const rec = await runner.awaitTask(t1.taskId, { timeoutMs: 2_000 });
     assert.equal(rec.status, 'failed');
     assert.match(rec.error?.message ?? '', /执行超时/);
-    // 超时自成一类（spec §10 2026-09-17 ②）：异步宿主这条路径也不得落 unknown
+    // 超时自成一类（spec §10 2026-09-17 ref-timeout-error-type）：异步宿主这条路径也不得落 unknown
     assert.equal(rec.error?.type, 'timeout', 'runTimeoutMs 超时必须归 timeout 一类账');
 
     // 槽位已回收：concurrency=1 下第二个任务仍能起跑（不被超时任务永久占住）
@@ -890,7 +890,7 @@ describe('HITL × sessionStore：恢复段不重拼历史、不毒化会话', ()
   });
 });
 
-describe('HITL 续跑时的菜单漂移（R8 候选 3 / spec §10 2026-09-27 ⑧）', () => {
+describe('HITL 续跑时的菜单漂移（R8 候选 3 / spec §10 2026-09-27 ref-menu-drift-signals）', () => {
   const OBJ = { type: 'object', properties: {} } as const;
 
   it('approve 续跑时那个工具已被这次发布删掉：三处信号 + run 照常收尾（不判失败）', async () => {

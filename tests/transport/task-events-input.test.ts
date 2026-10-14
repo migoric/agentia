@@ -17,7 +17,7 @@ import { createHttpHandler } from '../../src/transport/http.js';
 import { endTurnMsg, mockClient, toolUseMsg, waitFor } from '../helpers.js';
 
 /**
- * run 事件投入口（2026-09-28 ⑥，设计稿 `docs/plans/2026-09-28-event-input-and-due-index.md`
+ * run 事件投入口（2026-09-28 ref-run-event-input，设计稿 `docs/plans/2026-09-28-event-input-and-due-index.md`
  * 的候选 2，定案 A3+B1）：`signalTask` + `POST /tasks/:id/events`。
  *
  * 本文件逐条落实设计稿 §4 的八条门禁（每条都过了对应的变异验证 —— 关掉实现恰好这条红）：
