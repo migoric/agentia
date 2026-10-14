@@ -52,6 +52,9 @@ SKIP_VERIFY=1 git push                # 急着推时跳过
 
 > 直接 `git push origin main` 会被拒 —— 这是设计，不是故障。
 
+> 动分支保护后跑 `node scripts/check-branch-protection.mjs` 对一眼（需 `gh` 认证）：
+> 拿仓内 `ci_only` 与 GitHub 实配集合对拍 —— 少检查 ⇒ 红着能合，多检查 ⇒ PR 卡死。
+
 ## 提交信息
 
 沿用 Conventional Commits 前缀（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:` / `perf:`），
