@@ -318,7 +318,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * ⚠️ 生效范围只到本层（`runAgent` / `executeRun`）：`AgentApp.run` **不转发**它 ——
    * `RunAppOptions` 里那个同名字段继承自 `RunInvocationOptions.sessionId`（**异步宿主**的
    * 可序列化会话引用，语义见 engine/spec.ts），直传给 `app.run` 会 `console.warn` 一次且
-   * 不生效（2026-10-12 ③；此前是静默丢弃）。
+   * 不生效（2026-10-12 ref-session-id-warn；此前是静默丢弃）。
    */
   sessionId?: string;
   /**
@@ -329,7 +329,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    */
   approvals?: Record<string, ApprovalDecision>;
   /**
-   * 挂起期间投递的事件（2026-09-28 ⑥；语义见 `RunInvocationOptions.events`）：
+   * 挂起期间投递的事件（2026-09-28 ref-run-event-input；语义见 `RunInvocationOptions.events`）：
    * 续跑段在未决 tool_use 解决之后渲染成 user 文本消息注入消息流，并在 run 根
    * 记 `task.event` 事件留痕（`{ injected, event_type, event_id? }` —— `injected`
    * 的口径是「注入进本段消息流」，不等于「模型已看到」）。
@@ -378,7 +378,7 @@ export interface AgentRunResult<T = unknown> {
    */
   wakeAt: number | undefined;
   /**
-   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ⑥）**真注入了消息历史**
+   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ref-run-event-input）**真注入了消息历史**
    * （字段在场）。宿主（`AsyncRunner`）据此清 `TaskRecord.pendingEvents`：注入过 ⇒ 事件
    * 已在历史里，簿记清掉（否则注入后再次挂起的场景会在下次续跑**重复注入**）；
    * 续跑入口的再挂起出口在注入点之前返回（false），簿记留住等跑通的那次。

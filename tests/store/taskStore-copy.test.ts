@@ -8,7 +8,7 @@ import { FileTaskStore } from '../../src/store/fsStore.js';
 import type { TaskRecord, TaskStore } from '../../src/store/store.js';
 
 /**
- * TaskStore 副本契约（2026-10-13 ⑨，spec §10）：`save` 存副本、
+ * TaskStore 副本契约（2026-10-13 ref-taskstore-copy-contract，spec §10）：`save` 存副本、
  * `get` / `byIdempotency` / `list` 交副本 —— 任何一条破了，「先变异 rec、再 await save」
  * 的纪律就整体塌方（变异在落库前被其他读者看见；save 失败时变异留在库里）。
  *
@@ -125,7 +125,7 @@ for (const { name, make } of impls) {
 
 describe('副本契约 —— FileTaskStore 的「先落盘」不变量在活记录上同样成立', () => {
   it('改活记录后 append 失败：内存不推进（fsStore.test.ts 只用新记录，恰好测不到这一格）', () => {
-    // 反向验证（2026-10-13 ⑨ 的病根）：get 交出活引用时，`rec.status = 'running'` 这一改
+    // 反向验证（2026-10-13 ref-taskstore-copy-contract 的病根）：get 交出活引用时，`rec.status = 'running'` 这一改
     // 在 save 抛错之前就已经进了内存 Map —— 下面两个断言会红（库里已是 running）。
     const dir = mkdtempSync(join(tmpdir(), 'agentia-copy-'));
     try {

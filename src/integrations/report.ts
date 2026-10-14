@@ -262,7 +262,7 @@ export function buildRunReport(trace: Trace): RunReport {
  * 汇总多条报告（跨 run 的能力排行才有统计意义）。空数组 → 空报告。
  *
  * **按 `traceId` 去重、同一 traceId 只留最后一份**（与 CLI `agentia report` 同口径，
- * 依据见 docs/spec.md §10 2026-10-12 ⑧）：append-only 的 trace 落盘（FileTaskStore 每次
+ * 依据见 docs/spec.md §10 2026-10-12 ref-report-dedupe-traceid）：append-only 的 trace 落盘（FileTaskStore 每次
  * save 追加一行）会把同一棵挂起段 trace 写多次，不去重则 runs / 成本按行数翻倍。
  * `merged(n runs)` 是合并报告的合成 id（不是身份），不参与去重。
  */

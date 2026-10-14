@@ -482,7 +482,7 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
       spec: { messages: [{ role: 'user', content: 'x' }] },
       createdAt: Date.now() - 120_000,
       suspendedSince: 0, // 早已超时：任何一次读都会触发惰性判定
-      suspendedReason: 'approval', // 2026-09-28 ①：超时闸只对 approval 成立
+      suspendedReason: 'approval', // 2026-09-28 ref-suspend-state-reason：超时闸只对 approval 成立
       pendingApprovals: ['tu1'],
       ownerId: 'p999-otherproc',
     });

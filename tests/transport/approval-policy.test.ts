@@ -16,7 +16,7 @@ const rec = (over: Partial<TaskRecord> = {}): TaskRecord =>
   ({
     taskId: 't1',
     status: 'suspended',
-    // 2026-09-28 ①：挂起记录**必须带原因**（它是状态的一部分，不是可选装饰）——
+    // 2026-09-28 ref-suspend-state-reason：挂起记录**必须带原因**（它是状态的一部分，不是可选装饰）——
     // 夹具缺省给 'approval'，因为本文件测的就是审批这条闸
     suspendedReason: 'approval',
     spec: {},
@@ -43,7 +43,7 @@ describe('approval-policy —— 审批的纯判定（从 AsyncRunner 抽出）'
   });
 
   it('approvalExpired：**原因**必须是 approval（时间挂起不许被审批超时提前叫醒）', () => {
-    // 2026-09-28 ① 的原因闸：`approvalTimeoutMs` 是「等人工」的闸。若只看状态，
+    // 2026-09-28 ref-suspend-state-reason 的原因闸：`approvalTimeoutMs` 是「等人工」的闸。若只看状态，
     // 一条 reason='timer' 的睡眠 run 会被判「审批超时」，而 `#expireAndResume`
     // 紧接着就重派 —— 提前叫醒 + 花掉一次真实 run 的开销。
     const sleeping = rec({ suspendedReason: 'timer', suspendedSince: 0 });

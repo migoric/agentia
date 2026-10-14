@@ -1,6 +1,6 @@
 /**
  * 浸泡验证（`e2e-soak.ts`）里**每个错误类别的处置** —— 单一真源，且是一张**穷尽表**
- * （2026-09-29 ⑤）。
+ * （2026-09-29 ref-soak-error-taxonomy）。
  *
  * 为什么单独成件：这套判据必须能被**答案驱动地**单测（`tests/scripts/soak-error-posture.test.ts`），
  * 而 soak 本体是顶层 `await main()` 的脚本 —— 测试里 import 它就会真跑一轮（默认 60s，

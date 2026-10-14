@@ -166,7 +166,7 @@
   `prompt_cache_hit_tokens` 此前被整个丢弃且 cache 恒记 0 —— agent loop 前缀缓存命中率常达
   80–95%，成本读数系统性高估数倍。现映射进 `cache_read_input_tokens`，且因 DeepSeek 口径
   `prompt_tokens` **已含**命中部分（与 Anthropic 相反），`input_tokens` 拆出未命中部分防双计；
-  无这两个字段的端点行为逐字不变。决策依据见 spec §10 2026-10-09 ①。
+  无这两个字段的端点行为逐字不变。决策依据见 spec §10 2026-10-09 ref-deepseek-cache-usage。
   **对包的对外面**：DeepSeek 端点的记账口径变准（原先恒 0）—— 修正而非破坏；其余无公共 API 变更。
 - **patrol 示例的边界校验补上 realpath**（`examples/patrol/src/workspace.ts`）：原实现只有词法判定，
   根内指向外部的符号链接可读出界（数据外泄给模型）、`quarantine_path` 可把界外真文件移进隔离区
@@ -212,7 +212,7 @@
   脚本表：`start` / `start:prod`（**同物**，显式生产名）/ `start:batch`；**不再有 `start:server`**
   —— 它的角色被 `start` 吸收，留一个同物的旧名只会让人以为服务还有另一种起法。
   决策记录（含「换骨 vs 换皮」「SQLite vs FileTaskStore」两个取舍）见
-  `docs/plans/2026-10-09-scaffold-default-service.md` 与 `docs/spec.md` §10 2026-10-09 ②。
+  `docs/plans/2026-10-09-scaffold-default-service.md` 与 `docs/spec.md` §10 2026-10-09 ref-scaffold-default-service。
 - **服务面**：`src/main.ts` 复用 `src/app.ts` 的 `createAgentApp()` 工厂（dev 环与生产共享
   同一份装配，旁路会被 `templates.test.mjs` 的形状断言挡住），接上 `createHttpHandler` +
   `AsyncRunner` + `SqliteTaskStore`：`/healthz`、同步 `POST /run`（含 SSE）、异步
@@ -1141,7 +1141,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   装配全绿、第一次模型调用才由 API 400 暴露。现在装配期逐引用片展开查重，报错指到
   「哪个能力的哪几片引用」（`子菜单能力重名：@SubAgent "x" 的 tools 引用展开后 "search"
   （来自 "a" + "b"）`），修法引导（能力级路径收窄 / 改名）写进文案。
-- **依据**：`docs/spec.md` §10 2026-10-13 ③④；usage-guide §3（装饰器只接实例方法）、
+- **依据**：`docs/spec.md` §10 2026-10-13 ref-reject-static-methods ref-submenu-name-check；usage-guide §3（装饰器只接实例方法）、
   §4 `tools` 行与 §8 常见错误行（重名查重口径补「主菜单+子菜单」）同步。
 
 ### 四处低等静默/口径收口：报告去重下沉、握手簿记回收、metrics 失败出声、Span.name 注释（2026-10-13 ⑤⑥）
@@ -1158,7 +1158,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **`core/trace.ts` 的 `Span.name` 注释对齐实现**：capability span 的 name 是**裸能力名**
   （无 `subagent:` 前缀；区分类型看 attributes，见 `capabilityKindOf`）—— 旧注释的
   `${capabilityType}:${capabilityName}` 口径曾让 otlp.ts 按前缀判、生产上一条 gen_ai.* 都没发出去。
-- **依据**：`docs/spec.md` §10 2026-10-13 ⑤⑥；usage-guide（metricsSink `onExportError` 行 /
+- **依据**：`docs/spec.md` §10 2026-10-13 ref-merge-reports-dedupe ref-stdio-metrics-silent；usage-guide（metricsSink `onExportError` 行 /
   已知边界行 / §6 `mergeRunReports` 速查行）同步。
 ### 守卫射程轮：CLI 纳入 exactOptionalPropertyTypes、e2e:mcp:server 进 CI、三处货架补齐（2026-10-13 ⑦）
 
@@ -1178,8 +1178,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **低等三项**：CI 各 job 补 `timeout-minutes`；guards-registry 货架补 `tests/scripts`；
   `layering.test.ts` 的 import 解析改走 `lib/source-scan.ts` 遮蔽器（注释 / 模板里的
   `from './x.js'` 不再造假依赖边）。
-- 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ⑦。
-### 修复：engine 非正常路径口径对齐（深度评审 2026-10-13 低等项五件）（spec §10 2026-10-13 ⑧）
+- 依据与逐项核对结论见 `docs/spec.md` §10 2026-10-13 ref-guard-scope-round4。
+### 修复：engine 非正常路径口径对齐（深度评审 2026-10-13 低等项五件）（spec §10 2026-10-13 ref-deep-review-minor）
 
 - **`max_iterations` 出口保留已产出文本**：循环耗尽时 `finalText` 此前恒为 `''`，与
   `max_tokens` / `refusal` / `budget_exceeded` 的「文本不丢」口径不一致；现在耗尽出口
@@ -1217,7 +1217,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   catch 不再静默留尸，各补 `console.warn`。
 - **低等 · Scheduler drain 感知（⑫）**：runner 停机后 tick 静默跳过（此前每 tick 刷一条
   `console.error`）。
-- **依据与取舍**（含副本克隆的成本评估）：`docs/spec.md` §10 2026-10-13 ⑨–⑫。
+- **依据与取舍**（含副本克隆的成本评估）：`docs/spec.md` §10 2026-10-13 ref-taskstore-copy-contract ref-cancel-mutex ref-resume-save-guard ref-scheduler-aware-drain。
 - **验证**：新增 `tests/store/taskStore-copy.test.ts` / `tests/transport/cancel-race.test.ts` /
   `tests/transport/resume-scanner.test.ts` 三份套件 + scheduler drain 用例；既有依赖
   「改 poll 返回值即生效」的三处用例改为显式 `save`（副本契约的推论）。
@@ -1230,7 +1230,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `agentia dev` 面板、官网 playground 三处共用同一份实现，同漏。
 - **修法**：能力排行的 usage **只认顶层 capability**（没有 capability 祖先的）；内层行仍计
   calls / errors / 耗时（那是它自己这次调用的真账），tokens / cost 显示 `-` ⇒ 各行可加总。
-  引擎与 tracer 行为不动。依据见 `docs/spec.md` §10 2026-10-13 ⑬。
+  引擎与 tracer 行为不动。依据见 `docs/spec.md` §10 2026-10-13 ref-ranking-top-capability。
 - **同批修复**：`examples/deploy` 补上脚手架模板同款的 PORT 校验（`PORT=''` 空串曾被
   `Number('')` 静默变成 0 = 随机端口）；usage-guide 的「CLI 三件套」统一为四件套口径
   （补 `export`），能力排行补「嵌套只认顶层」口径说明。
@@ -1247,7 +1247,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `examples/observability-mcp` 的 `report_trace` 工具同漏。
 - **修法**：与 ⑬ 完全同款 —— 沿 `parentSpanId` 上爬判 capability 祖先（带防环），
   嵌套行的 usage 不累加（`tokens`/`tokensTotal`/`costUsd` 为 `null`），calls/errors/耗时
-  照计 ⇒ 各行可加总。依据见 `docs/spec.md` §10 2026-10-13 ⑭。
+  照计 ⇒ 各行可加总。依据见 `docs/spec.md` §10 2026-10-13 ref-build-report-dedupe。
 - **验证**：`tests/integrations/report.test.ts` 新增嵌套夹具（去掉顶层判定即红）。
 
 ### 工程：引用完整性轮 —— 22 个圈号归位 + 体量闸头注表自审 + 圈号引用守卫（2026-10-14）
@@ -1421,7 +1421,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - **守护形态**：这份移植（本仓第四份）配的是**源码级双钉**
   （`tests/observability-mcp-parity.test.ts`：三段 canonical 行在两份源码里逐字都在场），
   而不是前三份的运行时逐字对拍 —— 示例必须可整目录拷走单用、且示例 dist 在 `npm test`
-  时未构建，两个对拍落点都不成立（理由见 `docs/spec.md` §10 2026-10-12 ⑩）。
+  时未构建，两个对拍落点都不成立（理由见 `docs/spec.md` §10 2026-10-12 ref-g8-example-closeout）。
 - **验证**：示例 `npm run verify` 17 → 26 条 check（新增 §8 三级回退 / §9 root=`/` /
   §10 截断）；**3 条变异各咬住预期断言**（去 taskId 层 / 去特判 / 去截断，各红）。
   README 边界节补两条如实标注（TOCTOU 时间窗；入站 `traceparent` 缝合是引擎层白得的、
@@ -1489,7 +1489,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   ⚠️ **成功数为 0 时 `cost-ok` 是 `-`（JSON 里 `null`），不是 0** —— 「除不了」不等于「不花钱」。
   成本取该 run 的 `totalUsage.costEstimate`（= 各 `llm.turn` 之和、**不含** capability 聚合
   ⇒ `@SubAgent` 里套 `@Skill` 不会把同一批 token 数两遍）。⚠️ 设计稿原写「该组各能力行
-  `costUsd` 相加」，落地时**改掉**了 —— 理由见 `docs/spec.md` §10 2026-10-12 ⑤。
+  `costUsd` 相加」，落地时**改掉**了 —— 理由见 `docs/spec.md` §10 2026-10-12 ref-report-session-dimension。
 - **影响面**：`packages/cli/src/report.ts`（194 → 339 行，棘轮账 LINE/TOTAL 同步）；
   `docs/usage-guide.md` §6.4 的 `--json` 形状列表加 `sessions`。**框架侧 `src/` 零改动。**
 - **验证**：`report.test.mjs` +6 条（归组 / `(无会话)` 桶 / `taskId` 回退键 / 降序 /
@@ -1524,7 +1524,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   不再把任务里的 `sessionId` 透传进 `app.run`（它在本层已被消费 —— 换成 `session` 注入，
   或没配 `sessionStore` 时在 submit 已响亮报错）。
 - **无破坏性变更**：行为面只多一条告警；`sessionId` 的类型与异步宿主语义逐字未变。
-  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ③。
+  依据与备选方案（为什么不是「让 `app.run` 转发它」）见 `docs/spec.md` §10 2026-10-12 ref-session-id-warn。
 
 ### MCP 桥接 SEP-414 trace 上下文（`params._meta` 裸键）（2026-10-12 ④）
 
@@ -1537,7 +1537,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   没有上游 —— 不报错、不影响调用成败。
 - **无破坏性变更**：`McpClientLike.callTool` 第三参新增可选 `traceparent` 字段（鸭子类型，
   只实现两个参数的旧客户端照常兼容，只是链路断在它的传输上）；公共导出面零变化。
-  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ④。
+  决策与三条纪律（静默降级 / 不动 `arguments` / 不造空上下文）见 `docs/spec.md` §10 2026-10-12 ref-sep414-trace-context。
 
 ### 可观测文档：四条「缝外配方」类缺口收口（2026-10-12）
 
@@ -1569,7 +1569,40 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   同一棵 trace 的重复书写）；无 traceId 的行（手写 trace）照原样全保留。
 - **文档同步**：usage-guide §6.4 的 FileTaskStore 段落点明去重口径；会话维度段落点名
   「**挂起计入 ok**」（与引擎「挂起不是失败」同口径 ⇒ 全挂审批上会报成功率 100%，刻意取舍
-  但需写明）。决策依据见 `docs/spec.md` §10 2026-10-12 ⑧。
+  但需写明）。决策依据见 `docs/spec.md` §10 2026-10-12 ref-report-dedupe-traceid。
+
+### 工程：决策引用换成 slug + 守卫收口（P2 / P3）（2026-10-14）
+
+- **接上一条的 ①**：`（日期 + 圈号）` → `（日期 + slug）` 的三步迁移**已走完**（设计稿
+  `docs/plans/2026-10-14-ref-slug-migration.md`）：上一轮 P1 给 §10 的每条锚点加了 slug（引用一处未动），
+  本轮 P2 把引用换成 slug、P3 把守卫收成只认 slug。
+- **P2 换引用**：射程 = 守卫射程 − 带日期的**快照**（`docs/plans/**` · `docs/reviews/**`，写于迁移之前
+  = 历史）− §10 **锚点定义行**（圈号在那里是显示编号）− **日期在 §10 无条目**的引用（那个号指别的文档
+  自己的编号）⇒ **302 处 / 84 个文件**，按文件分 5 批提交（便于 review 与单独 revert）。替换**按内容
+  不按行号**（§10 加了章节头，其后行号全漂过）。脚本带一条硬规则：**同日重号拒绝自动选**（源序先到
+  先得 = 脚本替引用挑一个含义，正是本设计要消灭的东西）⇒ 源头给一行显式覆盖表。
+- **守恒验证**：84 个文件**归一化后逐字节相同** ⇒ 除引用形态之外**一个字符都没动**；另有按
+  `(文件, 日期, 键串)` 的前后对拍（P1 的「引用一处未动」也这么验）。
+- **P3 收口**：守卫从「圈号**或** slug 都能解析」（P1 起的**有期限**放宽）收成**只认 slug**，并新增
+  判据「射程内（**除定义行、除快照、日期有条目**）的『日期 + 圈号』引用数 == 0」。**这不是新决定** ——
+  它是 P1 时就写在代码里的退出条件到期执行。三项排除写成**减法**（各自指向另一条已写明的规则），
+  而不是「给 `isDefLine` 加个开关」：读判据的人要能顺着三项去查。
+- **一处口径修正（如实记）**：`packages/cli/CHANGELOG.md` **移出射程** —— 它是构建产物、只在**本机
+  磁盘**存在（CI / 新克隆 / `git worktree` 里没有）。P3 首跑报「49 处残留」，其中 **46 处来自它**
+  ⇒ 校验它的后果就是**本机红、CI 绿**。去掉它不丢覆盖（根 `CHANGELOG.md` 那一档覆盖同一份内容）。
+- **另登记一条待守缺口（本轮量出、不在本轮做）**：**不带日期的引用**（`§10 ⑧` / `同日 ⑧` —— 日期写在
+  上一句里）**从来不在守卫射程**（它的形态要求日期**紧邻**键）。实测 **35 处**（探针
+  `.workbuddy/probes/2026-10-14-dateless-circ.mjs`，git 跟踪文件口径、可复跑）⇒ 已登记进
+  `docs/guards.md` §2 的「待守」表（含「为什么还没有守卫」与两种可能的守卫形状）。
+  「引用已全换成 slug」这句只对**带日期**的那一类成立 —— 这行缺口就是它的射程注脚。
+- **「怎么写引用」到 P3 才写**（设计稿 §7.1 第 4 问的定稿）：`AGENTS.md` 的「设计决策」与
+  `CONTRIBUTING.md` 的坑表各补一句。P1 期两种写法并存，那时教谁都是半对。
+- **验证**：`circle-refs` 3/3；**P3 变异 8/8 逐条咬中** —— 改锚点 slug 名 ⇒ **恰好**引它的那几行红；
+  造重名 slug ⇒ 唯一性红；把引用 / 锚点正则**分别**打瞎 ⇒ **真空护栏**红（**不是**「全绿」）；塞一处
+  「日期 + 圈号」⇒ 残留判据红；把引用的日期改错 ⇒ 「该 slug 属于」红；删 slug 留圈号 ⇒ 半迁移红；
+  **正对照**（M6）：「圈号是**可去掉**的显示编号」这条设计**真的生效** —— 删掉某条锚点的显示圈号后
+  锚点仍可引、守卫仍绿。每项都在输出里点到名，恢复后 `sha256` 逐字节一致。
+- **无使用者面变更**：本轮只动文档与一个守卫（`src/` 一个文件都没碰）⇒ 既有使用者不需要任何动作。
 
 ## [0.9.5] - 2026-09-29
 
@@ -1949,7 +1982,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ### 新增
 
-- **run 事件投入口（spec §10 2026-09-28 ⑥，定案 A3+B1）**：外部系统可以把一条**事件**
+- **run 事件投入口（spec §10 2026-09-28 ref-run-event-input，定案 A3+B1）**：外部系统可以把一条**事件**
   投给一条**挂起**的 run —— `AsyncRunner.signalTask(taskId, event)` 与
   `POST /tasks/:id/events`（与 approve/cancel 对称），醒来时事件进消息历史。
   - 🔒 **投毒面焊成窄的**：事件体是白名单 `{ eventId?, type, payload }`（全是字符串，
@@ -1970,7 +2003,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
     / `TaskRecord.deliveredEventIds` / `AgentRunResult.eventsDelivered`（全部加法，无破坏性）。
     `eventsDelivered` 是引擎对「本段把事件真注入了没有」的如实报告 —— 宿主据此清簿记，
     保证注入后再次挂起也不会在下次续跑**重复注入**（复审探针抓出的缝，已闭合）。
-- **sqlite 到期索引（spec §10 2026-09-28 ⑤ 落地）**：`TaskStore` 新增**可选**方法
+- **sqlite 到期索引（spec §10 2026-09-28 ref-due-index-measure 落地）**：`TaskStore` 新增**可选**方法
   `listDue?(before)`（接口加法，不破自定义 store），`SqliteTaskStore` 实现它
   （派生列 `wake_at` + `(status, wake_at)` 索引；存量库构造期就地迁移并回填，
   列漂移读时自愈）。`AsyncRunner` 的「到期唤醒」那一半扫描有索引走索引
@@ -1979,7 +2012,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   ⚠️ `resumePending` 的其余三条职责（挂起读数重建 / 审批超时 / 孤儿认领）仍以全表
   `list()` 为输入 —— listDue 只替代到期唤醒那一半。
 
-- **时间挂起（durable timer，spec §10 2026-09-28 ②）**：工具可以在**执行期**调
+- **时间挂起（durable timer，spec §10 2026-09-28 ref-defer-until）**：工具可以在**执行期**调
   `ctx.deferUntil(at)` 说「现在还不是时候，T 之后再问我」—— 引擎把该回合收尾成挂起
   （`stopReason: 'suspended'` + `suspendedReason: 'timer'` + 目标时刻 `wakeAt`），
   到点由宿主续跑并**重跑这一批**工具。用途：等批处理作业、等限流窗口、等外部系统回填。
@@ -2008,7 +2041,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
     `RunMeta.wakeAt`、`TaskRecord.wakeAt`、`HealthResponse.suspended`。另顺手修两处：
     `resumePending` 跳过挂起记录时的原因不再是 `'terminal'` 而是 `'suspended'`（诊断不说错话）；
     时间挂起醒来时的续跑段**不再**重复注入会话历史、且 trace 会 link 上一段 run。
-- **旧任务记录的读时归一（迁移垫片，spec §10 2026-09-28 ③）**：store 读回记录时会把 0.9.5 之前
+- **旧任务记录的读时归一（迁移垫片，spec §10 2026-09-28 ref-read-normalize-shim）**：store 读回记录时会把 0.9.5 之前
   落库的旧形状归一 —— 状态值 `awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`，
   挂起时刻 `approvalPendingSince` → `suspendedSince`（旧键删掉）。**升级不再需要宿主手工改库**：
   此前那种记录读回来会被 `isTerminalTask` 判成终态、`resumePending` 按 `'terminal'` 跳过 ⇒
@@ -2019,7 +2052,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   - `SqliteTaskStore` 额外把派生列 `status` 拉回与 json 一致 —— 否则外部/DBA 的
     `SELECT status, count(*) FROM tasks GROUP BY status` 会**继续**报旧值。
   - 归一失败/坏 JSON 的取舍与各 store 既有口径一致；本改动**无公共 API 变化**。
-- **取消 API（spec §10 2026-09-28 ④）**：`AsyncRunner.cancel(taskId)` 与 `POST /tasks/<id>/cancel`
+- **取消 API（spec §10 2026-09-28 ref-cancel-api）**：`AsyncRunner.cancel(taskId)` 与 `POST /tasks/<id>/cancel`
   —— 在跑的**真中断**、在睡的**不再醒**、在排队的**绝不起跑**，落库 `status: 'cancelled'`
   （**新状态**，与 `failed` 分开：取消不是失败）。
   - 机制是同一条 abort signal，差别在**意图**：`runTimeoutMs` 超时仍然落 `failed`
@@ -2032,12 +2065,12 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
     （去重不再把 `cancelled` 当「已有」）。
   - 另：`awaitTask` 的终态集合改成 `isTerminalTask`（原先手写两值 ⇒ 新终态被漏掉，
     症状是「取消后一直等到超时」）。
-- **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ⑧）**：挂起段之后**续跑**时，未决
+- **菜单漂移不再静默（R8 候选 3，spec §10 2026-09-27 ref-menu-drift-signals）**：挂起段之后**续跑**时，未决
   tool_use 引用的工具若已不在当前菜单（删了 / 改名了），框架把这件事记成**三处信号** ——
   `menu.drift` 事件（`{ missing, tool_use_ids, menu_size }`；时间线与
   `GET /tasks/:id/stream` 都看得到）、父 span 的 `menu.drift` attribute（如 `missing:danger`）、
   一条 `console.warn`。⚠️ **run 照常收尾**（不判失败：挂起是合法态、改代码是发布常态 ——
-  理由与「严格模式为什么不给」见 spec §10 2026-09-27 ⑧）。另新增 run 根 attribute
+  理由与「严格模式为什么不给」见 spec §10 2026-09-27 ref-menu-drift-signals）。另新增 run 根 attribute
   `tools.names` / `tools.menuHash`（装配后菜单的名字清单 + 名字与**输入 schema** 的摘要，
   与 `prompts.versions` 同动机：质量回归能定位到具体菜单版本）。口径：判据只看名字；签名与
   菜单顺序、schema 键序无关，`description` **不参与**。**公共 API 零变化**。
@@ -2052,7 +2085,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   capability span + 与引擎同形状的 `tool.input`/`tool.output` 事件）投递 `opts.sinks`；
   结果映射与正向桥方向对称（抛错 → 协议层成功 + `isError: true`）。公共面新增
   `createMcpServer` 与 `McpServerApp` / `McpServerOptions` / `McpServer` 类型。
-  决策见 spec §10 2026-09-27 ⑦。
+  决策见 spec §10 2026-09-27 ref-mcp-reverse-bridge。
 - **租户归因 labels（`labels: Record<string, string>`，R8-P4）**：`createApp` 缺省 +
   `app.run` 单次覆盖（**整体替换**不合并）+ `runAgent` 直连三层同语义。落 run 根的
   `labels.<key>` 属性（trace 侧无基数问题；与框架自写的 `source` 触发来源审计正交）；
@@ -2063,7 +2096,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `snapshot().droppedLabelValues` 与 `dropped_keys{kind="label:<key>"}`；四个 run 级
   家族（`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`）在全局
   样本外追加带标签样本（⚠️ 开了以后 `sum(agentia_runs_total)` 会重复计数，总量用
-  不带标签的序列）。公共面新增 `RunLabelMetrics` 类型。决策见 spec §10 2026-09-27 ⑥。
+  不带标签的序列）。公共面新增 `RunLabelMetrics` 类型。决策见 spec §10 2026-09-27 ref-tenant-labels。
 - **CLI `agentia export`：trace 落盘文件 → 训练数据集**（JSONL，一行一份
   `{ messages, meta }`；R8-P3b）—— harvest（产回归用例）的孪生。开了
   `traceContent: 'full'` 的 run 导出带真 assistant 文本的完整对话；没开的导出工具
@@ -2071,7 +2104,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   过滤：`--ok-only` / `--min-score n`（没带分数的 run 被排除：没判过 ≠ 及格）；
   `--out` 落盘（stdout 是产物的纪律同 harvest）。框架侧 `src/eval/export.ts` 的
   `exportRun` 是 module 级（不进公共面，同 harvestEvalCase 纪律），CLI 侧为去类型
-  移植副本 + 逐字对拍守护。决策见 spec §10 2026-09-27 ⑤。
+  移植副本 + 逐字对拍守护。决策见 spec §10 2026-09-27 ref-export-training-data。
 - **opt-in 记录 assistant 文本进 trace（`traceContent: 'full'`）**：每回合的模型文本落
   该 llm.turn span 的 `output.text` 属性（多块 `\n` 连接；过 `maxEventChars` 同一道
   截断闸 —— 它管「多长」，`traceContent` 管「记不记」）。缺省不记，现状逐字不变；
@@ -2079,7 +2112,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   run 根快照记 `config.traceContent`。⚠️ 实测代价：3 回合、每回合约 1600 字符输出的
   run，trace 体积 5 564 → 11 010 字节（约 2×）；且模型输出从此进入要脱敏的面 ——
   出库前走 `docs/observability.md` 配方 2.4。这是「trace → 训练数据导出」（R8-P3b）
-  的引擎侧前提。决策见 spec §10 2026-09-27 ④。
+  的引擎侧前提。决策见 spec §10 2026-09-27 ref-trace-content-full。
 - **模型 fallback 链（引擎级，`fallbacks: [{ model, client? }]`）**：`createApp` 缺省 +
   `app.run` 单次覆盖 + `runAgent` 直连三层同语义。主模型本回合最终失败（含其
   `maxRetries` 用尽）且错误可换（`classifyError` 的 retryable 类：rate_limit / server /
@@ -2089,7 +2122,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   护栏：`aborted` 永不换（用户取消不是故障）、本回合吐过字不换（与 retry 的
   `!emitted` 同一护栏）、每回合从主环重新起；子 agent / skill 子循环不继承。
   链环 `client` 缺省复用本次 run 的 client（同端点换模型是主用例）；run 入口校验
-  坏环/死 client（持久化反序列化空壳）响亮抛 TypeError。决策见 spec §10 2026-09-27 ③。
+  坏环/死 client（持久化反序列化空壳）响亮抛 TypeError。决策见 spec §10 2026-09-27 ref-model-fallback-engine。
 - **`jsonlTraceSink({ path })`：JSONL 文件 sink 进框架** —— CLI 三件套（`agentia report` /
   `diff` / `harvest`）消费 `trace.jsonl`，而产出侧此前要用户手写 `appendFileSync`（usage-guide
   曾这么教）。现在一行接入：`createApp({ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] })`。
@@ -2108,7 +2141,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 ### 变更
 
 - **挂起改成「一个状态 + 一个原因」：`awaiting_approval` → `suspended` + `suspendedReason`**
-  （spec §10 2026-09-28 ①；为 durable timer 铺路）：`RunStatus` 与 `AgentStopReason` 的成员名
+  （spec §10 2026-09-28 ref-suspend-state-reason；为 durable timer 铺路）：`RunStatus` 与 `AgentStopReason` 的成员名
   都改成 `'suspended'`，「为什么挂起」由新字段承载 —— `'approval'`（等人工决定）/
   `'timer'`（等一个时刻）。两条判据因此落在**原因**上：`approvalTimeoutMs` 只对 `approval`
   成立、`approve` 对 `timer` 挂起一律 409 —— 否则一条等时刻的 run 会被「审批超时」提前叫醒
@@ -2118,10 +2151,10 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   新增内置正则预设（Bearer / JWT / AWS access key / LLM `sk-` key / 邮箱 / 手机号），
   **缺省全开**（拷走即用），`presets` 可开子集或 `false` 全关；预设命中的替换文案带类别
   标签（`[REDACTED:email]`），自定义 `patterns` 与 `keys` 命中的仍是裸 `[REDACTED]`。
-  脱敏不内建进框架是已锁定决策（spec §9.3 / §10 2026-09-14 ⑥），这是配方层的升级。
+  脱敏不内建进框架是已锁定决策（spec §9.3 / §10 2026-09-14 ref-event-truncation），这是配方层的升级。
 - **sink 投递失败不再完全静默**：`flushSinks` 吞掉 sink 异常的纪律不变（观测不击穿业务），
   但吞之前现在会落一条 `console.warn`（文案含「trace sink」，可 grep）——「观测的观测」
-  此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ②。
+  此前是零信号：sink 天天挂、面板一切如常。决策见 `docs/spec.md` §10 2026-09-27 ref-sink-failure-warn。
 
 ### 重构（纯结构，零行为变化）· 结构收口（2026-09-28，底盘见 `docs/reviews/2026-09-28/SRC-STRUCTURE-2026-09-28.md` 的落地顺序 1–4）
 
@@ -2188,7 +2221,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
     连接器反向取 helper（值）是一条**真实的值环**（靠 ESM 函数提升侥幸无恙）。抽后成单向 DAG，
     **公共面不变**（`src/index.ts` 未改；`mcp.ts` 继续转出这些符号）。
   - ⚠️ 盘点报告初稿写「两条环的回边都是 `import type`」**是错的** —— 实测 `mcp.ts:350/352` 是
-    **re-export 值**。结论与修法见 `docs/spec.md` §10 2026-09-28 ⑩ 第 4 条。
+    **re-export 值**。结论与修法见 `docs/spec.md` §10 2026-09-28 ref-structure-closeout 第 4 条。
 
 ### 迁移
 
@@ -2196,7 +2229,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `RedisTaskStore` 里已写好的 JSON）：**本版内置兼容读，宿主不需要做任何动作** —— store 读回记录
   时会把旧形状归一（`awaiting_approval` → `suspended` 并补 `suspendedReason: 'approval'`；
   `approvalPendingSince` → `suspendedSince`，旧键删掉），`SqliteTaskStore` 还会把派生列 `status`
-  一并拉正。细节与门禁见 `docs/spec.md` §10 2026-09-28 ③。
+  一并拉正。细节与门禁见 `docs/spec.md` §10 2026-09-28 ref-read-normalize-shim。
   ⚠️ 本小节此前写的是「框架**不**内置兼容读、请宿主在升级前手工改库」—— 垫片落地后那段要求
   **已作废**（手工处置仍可行，但不再是必须；在等审批的 run 不会再被判成终态）。
   `SuspendedReason` 仍然是**类型**而不是别名：不为旧值引入第二个运行时名字。
@@ -2298,7 +2331,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   （Promise 二次 `resolve` 是 no-op，少这行行为完全一样），为它写断言就是真空变绿。
   ⚠️ 同一轮查清一个会误导人的读数：`src/engine/mcp-server-stdio.ts` 报 **22.22% 行覆盖**不是缺口，
   是**采集假象**（用例走真子进程，c8 只采父进程；实测该用例 22/22 全过），且该数字拆分前就存在。
-  变异验证 17/17 逐条咬人。详见 `docs/spec.md` §10 2026-09-28 ⑩ 第 5 条。
+  变异验证 17/17 逐条咬人。详见 `docs/spec.md` §10 2026-09-28 ref-structure-closeout 第 5 条。
 
 - **补 7 条「正常输入下可达、却从没走过」的功能分支**（2026-09-28，同轮尾巴；跨 3 个测试文件 +8 条用例）：
   先纠正一个读法 —— c8 的 branch **不是 if/else 两条臂**，而是「**代码块**」（全仓条目**全是
@@ -2311,7 +2344,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   **分母不变大的前提下**：语句 295 → **287** 未覆盖、块 347 → **338**、分支 91.82% → **92.04%**，
   用例 1465 → **1473**。函数那一档**刻意不动**（那 11 个「从未被调用的函数」全是只读访问器，
   另有一个 `TaskEventStreams.forget` 是**未导出的内部死方法** —— 为它写测试等于锁死死代码）。
-  变异验证 7/7 逐条咬人。详见 `docs/spec.md` §10 2026-09-28 ⑩ 第 6 条。
+  变异验证 7/7 逐条咬人。详见 `docs/spec.md` §10 2026-09-28 ref-structure-closeout 第 6 条。
 
 - **`packages/cli/test/inspector.test.mjs` 新增 ⑫「选完文件夹 → 透传给 run 的就是所选目录」**：
   2026-09-24 真用户反馈「选完之后透传给 agent 的不是所选文件夹」，逐环核实后**链路是通的**
@@ -2699,7 +2732,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 
 ### 修复（复核轮：四条窄窗口 / 口径缺陷 + 两条顺手抓出的）
 
-同一天对这轮 dev 环改动做了一次逐条回读代码的复核（决策链见 `docs/spec.md` §10 2026-09-22 ⑦）。
+同一天对这轮 dev 环改动做了一次逐条回读代码的复核（决策链见 `docs/spec.md` §10 2026-09-22 ref-review-round-fixes）。
 下面每条都补了**反向验证**（把修复摘掉 ⇒ 新加的门禁真的会红）：
 
 - **并发闸没盖住「换能力选择 ⇒ 重启」那条路径**（双击运行会真并发两次）。受理到 run 真正发出去之间
@@ -2756,12 +2789,12 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   （prompt 回显模型看不见；对话历史真的进上下文，且只在开了多轮时出现）。
   §2.2 另补一条「**看哪里**」—— 此前只写了「看什么扩展名」，没写监视根（`<项目根>/src` 整棵树
   ＋ 项目根单独的 `.env` / `.env.local`）⇒ 读者无从知道「改项目根的 `README.md` 不触发重启」。
-- `docs/spec.md` §10 2026-09-22 ②：本轮决策记录，含「**P0–P2 全程零框架改动**」的逐项核对。
-  §10 2026-09-22 ③：真跑探针抓出的两个缺陷与三条修复（含反向验证记录）。
-  §10 2026-09-22 ④：拿功能文档逐项对照做审计 —— 又抓出两处「文档里有、代码里没有」，
+- `docs/spec.md` §10 2026-09-22 ref-dev-loop-drive-run：本轮决策记录，含「**P0–P2 全程零框架改动**」的逐项核对。
+  §10 2026-09-22 ref-dev-loop-real-run：真跑探针抓出的两个缺陷与三条修复（含反向验证记录）。
+  §10 2026-09-22 ref-doc-vs-code-audit：拿功能文档逐项对照做审计 —— 又抓出两处「文档里有、代码里没有」，
   以及「同一条事实的第三个影子」（中止的 `ok` 是 `false`）。
-  §10 2026-09-22 ⑤：追一次瞬时红 → `WATCH_SKIP` 的半实现 + 那条「守了另一件事」的假守卫。
-  §10 2026-09-22 ⑥：拿 ⑤ 的「监视根」去核每条判据 → `.env` 是一条**够不着**的判据
+  §10 2026-09-22 ref-watch-skip-half：追一次瞬时红 → `WATCH_SKIP` 的半实现 + 那条「守了另一件事」的假守卫。
+  §10 2026-09-22 ref-dotenv-unreachable：拿 ⑤ 的「监视根」去核每条判据 → `.env` 是一条**够不着**的判据
   （含「判据的正确性 vs 可达性」与「探针别用写死序号」两条可复用的教训）。
 - `docs/guards.md` §1.4：新增五条守卫登记（面板纯逻辑 + watch 允许清单 / dev 环鉴权与 HTTP 面 /
   生成物能力名一致性 / `agentia dev` 整链真跑 / `.env` 接线成对断言），并随 ④ 扩面
@@ -3200,7 +3233,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 - 复核结论一条「查过但不改」：`interruptibleSleep(0, 已中止的 signal)` 仍 **resolve** ——
   它与 `withTimeout(p, 0)` 的「非正数 = 机制关掉」是同一口径，不是缺口（本轮曾误改，
   被既有用例拦下后回退；那条用例的断言已从隐式 `await` 改成显式 `assert.doesNotReject`
-  并写明理由，见 spec §10 2026-09-19 ④）。
+  并写明理由，见 spec §10 2026-09-19 ref-budget-guard-cheap-usage）。
 
 **迁移（自己实现这两个结构面时）**
 
@@ -3216,7 +3249,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   自己接上的**四处**（deadline / 取消 → `signal`、`metadata` 的 `traceparent` → `traceContext`、
   框架错误 → gRPC 状态码、trace → sink），四处漏掉**都不报错**。判别规则只有一条 ——
   客户端是不是标准库（MCP 用 `spawn` + `fetch` 所以能内置，gRPC / Kafka 要引第三方客户端），
-  决策见 spec §10 2026-09-18 ⑪。
+  决策见 spec §10 2026-09-18 ref-host-integration-recipe。
 - `docs/usage-guide.md` §6.2 新增「gRPC 宿主」配方；`examples/grpc-host/` 给了 proto + 宿主 +
   客户端 + README（一元 / 服务端流 / 异步投递 / 查任务，`PORT=0` 自报端口、无抢占窗口）；
   `scripts/e2e-grpc.ts` 真构建真起宿主、用它自带的客户端跑四个 RPC，并入 `npm run e2e` 第四步。
@@ -3283,7 +3316,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   而仓库里有 5 处注释把它当既成事实引用（含 `src/index.ts` 的公共面注释）—— 现在全部改正。
   为什么反：F7 的理由「守住零运行时依赖」不成立（该口径 = 不依赖**第三方包**；`spawn` / `fetch` 都是
   标准库），且 `store/` 的三层形状里「只用标准库的平台能力」一律内置（`FileTaskStore` / `SqliteTaskStore` /
-  HTTP 宿主），独立包才是那个例外。完整论证与可逆性判据见 `docs/spec.md` §10 **2026-09-18 ⑨**。
+  HTTP 宿主），独立包才是那个例外。完整论证与可逆性判据见 `docs/spec.md` §10 **2026-09-18 ref-mcp-builtin**。
 - **连接器替你兜住三件只有它能做的事**（此前只活在 `scripts/e2e-mcp.ts` 那段内联副本里，无门禁守着）：
   ① spawn 失败的 `'error'` 是**异步事件**，不接住就是未捕获异常（真实宿主进程直接崩，没有 try/catch
   接得住）；② stdout 必须按 `\n` **攒包**（一条报文可能跨多个 chunk）；③ **协议层 `isError: true`
@@ -3456,7 +3489,7 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   `traceparent`（W3C）现在会记成 run 根 span 的一条 **`links`**（新类型 `SpanLink`），
   `createOtlpExporter` 映射为 OTLP **span links** —— 于是「这条 run 是被谁触发的」在跨进程 / 跨服务
   时也可查。**不改 `traceId == runId` 的 1:1 不变量**：run 仍是自洽的一棵新树，上游是被**链接**
-  而不是被**继承**成父 span（理由与取舍见 `docs/spec.md` §10 2026-09-17 ⑤）。
+  而不是被**继承**成父 span（理由与取舍见 `docs/spec.md` §10 2026-09-17 ref-cross-process-links）。
 - 新增 `parseTraceparent(value)` 导出：把 `traceparent` 头解析成 `TraceContext`。
   **非法 / 缺失 / 版本 `ff` / 全零 id / 位宽不符一律返回 `undefined`**（不抛）——
   链路是观测行为，不该把业务请求打成 400。`createHttpHandler` 在 `POST /run` 与 `POST /tasks`
@@ -3501,20 +3534,20 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
   超时合成信号；以及任何 `code === 'timeout'` 的错误）现在返回 **`type: 'timeout'`**，不再归进 `connection`。
   **`retryable` 保持 `true`** ⇒ **自动重试行为不变**（超时本来就是可重试故障）；变的是**记账**：
   按 `span.error.type` 分流的看板 / 告警会把超时类从 `connection` 挪到 `timeout`，`trace-diff` 比对旧 trace
-  时超时会显示为「类型变了」。取证与决策见 `docs/spec.md` §10 2026-09-17 ②。
+  时超时会显示为「类型变了」。取证与决策见 `docs/spec.md` §10 2026-09-17 ref-timeout-error-type。
 - 顺带把 `isTimeoutError` 的契约写清（三条判据，全鸭子类型）：框架 `TimeoutError` 实例 /
   `code === 'timeout'` / `name === 'TimeoutError'`；引擎的工具级 catch 用它 ⇒ 工具自判的超时与引擎判的
   超时记同一类账（`errorKind='timeout'`）。
 - ⚠️ **更正**：此前一版说明里「模型调用超时在 `span.error` 上是 `type:'unknown'`（不可重试）」是**错的** ——
   它一直判 `connection` + 可重试（`engine/errors.ts` 的 `isConnectionError` 专门认 `name === 'TimeoutError'`）。
-  该错误说明已从 `docs/spec.md` 删除，以 2026-09-17 ② 为准。
+  该错误说明已从 `docs/spec.md` 删除，以 2026-09-17 ref-timeout-error-type 为准。
 
 ### 变更（MCP 超时单源化 —— 一次调用只有一个裁判）
 
 - **原语单源**：`TIMED_OUT` / `withTimeout` 下沉到 `src/core/timeout.ts`，`engine/concurrency.ts`
   原样再导出（`import` 路径与名字对使用者与测试都不变）。MCP 桥的 `withDeadline` 改为它的**薄封装** ——
   此前桥自带一份**纯竞速**实现，于是 2026-09-14 的「超时是硬的」收紧只落进引擎，桥能把**超预算**的
-  MCP 调用记成成功（确定性可复现；取证与决策见 `docs/spec.md` §10 2026-09-17 ①）。
+  MCP 调用记成成功（确定性可复现；取证与决策见 `docs/spec.md` §10 2026-09-17 ref-mcp-timeout-single-source）。
 - **⚠️ 行为变更（迁移注意）**：引擎设了 `toolTimeoutMs` 时，`mcpTools({ timeoutMs })` **不再参与判定**
   （即使桥的 `timeoutMs` 更短）—— 一次调用只有一个裁判，此前「谁短谁生效」让同一件事在 trace 里
   落成两种账。要收紧某个 MCP server 的时限，请设 `toolTimeoutMs`（或把该工具单独包一层）。

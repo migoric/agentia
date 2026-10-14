@@ -163,7 +163,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   按 runId 检索都由宿主用 sink 组合，零 engine 改动。
 - 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
 - **trace 出口（sink）**：`TraceSink { export(trace) }` —— run 收尾（成功 / 失败两条路径）后框架把
-  完整 trace 交给每个 sink；sink 抛错被吞（吞之前落一条 `console.warn` 告警，§10 2026-09-27 ②），
+  完整 trace 交给每个 sink；sink 抛错被吞（吞之前落一条 `console.warn` 告警，§10 2026-09-27 ref-sink-failure-warn），
   不影响 run。
 - **增量出口（2026-09-21，与 sink 并列为第二条缝）**：`onTraceEvent`（单次 run 一个 + 应用级缺省）
   在 run **进行中**逐笔回调记账事件（`span.begin` / `span.end` / `span.event` / `span.attribute` /
@@ -196,7 +196,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 1. **数量上限 + 丢弃计数**：`traceLimits.maxEvents` 超限即停止记账，并在 run 根留**两笔**
    `trace.truncated`：起点标记 `{limit}`（断点）+ 收尾摘要 `{droppedEvents, limit}`（丢弃量）
    —— 与 OTLP `partialSuccess` 那条同因：「少了一半数据」必须有人能收到。
-   ⚠️ 两笔都**同时**进交付的 trace 与 `onTraceEvent` 增量流（2026-09-28 ⑨ 定的口径）：
+   ⚠️ 两笔都**同时**进交付的 trace 与 `onTraceEvent` 增量流（2026-09-28 ref-pr164-closeout 定的口径）：
    只在一条缝上出现的事件，会让「按 `seq` 折回逐字等于 snapshot」那条契约变成假话。
    两笔簿记**不占** `maxEvents` 配额（**不做**环形缓冲：中间空洞比尾巴截断难解释得多）。
 2. **采样留在缝外**（`docs/observability.md` 2.3，实现见 `examples/observability`）：
@@ -212,7 +212,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
 > 「trace 作重放基底」已落地，不再是开放问题：`traceToMessages` 把 trace 线性化为 messages
 > （R6 / v0.2.0，见 §10 2026-09-11），`forkMessages(trace, { atTurn, append? })` 支持在主循环
 > 第 N 回合截断分叉、拼新消息喂回 `app.run`（2026-09-16，见 §10）。两者同源有损
-> （trace **缺省**不记 assistant 原文 —— opt-in 例外见 §10 2026-09-27 ④ `traceContent`）：
+> （trace **缺省**不记 assistant 原文 —— opt-in 例外见 §10 2026-09-27 ref-trace-content-full `traceContent`）：
 > 产物跑的是**新 run**，不是接着原 run 续跑。
 
 ## 10. 决策记录
@@ -387,8 +387,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `McpClientLike { listTools(); callTool(name, args) }` + `mcpTools(client, { prefix, server, timeoutMs }) → AgentTool[]`；
   **不 import MCP SDK、不含任何传输实现**（stdio / StreamableHTTP 归独立可选包，本仓库 `scripts/e2e-mcp.ts`
   留了一份最小连接器供参考）。
-  > ⚠️ **后话（2026-09-18 ⑨）：本条后半句已作废** —— 连接器改为**内置**（那个「独立可选包」
-  > 从未发布）。上文保留为当时的决策记录；理由见 §10 2026-09-18 ⑨。
+  > ⚠️ **后话（2026-09-18 ref-mcp-builtin）：本条后半句已作废** —— 连接器改为**内置**（那个「独立可选包」
+  > 从未发布）。上文保留为当时的决策记录；理由见 §10 2026-09-18 ref-mcp-builtin。
   **接入点偏离设计（此处锁定）**：设计写的是「`createApp({ providers })` 里放个 `useFactory` 即可」——
   **落地时不成立**：菜单只从装饰器注册表收集（`useFactory` 的返回值根本不进菜单），且 `Container.resolve`
   是同步的（`await mcpTools(...)` 塞不进去）。零新机制的做法是给 `AppOptions` 加 **`tools?: AgentTool[]`**：
@@ -534,7 +534,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   `next()`（短路，副作用不发生），拒绝并让模型改道 = 抛错（记 `is_error`，不杀 run）；`toolTimeoutMs` 缺省 0
   不掐断等待。**真缺口是「跨进程挂起/续跑」**：`RunStatus` 无「待批准」态、循环位置（消息数组）不落库，
   且 `traceToMessages` 重放**有损**（assistant 原文未记录）—— 无法以重放假冒续跑，故**不做**，列为 R7 候选评估。
-  > ⚠️ **后话（2026-09-19 ①）**：跨进程挂起/续跑**已落地** —— 关键解锁是「审批 = 异步 tool_result」
+  > ⚠️ **后话（2026-09-19 ref-hitl-approval）**：跨进程挂起/续跑**已落地** —— 关键解锁是「审批 = 异步 tool_result」
   > （不落「循环位置」、落**消息历史**：assistant 结尾的未决 tool_use 就是断点本身），见下。
   **护栏** —— **不做子系统**（同「配额不是框架子系统」）：入参缝（包 `app.run` / `authenticate`）、工具前缝
   （`middleware`）、出参缝（包返回值 / `sinks`）已足，策略差异过大硬编码必错。**沙箱** —— **框架不执行模型
@@ -665,7 +665,7 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   **本 PR 没做什么（当日已补，见下条）**：**引擎那层没动**。修法方向是给 `withTimeout` 加**实测耗时兜底**
   （await 之后用 `Date.now() - startedAt >= timeoutMs` 再判一次，超时就记超时），但那是一次
   **语义收紧**——「21ms 完成的工具在 20ms 预算下会被记成超时」与当天的「记成功」不同，
-  属于核心路径语义变更，要单独拍板 + 单独决策记录。⇒ **同日单独一单落地，见「2026-09-14 ②」**。
+  属于核心路径语义变更，要单独拍板 + 单独决策记录。⇒ **同日单独一单落地，见「2026-09-14 ref-hard-timeout」**。
 
   **顺带**：同一个 PR 把四处「等到某状态」的墙钟预算等待收进 `tests/helpers.ts` 一份
   `waitFor(cond, what, budgetMs = 10_000)`（`host-hardening` 有 4 处默认 1000ms、比出过事的 scheduler
@@ -1346,7 +1346,7 @@ node-redis v4.7.1  同文件 transformArguments（v4 的名字）—— 同样�
 
 ### 2026-09-17 ① ref-mcp-timeout-single-source：MCP 超时**单源化** —— 一次调用只有一个裁判（桥不再自判）
 
-**背景**：`engine/concurrency.ts` 的 `withTimeout` 自 2026-09-14 ②（本文件）起是「不看竞速、只看实测耗时」
+**背景**：`engine/concurrency.ts` 的 `withTimeout` 自 2026-09-14 ref-hard-timeout（本文件）起是「不看竞速、只看实测耗时」
 的硬保证；但同一判定在 `src/integrations/mcp.ts` 里有**第二份实现**（`withDeadline`，纯 `Promise.race`），
 而 ② 那次收紧只改了 engine 那一份（`git show --name-only 1ceb372` 的文件清单里**没有** `mcp.ts`）。
 
@@ -1608,7 +1608,7 @@ e2e：`scripts/e2e-examples.ts` 的 `/run` 步骤带真 `traceparent` 头并断�
    `ToolRunContext` 9 个字段里唯一一件「主循环注入、两个嵌套能力都没下传」的。后果不是「少一层保险」
    而是**反的**：子循环里 `withTimeout(p, 0)` 直接返回原 promise（`core/timeout.ts` 的 `!(t > 0)`）
    = 永不超时，同时 MCP 桥找不到引擎预算、又起自己的 60s 兜底 = **双计时器 + 双账本**，正是
-   2026-09-17 ① 声称已消除的状态。
+   2026-09-17 ref-mcp-timeout-single-source 声称已消除的状态。
 7. `transport/http.ts` 把 `remaining() === 0`（deadline 已过）当「不限」传给 `runner.drain`，而
    `async.ts` 的 `timeoutMs <= 0` 语义是**无限等** ⇒ 优雅停机永不返回、SIGTERM 宽限期后被强杀。
 8. `transport/async.ts` 的 `#redispatch` 只在内存改 `status`/`ownerId`，真正落库晚于
@@ -1748,7 +1748,7 @@ e2e：`npm run e2e`（CLI / EXAMPLES / DEPLOY / GRPC 四关全绿）、`npm run 
 `RunAgentOptions` 等公共契约；正确修法是逐调用点条件展开（`...(x !== undefined ? { x } : {})`，
 `loop.ts` 已在用这个形状）。实测过「只改一个类型文件只消掉 1/39」，证明它不是局部修补。
 **不在本轮硬开**：实测分布与四步迁移方案记在 `docs/guards.md §2` 的专门条目。
-（**后话：已由 2026-09-18 ⑦ 单独一轮完成**，该专门条目随之迁入 `guards.md` 附录。）
+（**后话：已由 2026-09-18 ref-exact-optional 单独一轮完成**，该专门条目随之迁入 `guards.md` 附录。）
 
 **同轮补齐的另一半（对拍矩阵）**：`tests/integrations/adapter-parity.test.ts` ——
 「同一契约的两条适配器必须对称」的可执行版本，**一份场景表跑两遍**（不是把两侧测试写成镜像）。
@@ -1877,7 +1877,7 @@ openai 打 1 次（引擎层那一次）。两侧各自的测试都通过，因�
 **超时口径（延续「一次调用只有一个裁判」）**：连接器的 `timeoutMs` **只作用于装配期**
 （握手 + `tools/list`）—— 那两步此前**没有任何裁判**，server 卡住会让 `createApp` 永久挂起；
 `callTool` 的裁判仍是引擎 / 桥，连接器**不再起第二个计时器**。实现复用 `core/timeout.ts` 的
-`withDeadline`，**不用 `AbortSignal.timeout`**：后者内部 unref，正是 2026-09-14 ④ 明令禁止的形状。
+`withDeadline`，**不用 `AbortSignal.timeout`**：后者内部 unref，正是 2026-09-14 ref-deadline-timer 明令禁止的形状。
 
 **已知边界（如实标注；两条已在同日 ⑩ 收掉）**：StreamableHTTP 的会话过期（带会话 id 收到 `404`）
 ~~**不自动重握手**，按不可重试的 `api` 错抛出~~ ⇒ **已由 ⑩ 改为自愈**；`close()` ~~不保证等到子进程
@@ -1939,7 +1939,7 @@ MCP stdio 只用 `spawn`（`node:child_process`）+ 全局 `fetch` ⇒ 内置**�
 gRPC 要 `@grpc/grpc-js`、Kafka 要 `kafkajs` ⇒ 落在「可选能力一律 duck-typed / peer」那一侧
 （AGENTS.md 硬约定 + roadmap「可选能力（zod、OTLP、队列）全部 peer/可选接入」）。
 所以「MCP 内置、gRPC / Kafka 不内置」**不双标**：差别只有那一条。反向的路（把协议细节推给独立包）
-上一次刚被否过 —— 2026-09-18 ⑨ 反转了 F7 的「独立可选包 `@migor/mcp`」。
+上一次刚被否过 —— 2026-09-18 ref-mcp-builtin 反转了 F7 的「独立可选包 `@migor/mcp`」。
 
 **决策（粒度）**：若真拆包，是**一个第三方客户端一个包**，不是一个大「服务包」。三条硬理由：
 ① peer/可选 变矩阵（只要 gRPC 的人也被要求配 kafkajs，或退化成一堆 dynamic import + 运行时报缺）；
@@ -1953,7 +1953,7 @@ prepublishOnly 闸门 + CHANGELOG），合成一个大包只省下一个 `packag
 **决策（Kafka 侧不做）**：配方已在（§6.4「跨进程关联」的队列消费者形态，含那条真坑 ——
 **位移提交点与 run 终态不是一个时刻**）。而 consumer 包里唯一非平凡的部分（offset commit 时机、
 rebalance、shutdown flush）全是**进程级决策**，正是框架声明不碰的东西（不读 env、不订阅信号）。
-2026-09-17 ⑤ 已记「框架内建 Kafka 集成没必要：缝已经够」，本条不推翻它，只把理由补全。
+2026-09-17 ref-cross-process-links 已记「框架内建 Kafka 集成没必要：缝已经够」，本条不推翻它，只把理由补全。
 
 **决策（gRPC 侧做配方 + 示例，本轮落地）**：gRPC 与 Kafka **不同类** —— 它是**第 4 个宿主**，
 与 HTTP 并列的一等概念；而宿主接入里有四处是**框架语义**、不是样板：deadline / 取消 → `signal`、
@@ -2016,10 +2016,10 @@ assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢�
 因此全部消解：状态有了（`awaiting_approval`）、落的就是消息数组本身（无损）、不走
 `traceToMessages`（不经 trace 重放）。
 
-> ⚠️ **状态值改名（2026-09-28 ①）**：本节（以及本文件其他正文）出现的 `awaiting_approval`
+> ⚠️ **状态值改名（2026-09-28 ref-suspend-state-reason）**：本节（以及本文件其他正文）出现的 `awaiting_approval`
 > 一律读作 **`suspended`**，且它的「为什么挂起」由新字段 **`suspendedReason === 'approval'`**
 > 承载；引擎 `AgentStopReason` 与 `RunStatus` 的成员名同步从 `awaiting_approval` 改成
-> `suspended`。旧→新映射、破坏面与理由见 **§10 2026-09-28 ①**。正文原样保留（体例：只增不改，
+> `suspended`。旧→新映射、破坏面与理由见 **§10 2026-09-28 ref-suspend-state-reason**。正文原样保留（体例：只增不改，
 > 改名不重写记载它当时的判断）。
 
 **② 为什么回合级全有或全无**：协议要求每个 tool_use 都有配对 tool_result。一个回合里
@@ -2032,7 +2032,7 @@ assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢�
 
 **③ 为什么惰性超时（不起定时器）**：`approvalTimeoutMs` 只在 `approve` / `poll`（含
 `awaitTask` 的读路径）/ `resumePending` **读到** awaiting 记录时判定 —— 到点自动把全部待决项
-写成 `denied, reason: '审批超时'`（`decidedBy: 'system'`）并重派。理由与 2026-09-14 ④ 同源：
+写成 `denied, reason: '审批超时'`（`decidedBy: 'system'`）并重派。理由与 2026-09-14 ref-deadline-timer 同源：
 「等待的终点」类计时器在空事件循环下会让进程退不出/等待永不结束；而且挂起的任务**不占任何
 在飞资源**，一个永远没人读的任务也不该被定时器推着走。代价如实标注：没人读 ⇒ 没人判
 （文档写明「惰性」）。
@@ -2040,7 +2040,7 @@ assistant 消息」的消息历史落库（`TaskRecord.spec.messages`），恢�
 **④ 为什么挂起也 flushSinks**：trace 是一等公民 —— 「挂起段」也是一段真实执行
 （模型往返 + 审批请求），它的 trace 必须可观测，否则「任务为什么在等」无从回答。
 每段执行一棵独立的新树（`traceId == runId` 不变量不破），恢复段经 `traceContext` link
-挂到上一段 runId（复用 2026-09-17 ⑤ 的入站关联机制），观测后端据此把多段连成一条链。
+挂到上一段 runId（复用 2026-09-17 ref-cross-process-links 的入站关联机制），观测后端据此把多段连成一条链。
 对称地：`TaskSink.onFinished` **不**对挂起开火（它的承诺是「任务达终态」），记忆回写 /
 会话追加维持「只成功才写」。
 
@@ -2109,13 +2109,13 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
 逐条对代码核实后修复（每条带反向验证：摘掉修复 ⇒ 新用例必红）：
 
 1. **`AsyncRunner.approve` 补重入闸 + 真落库再派发**：并发 approve（双击/多审批人）曾在
-   store 往返窗口内各自判「决定齐了」、**各派发一次**（与 resumePending 在 2026-09-18 ⑧
+   store 往返窗口内各自判「决定齐了」、**各派发一次**（与 resumePending 在 2026-09-18 ref-review7-closeout
    补的闸同一 bug 类，隔一个方法漏了）；且它用着 `#safeSave`（吞错）却在 docstring 里
    承诺「先落库再派发」—— 现在并发共享在飞那次（第一次决定赢，后到者拿到同一份结果），
    落库改真 `store.save`（失败 ⇒ reject 给调用方、绝不派发）。
 2. **MCP StreamableHTTP 连接器去掉 `tools/call` 的第二计时器**：`rpc()` 末尾曾无条件
    `guard(...)`，把装配期的 `timeoutMs` 管进了工具调用（stdio 侧没有这层）—— 正是
-   2026-09-17 ①「超时单源化」要消除的双计时器。装配期路径（initialize / initialized /
+   2026-09-17 ref-mcp-timeout-single-source「超时单源化」要消除的双计时器。装配期路径（initialize / initialized /
    tools/list）的 guard 不变。顺带：非 SSE 分支的响应 id 改为**等值配对**（原只验
    「id 是 number」，串包时会把别的请求的结果当本次的返回）。
 3. **gRPC 示例 `getTask` 补 try/catch**：grpc-js 不接管 async handler 的 Promise，
@@ -2206,7 +2206,7 @@ Scheduler 调度表不落库、`contextPolicy` 不进子循环、MemoryStore 无
    401/403）。此前默认 500 → server/可重试：改配置才有救的病因让引擎白重试三轮。
 5. **`runTimeoutMs` 超时归 timeout 一类账**：`#raceTimeout` 的裸 `Error` 换成
    `core/timeout.ts` 的 `TimeoutError`（`code='timeout'`）—— 此前落 unknown，
-   与「超时自成一类」（2026-09-17 ②）在异步宿主这条路径上两本账。
+   与「超时自成一类」（2026-09-17 ref-timeout-error-type）在异步宿主这条路径上两本账。
 6. **`FileTaskStore.save` 先落盘后写内存**：旧顺序下落盘抛错时内存已推进 ——
    内存说「已存」而磁盘没有，重启后记录静默回退。
 7. **Anthropic SSE 的 content_block `index` 设上限**（1024）：index 是外部输入，
@@ -2601,7 +2601,7 @@ CI 必需检查名里**（「verify-all 8 步」），加检查一律折进已�
 第一笔丢弃那一刻写下）＋**收尾摘要** `{droppedEvents, limit}`（交付时的最终计数）。
 两笔**同时**进交付的 trace 与 `onTraceEvent` / `subscribe` 增量流，所以「按 `seq` 折回**逐字等于**
 `snapshot()`」这条折叠契约在截断下**无例外地**成立（**不静默**，与 OTLP `partialSuccess`
-那条同因；定案与实证见 §10 2026-09-28 ⑨）。**不做**环形缓冲：中间空洞比「尾巴截断」难解释得多。
+那条同因；定案与实证见 §10 2026-09-28 ref-pr164-closeout）。**不做**环形缓冲：中间空洞比「尾巴截断」难解释得多。
 与 `maxEventChars` 的分工写死：**一个管「多长」、一个管「多少」**，各有各的家
 （正是本仓在收的「一个词两个语义」那种债，不能再造一个）。
 配套：`observability.md` 2.3 补**容量换算表**（实测数字 → 每日量 → 倒推 `rate`），
@@ -4066,7 +4066,7 @@ try 块里 catch 看不到（块级作用域），首轮写成那样直接 Refer
 （形态与 file 同类，但 `list()` 是 SCAN）。**要拍板 7② 之前**：sqlite 的数字够了（它是最贵的一侧），
 但别把 file 的数当全局证据。
 
-**已落地（2026-09-28 ⑥ 同批）**：sqlite 侧触发了（`list()` 是真查询且线性增长），形态按上面
+**已落地（2026-09-28 ref-run-event-input 同批）**：sqlite 侧触发了（`list()` 是真查询且线性增长），形态按上面
 定案的那条走 —— `TaskStore` 加**可选** `listDue?(before)`（接口加法，不破自定义 store），
 `SqliteTaskStore` 用**派生列 `wake_at` + `(status, wake_at)` 索引**实现（不选 `json_extract`：
 它仍要对扫到的每一行解析 JSON，是 O（全表） 的 C 版；派生列与 `status` 列同一条「多一份真源」
@@ -4144,7 +4144,7 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    `injected` 恒 true 是有意的：只在注入那一刻记，投递但尚未注入（再挂起）不记。
    ⚠️ 口径是「注入进本段消息流」，**不是**「模型已看到」：该段若在首个模型请求之前
    中止/失败，事件不进持久化历史（终态分支无条件清簿记），留痕仍成立（它记的是注入动作）。
-   （原名 `delivered` —— 外部深评 P3-2 指出它超前于事实，2026-09-28 ⑧ 改名。）
+   （原名 `delivered` —— 外部深评 P3-2 指出它超前于事实，2026-09-28 ref-deep-review-p3 改名。）
 8. **payload 上限不另设旋钮**：HTTP 侧就是 `maxBodyBytes` 那道闸（413 同口径）；程序侧
    （`signalTask`）的调用方是同进程代码（与 submit 的 messages 同档信任），不设第二道。
    因此 `core/limits.ts` 不新增条目（无新「0 语义」旋钮）。
@@ -4182,7 +4182,7 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    循环**没有** ⇒ 两处都能在 `drain()` 返回 `true` 之后起新 run。我复现的读数与报告一致
    （`drain()`→`true` 之后 `app.run` 计数 1）。修法是结构级的：`#dispatch(rec)` 唯一入口、闸只在那里
    判一次，各支只管「先落库再派发」的顺序；`submit` **也**走它（它的早返回负责抛错/503 语义）。
-   ⚠️ **订正（2026-09-28 ⑨）**：这里原写「窄窗口里宁可把任务留给下次启动认领」—— 那个窄窗口
+   ⚠️ **订正（2026-09-28 ref-pr164-closeout）**：这里原写「窄窗口里宁可把任务留给下次启动认领」—— 那个窄窗口
    **不存在**：`submit` 是**全同步**的（开头那道 `isDraining` 检查与 `#dispatch` 之间没有 await，
    异步 store 的 `save` 也不 await）⇒ JS 不可能在中间插入 drain 的置位。走 `#dispatch` 是
    **结构一致性**（派发口不设例外），不是行为依赖。真会撞上这道闸的是 approve / signalTask /
@@ -4236,7 +4236,7 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    不进 `span.events` ⇒ 两个视图各缺一笔、谁也不等于谁。此前没人发现，是因为**默认不设上限**
    —— 折叠用例永远碰不到截断路径。修法：起点标记**记进 run 根 span 的事件**（两处同一份载荷），
    收尾摘要**也在交付那一刻派一次**（`truncationSummary` 缓存保证只生成、只派一次 ——
-   2026-10-13 ⑧ 起它还是「多次 snapshot 逐字一致」的单源）。
+   2026-10-13 ref-deep-review-minor 起它还是「多次 snapshot 逐字一致」的单源）。
    ⇒ 折叠规则**无例外地**成立；`trace-events.test.ts` 补了一条「设上限 + 真截断」的折叠用例
    （这一条必须显式跑截断，默认路径必然绿）。折叠侧的帧类型分派同时改成**编译期穷尽**
    （`const _never: never = e`）—— 此前最后那支是无条件 `else`（默认按 link 处理），
@@ -4385,7 +4385,7 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    - `tests/integrations/mcp-protocol.test.ts` —— `unwrap` 的「**键存在 ≠ 值非空**」
      （`{result: undefined}` 也算「有」；改成 `msg.result !== undefined` 会把「server 明确回了
      `undefined`」误判成 malformed）；`withDeadline` 抛的必须是**类型化** `TimeoutError`
-     （抛普通 `Error` ⇒ 引擎记 `threw`/`unknown`，同一个事件两种账 —— 正是 §10 2026-09-17 ①
+     （抛普通 `Error` ⇒ 引擎记 `threw`/`unknown`，同一个事件两种账 —— 正是 §10 2026-09-17 ref-mcp-timeout-single-source
      单源化要消掉的那件事）；`brief` 对**循环引用**与 **`undefined`** 的退化
      （`JSON.stringify(undefined)` 返回的是 `undefined` 而非字符串 ⇒ 落到 `String(value)`）；
      `DEFAULT_CLIENT_INFO.version === '0.0.0'` 是**刻意的**（写成真版本会让
@@ -4505,7 +4505,7 @@ O(N) 次解析（比 sqlite 那条单次真查询更贵），而基准里**redis
    于是 429 / 超时是**常态**而不是边角。原文没有任何兜底 ⇒ 一次摘要失败让整条 run 以「请求失败」收尾，
    而上下文压缩对一条 run 是**尽力而为**的优化、不是前置条件（代价只是历史偏长，不该是 run 死掉）。
    - 修法：`try/catch` + **出声**（run 根记 `context.policy_failed { iteration, message }` +
-     一条 `console.warn`）。为什么不悄悄吞：与 2026-09-27 ② 「sink 失败不再零信号」同一纪律 ——
+     一条 `console.warn`）。为什么不悄悄吞：与 2026-09-27 ref-sink-failure-warn 「sink 失败不再零信号」同一纪律 ——
      降级是一条**运维事实**，没有信号时它表现为「历史一直是满的、token 一直涨」，没人能归因。
    - 降级**不改变**本回合的消息（`next` 保持 `undefined`），也不写 `context.budget` 事件
      （那条事件的口径是「真换了历史」）。
@@ -5777,7 +5777,7 @@ package.json / README / LICENSE），而复刻 npm 的选文件规则（`files` 
 secret，那是**仓库所有者的运维决定**（且会改动 `release.mjs` 头注里那条「发布 → 合并 → 打 tag」
 的顺序论证）。⇒ **如实留作独立议题**，不假装做了。
 
-**守卫**：`tests/docs/stability.test.ts`（2026-09-29 ⑪ 建的）里的「CI 版本集合相等」那条
+**守卫**：`tests/docs/stability.test.ts`（2026-09-29 ref-external-promises-guard 建的）里的「CI 版本集合相等」那条
 **正好为这次改动准备**：它从 `ci.yml` 抽实际集合、与三处散文对拍 ⇒ 本轮如果只改了 ci.yml 而漏改
 任何一处散文，`npm test` 会当场红。本轮同时把它的**射程扩到 `docs/usage-guide.md`**（复述面），
 并改成「逐行收集全部命中、要求互相一致」——只取第一个匹配会在复述处先说漏嘴时静默放行。
@@ -6074,7 +6074,7 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
    `packages/cli/README.md`（**随 npm 发布**）与官网**中英两版** docs 页**都残留着翻转前的说法**。
    已补 `tests/docs/scaffold-entry-contract.test.ts`（四层判据 + 三条防真空下限，12 条变异），并把
    **射程如实写进文件头** —— 目录树「一行只写一个文件」的列举与散文折行两类**不在射程内**
-   （硬判会误红，而误报的门禁会被关掉）。与 2026-09-29 ⑧ 那句「承诺写在文档里、没有门禁」同根。
+   （硬判会误红，而误报的门禁会被关掉）。与 2026-09-29 ref-async-split-source-size 那句「承诺写在文档里、没有门禁」同根。
    ⭐ **同族第二例（复查时翻到，比本次翻转还早）**：2026-09-22 把装配拆成 `src/app.ts` 时，
    官网两版 **api 参考**仍把读 `.env` 说成由默认入口 `src/main.ts` 首行做 —— 停在盘上半个月，
    且此前**零守卫**（`templates.test.mjs` 的同一条不变量只守模板源码）。⇒ 这一条判据同时是
@@ -6142,10 +6142,10 @@ tests/integrations 新增 4 条（含流式）、usage-guide.md API 速查一格
 - **`spec.md:1169` 起（2026-09-16 R7 的 ② 段）** —— 写「选 v1.37 是因为该版 `gen_ai.client` 侧已 stable，
   agent 侧仍 experimental」与「下游（Datadog / Axiom 等）已按 1.37+ 识别这批键」，**两句都被本条证伪**
   （前者见上表 7/7 `[Development]`；后者是**对别人行为**的断言、本仓无法独立核实）；
-- **`spec.md:1857`（2026-09-18 ⑨ 段内）** —— 拿「`otlp.ts:15` 对齐 v1.37」当 MCP 连接器内置的**类比论据**：
+- **`spec.md:1857`（2026-09-18 ref-mcp-builtin 段内）** —— 拿「`otlp.ts:15` 对齐 v1.37」当 MCP 连接器内置的**类比论据**：
   论证本身仍成立（改钉 commit 后**更强** —— 现在是真的「钉一个 commit」），只是**行号与值都漂了**
   （`otlp.ts` 的基准行现为 **`:19`**，写的是 `semantic-conventions-genai @ 6fd0d763`）。
-以**本条**为准 —— 与 2026-10-09 ② 对 §10 的处理同款。
+以**本条**为准 —— 与 2026-10-09 ref-scaffold-default-service 对 §10 的处理同款。
 
 **影响面 = 六处**：`src/integrations/otlp.ts`（头注一处）、`docs/observability.md` §3 表一行、
 `docs/usage-guide.md` §「OTLP 的 `gen_ai.*` 对齐」两处、`docs/roadmap.md` R7「已落地」一行、
@@ -6571,7 +6571,7 @@ sink 的 trace 是 `status='error'` 而根 span 是 ok、无 endedAt、无结构
 
 ### 2026-10-13 ⑤ ref-merge-reports-dedupe：`mergeRunReports` 去重下沉到框架公共面
 
-**起因**（五路深评 低等项）：2026-10-12 ⑧ 给 CLI `agentia report` 加了按 traceId 去重，
+**起因**（五路深评 低等项）：2026-10-12 ref-report-dedupe-traceid 给 CLI `agentia report` 加了按 traceId 去重，
 但去重落在 CLI 层（对原始 trace 行做）；框架公共 API `mergeRunReports(reports)` 喂同样的
 append-only 导出照样翻倍计数。
 
@@ -6613,7 +6613,7 @@ traces 侧缺省至少落 `console.warn`（flushSinks），metrics 侧是零信�
 
 - **D2**：`exactOptionalPropertyTypes` 的守卫（`tests/architecture/tsconfig-strictness.test.ts`）
   只读根 `tsconfig.json` —— `packages/cli/tsconfig.json` 与 `tsconfig.templates.json` **没开**
-  这个开关却天天在编译，等于「显式 undefined 覆盖缺省」那类防线（2026-09-18 ⑦，39 处）
+  这个开关却天天在编译，等于「显式 undefined 覆盖缺省」那类防线（2026-09-18 ref-exact-optional，39 处）
   在 CLI 一半代码上**无声缺位**；
 - **D1**：`scripts/e2e-mcp-server.ts`（MCP 反向桥端到端）全仓零自动化 —— 不在 verify-all
   8 步（**不能**加第 9 步：verify job 名写死步数，见 AGENTS.md），也不在 CI 六个 job 里；
@@ -6872,12 +6872,56 @@ calls / errors / 耗时照计（它自己这次调用的真账）⇒ 各行可�
 删掉圈号那一支）。**P2 与 P3 均未开工。**
 
 **实测**（落地当天读数）：带圈号的锚点定义行 **120 行**、圈号唯一键 **119** —— 差的那 1 个是
-`2026-09-14 ②` 的**同日重号**（slug 能区分它、圈号不能，这本身就是位置号失效的一个具体证据；该重号
-在射程内的引用数 = **0**，故不产生 P2 换引用的歧义）。§10 另有 **4 条无编号锚点**与 **45 条**
-`- 日期：…` 条目行**不在射程**（无圈号 ⇒ 无锚点可引 ⇒ 不给它起名）。
+**2026-09-14 那天的同日重号**（同一天里两行共用同一个圈号；slug 能区分它们、圈号不能，这本身
+就是位置号失效的一个具体证据）。§10 另有 **4 条无编号锚点**与 **45 条** `- 日期：…` 条目行
+**不在射程**（无圈号 ⇒ 无锚点可引 ⇒ 不给它起名）。
+
+> ⚠️ **后话（2026-10-14，P2 落地时）**：上一段里「该重号在射程内的引用数 = **0**」**是错的** ——
+> P2 的替换脚本逐处读出上下文后，射程内该重号实际有 **3 处**引用，且**全部**在讲 `withTimeout`
+> 硬保证（不是同日的那条「展开收尾」）⇒ 人工判定后才写进脚本的显式覆盖表。
+> 这事值得单记一笔：写下那个「0」时没查、之后也没人复核，**直到 P2 的替换脚本在它身上停下来**
+> 才暴露 —— 而脚本之所以会停，是因为它**对同日重号拒绝自动选**（源序先到先得 = 脚本替引用挑一个
+> 含义，正是本设计要消灭的东西），要求人工指定。⇒ **「读数写进文档后没人再算」是这一族的通病。**
+> 顺带：本条目的定义行读数**也已过时**（本条落库后是 121 行 / 圈号唯一键 120）—— 同上，读数会腐烂。
+>
+> **⇒ 同日的 ② 已把 P2/P3 做完**：本条目上面那句「P2 与 P3 均未开工」是**写下时**的事实、不是现状。
+> P2 机械替换 **302 处 / 84 个文件**（守恒验证：归一化后逐字节相同），P3 把守卫收成**只认 slug**，
+> 并新增「射程内零圈号引用」判据。**P3 不是新决定** —— 它就是本条目写明的退出条件到期执行。
 
 **边界（如实写）**：slug 只解决「地址会漂」，**不解决「地址指错了」** —— 键存在但指错主题的仍然只能
-人读（守卫挡的是「查不到」，不是「查错了」，与 2026-09-18 ② 登记的那条同源）。
+人读（守卫挡的是「查不到」，不是「查错了」，与 2026-09-18 ref-guards-registry 登记的那条同源）。
+
+### 2026-10-14 ② ref-anchor-slug-p2p3：引用换成 slug + 守卫只认 slug（P2 换引用 / P3 收口）
+
+**决定**：全仓写出的决策引用**一律是 `（日期 ref-名）`**（这里刻意写占位符 —— 写一个真日期 + 真 slug
+就成了真引用，会被守卫按「该 slug 在不在」咬；本仓这一步先后踩过三次）。**圈号不再是地址** ——
+它按设计仍留在锚点行上，但已降级为**显示编号**（可去掉：锚点解析里圈号是**可选**的，slug 才必在）。
+守卫从「圈号**或** slug 都能解析」（P1 起的**有期限**放宽）收成**只认 slug**，并新增一条判据：
+射程内（**除定义行、除快照、日期有条目**）的「日期 + 圈号」引用数 **必须为 0**。这是 ① 写明的
+退出条件的**到期执行**，不是新决定。
+
+**P2 做了什么**（**不是**语义决定，故并入本条而不单列一条）：射程 = 守卫射程 − `docs/plans/**` ·
+`docs/reviews/**`（带日期的快照，写于迁移之前 = 历史）− §10 锚点定义行（圈号在那里是显示编号）−
+日期在 §10 无条目的引用（那个号指**别的文档自己的编号**）⇒ **302 处 / 84 个文件**。替换**按内容
+不按行号**（§10 加了章节头，其后所有行号都漂过）。脚本带一条硬规则：**同日重号拒绝自动选**
+（源序先到先得 = 脚本替引用挑一个含义，正是本设计要消灭的东西）⇒ 源头给一行显式覆盖表。
+**守恒验证**：84 个文件归一化后**逐字节相同** ⇒ 除引用形态之外**一个字符都没动**。
+
+**为什么**：见 ①（同一天里插一条、重排一次，位置号就漂）。本条补的是**收口**那一半 —— 放宽期不删
+那一支，守卫会**永远替一种会漂的写法背书**；而「改完了没有」也只能靠人扫。
+
+**影响面**：`tests/docs/circle-refs.test.ts`（收口 + 新判据）、`docs/guards.md` §1.1 的登记行、
+`AGENTS.md` 的「设计决策」与 `CONTRIBUTING.md` 的坑表各补一句**怎么写引用**（设计稿 §7.1 第 4 问的
+定稿：**P1 不教、P3 才教** —— P1 期两种写法并存，那时教谁都是半对）、设计稿状态行与 §6.2 判据。
+
+**边界（如实写）**：slug 解决「地址会漂」，**不解决「地址指错了」**（同 ①）。另三条：
+① `packages/cli/CHANGELOG.md` **移出射程** —— 它是构建产物、只在**本机磁盘**存在（CI / 新克隆 /
+`git worktree` 里没有），校验它的实测后果是**本机红 46 处而 CI 全绿**；
+② 快照（`docs/plans/**` · `docs/reviews/**`）里的圈号引用**刻意保留** —— 那不是「漏改」而是历史；
+且 P3 之后 `REF` 只认 slug ⇒ 它们**天然不被匹配**。这个「不咬」写成了具名常量，不靠「正则刚好没匹配到」；
+③ **不带日期的引用从来不在射程**（`§10 ⑧` / `同日 ⑧` 这类 —— 日期写在上一句或本条目里）⇒ 「引用已
+全换成 slug」只对**带日期**的那一类成立。实测 **35 处**（探针 `.workbuddy/probes/2026-10-14-dateless-circ.mjs`，
+git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` §2 —— 它不是本轮漏掉的，是另一条规则的事。
 
 ## 11. 开放项
 
@@ -6895,19 +6939,19 @@ calls / errors / 耗时照计（它自己这次调用的真账）⇒ 各行可�
   「已投递」的 409、而事件其实已经没了（**静默丢事件**，正是最坏的那种）；
   **B** 满了拒绝并说出来（409/429，与 cancel / 审批的「说出来，不静默」同款）。
   倾向 **B**（不丢 + 有信号）。**⇒ 同日下午第三轮已定案并落地：选 B**（`#signalInner` 到
-  上限就 409、文案说清本次事件没有被记录；上限 64），见 §10 2026-09-28 ⑥ 复审第三轮补记。
-- **redis 侧的到期索引**（§10 2026-09-28 ⑤ 复审补记）：触发条件已满足（`list()` 是 SCAN 级真查询、
+  上限就 409、文案说清本次事件没有被记录；上限 64），见 §10 2026-09-28 ref-run-event-input 复审第三轮补记。
+- **redis 侧的到期索引**（§10 2026-09-28 ref-due-index-measure 复审补记）：触发条件已满足（`list()` 是 SCAN 级真查询、
   比 sqlite 更贵），但**没有读数**且形态要另定（辅助 ZSET 或键名编码）⇒ 先不做，
   等基准补上 redis 那一档读数再拍。**⇒ 读数已到**（`scripts/bench-redis-due.ts`，形状量）：
   一次 `list()` = 往返 1+N、纯 CPU 57ms@10k、外推 0.2–2 s/轮（RTT 0.1–1 ms）、N=100k 时外推
   10–100 s ⇒ **值 = 值得做**；形态候选辅助 ZSET（score = `wakeAt`），往返降到 1 + 到期数。
-  实现未做，待定案（§10 2026-09-28 ⑤ 同日晚补记有全部读数与边界）。
-- **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ⑧ 未做的那两件）：① `menuDrift: 'fail'`
+  实现未做，待定案（§10 2026-09-28 ref-due-index-measure 同日晚补记有全部读数与边界）。
+- **菜单漂移的严格模式与结果级字段**（§10 2026-09-27 ref-menu-drift-signals 未做的那两件）：① `menuDrift: 'fail'`
   这类开关 —— 要动公共选项面 + `limits.ts` 真源表；② 让「续跑跑在漂移的菜单上」直接出现在
   `AgentRunResult` 上（而不是只落在 trace 属性里）—— 要动公共结果类型。现状是三处信号
   （`menu.drift` 事件 / 父 span 属性 / `console.warn`）：够「可查询」，但调用方得主动读 trace。
 - npm 包拆分（core / runtime / transport）仍待做；CLI 已独立成包（workspaces），框架本体仍单包。
-  **宿主 / 集成接入不拆包**（gRPC / Kafka 这类只给配方 + 示例，判别规则与升级触发条件见 §10 2026-09-18 ⑪）。
+  **宿主 / 集成接入不拆包**（gRPC / Kafka 这类只给配方 + 示例，判别规则与升级触发条件见 §10 2026-09-18 ref-host-integration-recipe）。
   ⇒ 发布进度：v0.2.2（2026-09-14，框架包 + CLI 包，scope 为 `@migor/*`）→ v0.3.0（`.env` 一等入口）
   → v0.4.0（trace 事件正文可展开）→ v0.4.1（深度审查修复轮，无新公开 API）
   → v0.4.2（发布后更正：Redis 的 TTL 在 node-redis 上静默失效）

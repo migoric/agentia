@@ -82,7 +82,7 @@ function forkPolicyPerRun(policy: ContextPolicy | undefined): ContextPolicy | un
 }
 
 /**
- * 事件注入（2026-09-28 ⑥，run 事件投入口）：挂起期间投递的事件（`args.events`，
+ * 事件注入（2026-09-28 ref-run-event-input，run 事件投入口）：挂起期间投递的事件（`args.events`，
  * 随 `TaskRecord.pendingEvents` 落库到这里）在**未决 tool_use 解决之后**渲染成
  * user 文本消息追加进消息流，每条并在父 span 上记一条 `task.event` 事件留痕
  * （`injected: true` —— 口径是「**注入进本段消息流**」，不是「模型已看到」：
@@ -166,7 +166,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     // 是发布常态，判失败会让「续跑」在正常迭代节奏下频繁失败。但把它变成三处看得见：
     //   ① `menu.drift` 事件（时间线；经 onTraceEvent 也进 `GET /tasks/:id/stream`）
     //   ② 父 span 属性 `menu.drift`（可查询：`TaskRecord.result.trace` 里就带得到）
-    //   ③ `console.warn`（运维面立即看见，与「sink 失败落 warn」同款，见 spec §10 2026-09-27 ②）
+    //   ③ `console.warn`（运维面立即看见，与「sink 失败落 warn」同款，见 spec §10 2026-09-27 ref-sink-failure-warn）
     // 「严格失败」若要做，是把这里换成带具名 error 的收尾 —— 那要动公共选项面 + limits 真源表，
     // 留给后续决策，别在这里先斩后奏。
     if (drift.missing.length > 0) {
@@ -204,7 +204,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       });
     }
     if (outcome.results.length > 0) ctx.messages.push({ role: 'user', content: outcome.results });
-    // 事件注入（2026-09-28 ⑥）：在 tool_result **落定之后**进历史（纪律见 deliverTaskEvents）。
+    // 事件注入（2026-09-28 ref-run-event-input）：在 tool_result **落定之后**进历史（纪律见 deliverTaskEvents）。
     // 上面两个再挂起出口刻意**不**经过这里 —— 事件留在 pendingEvents 里等下一次续跑。
     deliverTaskEvents(ctx, args.events);
     if (ctx.submitted && (args.events === undefined || args.events.length === 0)) {

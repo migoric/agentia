@@ -5,7 +5,7 @@ import type { AgentTool, MessageParam, TaskRecord } from '../../src/index.js';
 import { endTurnMsg, mockClient, toolUseMsg, waitFor } from '../helpers.js';
 
 /**
- * run 级 `sessionId` 的出声闸（2026-10-12 ③，评审 observability-deep-dive §2 行 7）：
+ * run 级 `sessionId` 的出声闸（2026-10-12 ref-session-id-warn，评审 observability-deep-dive §2 行 7）：
  * `RunAppOptions` 继承了 `RunInvocationOptions.sessionId`，但 `AgentApp.run` 的转发清单里
  * 没有它 —— 程序内直传它此前是**静默丢弃**（run 根没有 `session.id`、会话历史接不上、
  * 零信号）。现在入口 `console.warn` 一次；内部链路（AsyncRunner）在
@@ -36,7 +36,7 @@ function rootAttributesOf(result: {
   return result.trace.spans.find((s) => s.spanId === result.trace.rootSpanId)!.attributes;
 }
 
-describe('app.run 的 sessionId 出声闸（2026-10-12 ③）', () => {
+describe('app.run 的 sessionId 出声闸（2026-10-12 ref-session-id-warn）', () => {
   it('直传 sessionId（无 session）⇒ 告警恰好一次；run 行为不变（成功、不建会话维度）', async () => {
     const { client } = mockClient([endTurnMsg('答')]);
     const app = createApp({ system: 'sys' });

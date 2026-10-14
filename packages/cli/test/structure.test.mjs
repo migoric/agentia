@@ -95,7 +95,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'dev-runner.ts': 599,
     'diff.ts': 443,
     // 2026-10-13（D2 守卫射程 —— **缺陷修复前置**：CLI 两份 tsconfig 开
-    //   exactOptionalPropertyTypes，见 spec §10 2026-10-13 ③）：389 → 390（+1 =
+    //   exactOptionalPropertyTypes，见 spec §10 2026-10-13 ref-reject-static-methods）：389 → 390（+1 =
     //   harvestEvalCase 调用点的条件展开（公共入参纪律：签名不动）替换直传 `messages`）。
     'harvest.ts': 390,
     // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
@@ -129,7 +129,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-12（同日 ⑧：append-only 导出按 traceId 去重 —— **缺陷修复**，中危）：
     //   339 → 366（+27）。构成：文件头注 +4（为什么去重）、去重块本体 +21（注释 10 行 —
     //   「为什么取最后一行 / 为什么是 traceId 不是 taskId」删不得，见 spec §10 当日 ⑧）、
-    //   ReportJson.runs 注 +1、解析处注改写 +1。决策与依据见 docs/spec.md §10 2026-10-12 ⑧。
+    //   ReportJson.runs 注 +1、解析处注改写 +1。决策与依据见 docs/spec.md §10 2026-10-12 ref-report-dedupe-traceid。
     'report.ts': 366,
     // 2026-10-09（脚手架服务入口 start:server）：140 → 146（+6 = import + write 一行 +
     //   后续步骤文案两行 + serverTs 的接线注 —— `serverTs` 同批改名成 `mainTs`，见上一条）

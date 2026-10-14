@@ -116,7 +116,7 @@ describe('withDeadline —— 桥的超时（core/timeout 硬判定的薄封装�
       () => withDeadline(new Promise<never>(() => {}), 20, 'get-time'),
       (err: unknown) => {
         // 必须是**类型化**超时：桥若抛普通 Error，引擎会记成 threw/unknown —— 同一事件两种账
-        // （spec §10 2026-09-17 ① 就是把这件事单源化的那次）。
+        // （spec §10 2026-09-17 ref-mcp-timeout-single-source 就是把这件事单源化的那次）。
         assert.ok(err instanceof TimeoutError, '必须抛 core/timeout 的 TimeoutError');
         assert.equal(err.code, 'timeout');
         assert.match(err.message, /MCP 工具 "get-time" 调用超时（超过 20ms）/);

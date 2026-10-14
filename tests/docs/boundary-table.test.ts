@@ -648,7 +648,7 @@ const REGISTRY: ReadonlyArray<Entry> = [
     choice: '定位决定：模型输出只成文本 / tool_result；代码执行工具的隔离是工具实现内部的事',
   },
   {
-    // R8 候选 3（spec §10 2026-09-27 ⑧）：续跑时菜单漂移**只标记**（事件 / 属性 / console.warn），
+    // R8 候选 3（spec §10 2026-09-27 ref-menu-drift-signals）：续跑时菜单漂移**只标记**（事件 / 属性 / console.warn），
     // 不判失败 —— 「不判失败」是 decision 不是缺陷：挂起是合法态、改代码是发布常态。
     // 标记本身有用例钉（pin）；严格模式是 spec §11 开放项。
     key: '菜单漂移只**标记**、不判失败',
@@ -657,7 +657,7 @@ const REGISTRY: ReadonlyArray<Entry> = [
       marker: '工具被删 ⇒ menu.drift 事件 + 父 span 属性 + console.warn；run 仍照常收尾',
     },
   },
-  // ---- 2026-09-28 ⑫：外部深评剩余五条 P1 收口带来的六条新边界 ----
+  // ---- 2026-09-28 ref-deep-review-p1-rest：外部深评剩余五条 P1 收口带来的六条新边界 ----
   {
     key: '能力引用**成环 ⇒ 装配期抛错**（2026-09-28）',
     pin: {

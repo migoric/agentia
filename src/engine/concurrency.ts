@@ -40,7 +40,7 @@ export async function mapWithConcurrency<T, R>(
 /**
  * 超时原语（`TIMED_OUT` 哨兵 + `withTimeout`）已**下沉到 `core/timeout.ts`**：
  * 它与 `integrations/mcp.ts` 的 MCP 调用超时共用同一实现 —— 此前是两份，而
- * 「超时是硬的」那次收紧只落进了这里，桥那份留在竞速判定上（见 `docs/spec.md` §10 2026-09-17 ①）。
+ * 「超时是硬的」那次收紧只落进了这里，桥那份留在竞速判定上（见 `docs/spec.md` §10 2026-09-17 ref-mcp-timeout-single-source）。
  *
  * 这里**原样再导出**：`engine/turn.ts` 与既有测试的 import 路径与名字保持不变，
  * 单源化对它们零影响。

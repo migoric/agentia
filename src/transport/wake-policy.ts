@@ -1,5 +1,5 @@
 /**
- * 到期唤醒的**纯判定** + 挂起读数 —— durable timer（2026-09-28 ① 的 timer 侧）。
+ * 到期唤醒的**纯判定** + 挂起读数 —— durable timer（2026-09-28 ref-suspend-state-reason 的 timer 侧）。
  *
  * 从 AsyncRunner 里抽出来的第五个协作件（slot-pool → approval-policy → drain-gate →
  * resume-policy → 这里），与 `approval-policy.ts` 是**明确的一对**：挂起的两个原因各有一套闸，

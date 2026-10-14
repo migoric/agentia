@@ -147,7 +147,7 @@ export interface MetricsSinkOptions {
    * 为什么需要它：`maxLabelValues` 封的是**每个键的值域**，而进内存的是键的组合 ——
    * 组合数是叉乘（`(maxLabelValues+1)^labelKeys.length`），缺省值域 100 配 3 个键就是
    * 一百万条常驻条目，且 `droppedLabelValues` 只报每键的折叠数、看不出组合已经爆了
-   * （2026-09-27 ⑧ 实测的静默失效）。这道上限与 `maxCapabilities` / `maxModels` /
+   * （2026-09-27 ref-menu-drift-signals 实测的静默失效）。这道上限与 `maxCapabilities` / `maxModels` /
    * `maxScores` 同款：超限后**新的组合**折叠进一个全 `__other__` 的桶（量照收，只丢
    * 标签粒度），被折叠的组合数见 `snapshot().droppedLabelCombos` 与
    * `agentia_dropped_keys{kind="label:combos"}`。**不可关** —— 内存不变量要求每个新

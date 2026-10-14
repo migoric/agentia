@@ -734,7 +734,7 @@ describe('createStreamableHttpMcpConnector —— StreamableHTTP 连接器', () 
 describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补缺）', () => {
   it('tools/call 不起第二个计时器：超过连接器 timeoutMs 的调用照常等完（裁判是引擎）', async () => {
     // 反向验证：旧实现里 rpc() 末尾无条件 guard(readResult(...))，本用例会红在
-    // 30ms 超时被拒（而 spec §10 2026-09-17 ① 与文档都说 callTool 的裁判是引擎/桥）。
+    // 30ms 超时被拒（而 spec §10 2026-09-17 ref-mcp-timeout-single-source 与文档都说 callTool 的裁判是引擎/桥）。
     const { fetchImpl } = fakeServer();
     const slow: typeof fetch = (async (url: unknown, init: unknown) => {
       const i = init as { body?: string };

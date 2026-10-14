@@ -3,7 +3,7 @@
  *
  * 为什么单独成件：**落盘的数据不受类型系统保护**。`JSON.parse(raw) as TaskRecord` 里那个 `as`
  * 是一句「我保证它是」—— TS 只检查你**写进**类型的值，不检查**盘上**的值。于是改名这类破坏性
- * 变更（2026-09-28 ①：`awaiting_approval` → `suspended` + `suspendedReason`、
+ * 变更（2026-09-28 ref-suspend-state-reason：`awaiting_approval` → `suspended` + `suspendedReason`、
  * `approvalPendingSince` → `suspendedSince`）在这条接缝上会**静默失效**：旧记录带着一个
  * `RunStatus` 里**已经不存在**的值被读回来，而每一处判断都按新语义去读它。
  *
@@ -34,7 +34,7 @@ const LEGACY_SINCE_KEY = 'approvalPendingSince';
 /**
  * 把一条记录里的旧版本形状**就地**归一，返回「有没有动过」。
  *
- * 目前只认 2026-09-28 ① 那一批改名（状态值 + 挂起时刻字段）。原则：**只搬运盘上真有的东西**，
+ * 目前只认 2026-09-28 ref-suspend-state-reason 那一批改名（状态值 + 挂起时刻字段）。原则：**只搬运盘上真有的东西**，
  * 不凭空补造 —— 新形状的记录若缺 `suspendedReason`，本函数不动它（那是另一个缺陷，
  * 不该由垫片掩盖成「看起来正常」）。
  *

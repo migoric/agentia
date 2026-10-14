@@ -3,7 +3,7 @@
  *
  * 为什么要有这个文件：那条候选的原文是「上量之后才现形」，而**「上量」是个数字**——
  * 没有数字就只会在两个错之间摇摆（提前长一层平时没人走的索引，或者等到线上真卡住才发现）。
- * 这个脚本把那个数字量出来，并把**触发条件**写进 spec §10 2026-09-28 ⑤。
+ * 这个脚本把那个数字量出来，并把**触发条件**写进 spec §10 2026-09-28 ref-due-index-measure。
  *
  * 测什么：N 条记录（其中 1/10 是 `suspended` 且 `wakeAt` 在未来 —— 不该被唤醒的那一类）
  * 下，`store.list()` 与 `runner.resumePending()` 各耗多少。
@@ -128,7 +128,7 @@ try {
 // 用 :memory:（省掉磁盘抖动；形状与 file store 一列之差：status 是列 + json）。
 // ⚠️ 读写同一进程、单连接 —— 多进程共库时的锁等待不在本基准范围内。
 //
-// 2026-09-28 ⑤ 落地后补的 `due` 列：`store.listDue(now)`（到期索引，派生列 + (status, wake_at)
+// 2026-09-28 ref-due-index-measure 落地后补的 `due` 列：`store.listDue(now)`（到期索引，派生列 + (status, wake_at)
 // 索引）的代价 —— 它是 O(到期数) 而不是 O(全表)。⚠️ 但 `resume` **不会**因此显著下降：
 // resumePending 的扫描还干别的事（挂起读数重建 / 审批超时 / 孤儿认领），那些职责的输入
 // 仍是全表 list() —— listDue 只替代「到期唤醒」那一半的输入（见 async.ts #redispatch）。

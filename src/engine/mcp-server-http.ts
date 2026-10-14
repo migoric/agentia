@@ -142,7 +142,7 @@ export function startHttpTransport(
     // ② 在**方法 / 路径判定之前**：未鉴权一律 401，不泄露 endpoint 存在性。
     //    宿主的分支顺序是「免鉴权组的 405 先于鉴权，其余先鉴权再判方法与路径」
     //    （`transport/http-route.ts`），此前这里把 DELETE/405 摆在鉴权前面，
-    //    于是未鉴权能拿到 `405 allow: POST, DELETE` 与 `DELETE → 200`（2026-09-27 ⑦）。
+    //    于是未鉴权能拿到 `405 allow: POST, DELETE` 与 `DELETE → 200`（2026-09-27 ref-mcp-reverse-bridge）。
     //    自己这条 path 的判定不在此列：它只是「这个请求是不是我的」，别的路径原样交回宿主。
     if (opts.auth) {
       try {

@@ -24,7 +24,7 @@ describe('resume-policy —— 崩溃恢复的认领判定（从 AsyncRunner 抽
         status,
       );
     }
-    // 挂起单列一档（2026-09-28 ①）：一条在睡的 run **不是**终态 —— 把它报成 'terminal'
+    // 挂起单列一档（2026-09-28 ref-suspend-state-reason）：一条在睡的 run **不是**终态 —— 把它报成 'terminal'
     // 是静默说错话（这个字段的全部用途就是诊断）。它的唤醒归各自那条闸管，不归崩溃续跑。
     assert.equal(
       resumeSkipReason(rec({ status: 'suspended' }), { ownerId: ME, staleAfterMs: 0, now: 9e9 }),

@@ -550,7 +550,7 @@ export class AgentApp {
     messages: MessageParam[],
     opts: RunAppOptions<S> = {},
   ): Promise<AgentRunOutput<SchemaType<S>>> {
-    // 会话引用的出声闸（2026-10-12 ③）：sessionId 是**异步宿主**的可序列化会话引用
+    // 会话引用的出声闸（2026-10-12 ref-session-id-warn）：sessionId 是**异步宿主**的可序列化会话引用
     //（AsyncRunner 配 sessionStore 时由它在执行前换成 session 注入，见 spec.ts 该字段注释），
     // 本入口不消费它 —— 此前直传它被**静默丢弃**（run 根没有 session.id、会话历史接不上、
     // 零信号），与 0.9.5 那批「把静默换成有声」同口径，改为每条 run 告警一次。
@@ -611,7 +611,7 @@ export class AgentApp {
         // HITL：审批决定（tool_use_id → 决定）原样进引擎；恢复挂起任务时由
         // AsyncRunner 经它把落库的决定喂回来
         approvals: opts.approvals,
-        // 事件投入口（2026-09-28 ⑥）：与 approvals 同一条「契约字段必须原样透传」的规则
+        // 事件投入口（2026-09-28 ref-run-event-input）：与 approvals 同一条「契约字段必须原样透传」的规则
         // （漏掉这一行 = AsyncRunner 投递的事件在 app.run 门口静默丢掉）
         events: opts.events,
         contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,

@@ -207,7 +207,7 @@ describe('SqliteTaskStore', () => {
   });
 });
 
-describe('SqliteTaskStore.listDue（到期索引，2026-09-28 ⑤ 落地）', () => {
+describe('SqliteTaskStore.listDue（到期索引，2026-09-28 ref-due-index-measure 落地）', () => {
   /** 一条在睡（或不在睡）的记录 */
   const sleeping = (
     id: string,

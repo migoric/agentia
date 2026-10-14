@@ -42,7 +42,7 @@ export function textOfParam(message: MessageParam): string {
 }
 
 /**
- * run 事件 → **一条 user 文本消息**（2026-09-28 ⑥ 的 B1：外部永远不能构造 block ——
+ * run 事件 → **一条 user 文本消息**（2026-09-28 ref-run-event-input 的 B1：外部永远不能构造 block ——
  * 进来的只有文本，投毒面只到「内容注入」为止）。
  *
  * `eventId` **不进正文**：它是投递簿记（幂等去重依据），不是内容 —— 模型不需要知道

@@ -10,7 +10,7 @@ import { createHttpHandler } from '../../src/transport/http.js';
 import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
 
 /**
- * `cancel` API（durable 配套 5 的另一半，spec §10 2026-09-28 ④）。
+ * `cancel` API（durable 配套 5 的另一半，spec §10 2026-09-28 ref-cancel-api）。
  *
  * 三件事是本文件存在的理由：
  * ① **三种在服状态**（running / queued / suspended）各有一条真用例 —— 它们的语义不同，

@@ -148,7 +148,7 @@ describe('routeRequest —— /tasks/<id>（陷阱 ③）', () => {
   });
 });
 
-describe('routeRequest —— 事件投入口（2026-09-28 ⑥，与 approve/cancel 同款排法）', () => {
+describe('routeRequest —— 事件投入口（2026-09-28 ref-run-event-input，与 approve/cancel 同款排法）', () => {
   it('POST /tasks/<id>/events → taskEvent（id 剥掉 /events 再解码）', () => {
     assert.deepEqual(routeRequest('/tasks/abc/events', 'POST', false), {
       kind: 'taskEvent',

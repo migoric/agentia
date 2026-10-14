@@ -14,10 +14,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 ├── src/
 │   ├── core/                # 数据模型与结构接口（Trace/AgentTool/ModelClient/校验、
 │   │                        #   RunStatus/RunMeta、Blackboard 类型族、Message 消息类型族、
-│   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ①；
+│   │                        #   超时原语 timeout.ts —— 引擎与 MCP 桥**共用一份**，见 §10 2026-09-17 ref-mcp-timeout-single-source；
 │   │                        #   `MAX_TIMER_DELAY_MS`（≈24.86 天）也在这里单源 —— 超过它的 setTimeout
 │   │                        #   会被 Node 静默钳到 1ms，所以旋钮走 `assertTimerDelay`（拒）、
-│   │                        #   外部数据（`Retry-After`）走 `clampTimerDelay`（夹），见 §10 2026-09-28 ⑪），零依赖
+│   │                        #   外部数据（`Retry-After`）走 `clampTimerDelay`（夹），见 §10 2026-09-28 ref-timer-cap-single-source），零依赖
 │   │                        #   limits.ts = **「限制旋钮的 0 是什么」的单一真源**（guards §1.2）：每个旋钮
 │   │                        #   各属「不限 / 就是不做 / 立即 / 非法」四类之一，表是可执行数据；
 │   │                        #   构造期报错文案里那句「（0 = …）」插的就是表里的 zeroClause。
@@ -97,8 +97,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   resume-scanner.ts = 恢复扫描与接管（同日抽）：resumePending 一次扫描
 │   │                        #   按序干四件事（顺序有语义）—— rebuild → expireIfExpired → wakeDue → 认领重投；
 │   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）；
-│   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ⑪）
-│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ⑩）：AsyncRunner 的
+│   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ref-resume-save-guard）
+│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ref-cancel-mutex）：AsyncRunner 的
 │   │                        #   #cancelInflight 与三个监督件互为对侧闸（各经 cancelInflight 回调
 │   │                        #   读对方、以 inflightFor/inflightWakeFor 被对方读）；#executeInner
 │   │                        #   起跑前还有一道取消意图闸 —— 「被取消的排队任务绝不起跑」靠它合上
@@ -111,7 +111,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   http-shapes.ts = HTTP 宿主的**出入站形状口径**（响应体 / 任务提交体 / 审批体 /
 │   │                        #   事件体）：纯形状判定（不合法一律回 undefined，由路由选状态码）；审批体**全有或全无**，
 │   │                        #   空 decisions 集合法 —— 「决定齐没齐」是 AsyncRunner 的判断，不是形状问题；
-│   │                        #   事件体（2026-09-28 ⑥）是**白名单** `{ eventId?, type, payload }`（全是字符串，
+│   │                        #   事件体（2026-09-28 ref-run-event-input）是**白名单** `{ eventId?, type, payload }`（全是字符串，
 │   │                        #   多一个字段即拒 —— 外部永远不能构造消息块）
 │   │                        #   http-route.ts = 路由判定（pathname × method × 有无 metrics → 分支）：
 │   │                        #   纯函数；三条顺序是全部内容 —— 免鉴权组的 405 先于鉴权、其余先鉴权再判
@@ -133,7 +133,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
 │   │                        #   终态采纳」；RunSessionStore 是会话 store 的**结构面单源**（旋钮本身的文档仍在
 │   │                        #   AsyncRunnerOptions.sessionStore）。抽的是纯件 ⇒ 不含任何 await 竞态。
-│   │                        #   ⚠️ sessionId 在本层**被消费后不透传**（2026-10-12 ③）：续跑段不注入 session，
+│   │                        #   ⚠️ sessionId 在本层**被消费后不透传**（2026-10-12 ref-session-id-warn）：续跑段不注入 session，
 │   │                        #   原样带进去会误踩 app.run 的「直传 sessionId 不生效」告警闸（toolkit/module.ts）
 │   │                        #   run-outcome.ts = 一次 run 的**结果记账**（同日抽，同族的第五件）：
 │   │                        #   readClaimed 收「认领前重读」（读失败不升级成「任务起不来」）；
@@ -141,7 +141,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   纯件 ⇒ 实例副作用（快照写 sessionInputs、审批登记簿除名）以**返回值**
 │   │                        #   交回调用点；「用户输入快照必须在 rec.spec 被覆盖**之前**取」是承重的顺序事实
 │   ├── store/               # 任务记录存储：memory / file(JSONL) / sqlite / redis
-│   │                        #   **副本契约**（spec §10 2026-10-13 ⑨）：save 入库与
+│   │                        #   **副本契约**（spec §10 2026-10-13 ref-taskstore-copy-contract）：save 入库与
 │   │                        #   get/byIdempotency/list 出站一律走 cloneTaskRecord
 │   │                        #   （深拷纯数据、AbortSignal/函数按引用保留）—— 内存推进只许由
 │   │                        #   save 驱动，「改 rec 就改了库」是契约违规
@@ -162,14 +162,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   ├── container/           # 最小显式 DI（useValue/useClass/useFactory+deps），叶子无依赖
 │   ├── toolkit/             # 声明式表面：装饰器×4、collect 内核、装配(createApp/defineModule)、
 │   │                        #   中间件、目录发现(discover)、文本资产(asset)、env 引导(loadEnvFile)、zod 桥
-│   │                        #   capability-slice.ts = **四类能力在装配期的全部差异只在这张表里**（§10 2026-09-29 ③）：
+│   │                        #   capability-slice.ts = **四类能力在装配期的全部差异只在这张表里**（§10 2026-09-29 ref-capability-wiring-table）：
 │   │                        #   CapabilityPayloads 就是「一类能力」的定义，KIND_SPEC 是映射类型
 │   │                        #   （加一类能力不给表项 ⇒ `tsc` 报 TS2741），CAPABILITY_KINDS 从表的键派生
 │   │                        #   ⇒ 收集 / 可用名单 / 切片 / 版本表 / 孤儿计数五处**遍历**它，
 │   │                        #   module.ts 里不再有按类分支。⚠️ 两处**刻意不在表里**（别为整齐搬进来）：
 │   │                        #   菜单重名校验（跑在合并后的工具列表上，与类别无关）、能力引用图
 │   │                        #   （只有 @SubAgent / @Skill 有 tools 引用 —— 语义不对称，不是漏项）
-│   │                        #   capability-cycles.ts = **能力引用图的成环检测**（装配期纯件，2026-09-28 ⑫）：
+│   │                        #   capability-cycles.ts = **能力引用图的成环检测**（装配期纯件，2026-09-28 ref-deep-review-p1-rest）：
 │   │                        #   环只在运行期成立（引用是延迟求值 thunk）、`maxIterations` 限不了深度 ⇒
 │   │                        #   装配期即拒（刻意不走「递归深度上限」那条路，理由见文件头注）
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
@@ -261,7 +261,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   list() 往返次数与纯 CPU，延迟按 RTT 外推并逐档标注「外推」；
 │                            #   无 npm script，直接 `tsx scripts/bench-redis-due.ts`）
 ├── scripts/bench-resume-scan.ts  # 「挂起量 → resumePending() 扫描成本」的基准（list / resume
-│                            #   等口径对照，触发条件写进 spec §10 2026-09-28 ⑤；
+│                            #   等口径对照，触发条件写进 spec §10 2026-09-28 ref-due-index-measure；
 │                            #   无 npm script，直接 `tsx scripts/bench-resume-scan.ts`）
 ├── scripts/mcp-fixture-server.py  # 离线夹具 MCP server（stdlib，e2e:mcp 的兜底）
 ├── scripts/copy-assets.mjs  # 把 docs/usage-guide.md 拷成 dist/AGENTS.md（随框架包发布，见「文档单源」）
@@ -359,7 +359,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   （MCP stdio 的 `spawn` + 全局 `fetch`）直接内置；要引第三方客户端的（gRPC 的 `@grpc/grpc-js`、
   Kafka 的 `kafkajs`）**只留 duck-typed 缝 + 配方 / 示例**，框架永不 import —— 这就是
   `examples/grpc-host/` 是示例而不是包的原因。真到该拆包时，粒度是**一个第三方客户端一个包**，
-  不是把所有集成塞进一个「服务包」；理由与升级触发条件见 spec §10 2026-09-18 ⑪。
+  不是把所有集成塞进一个「服务包」；理由与升级触发条件见 spec §10 2026-09-18 ref-host-integration-recipe。
 - **默认 client 是自研 fetch + SSE 实现**：`src/integrations/anthropic.ts` 手写
   `POST {baseURL}/v1/messages` + 逐行 SSE 组装，**不再实例化 `@anthropic-ai/sdk`**；
   引擎经 `createAnthropicClient()` 取默认 client。使用者自定义只需
@@ -389,7 +389,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   `RunMeta` / `TurnOutcome` …）；② **内部管道**（缺省与 undefined 等价）→ 可选 `?: T | undefined`
   （`AgentLoopArgs` / `Job` / `TaskRecord` …）；③ **公共入参**（「不提供 = 用缺省」有意义）
   → **签名不动**，在调用点条件展开 `...(x !== undefined ? { x } : {})`，或一次转交多字段时用
-  `omitUndefined({...})`（`src/core/object.ts`）。理由与实测见 spec §10 2026-09-18 ⑦、`docs/guards.md` 附录。
+  `omitUndefined({...})`（`src/core/object.ts`）。理由与实测见 spec §10 2026-09-18 ref-exact-optional、`docs/guards.md` 附录。
 - **测试**：`npm test`（node:test）；新行为必须带测试，断言按真实语义写（先读实现）。
 - **多 agent 同仓作业**：本机可能有多个 agent 同时在这个仓里改代码。三条纪律：
   ① **结论一律钉到 commit**（commit 不可变才可复现），未提交的在制品不评审（评草稿 = 白评）；
@@ -461,6 +461,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`
     （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
+  **引用某条决策一律写 `（日期 ref-名）`，别写圈号**：圈号是**按天编的位置号**（同一天里插一条、重排
+  一次就漂），2026-10-14 起它降级为**显示编号**、不再是地址；slug（`ref-` 前缀 + kebab-case，写在锚点
+  的「日期 + 圈号」之后）才是地址、且全仓唯一。`tests/docs/circle-refs.test.ts` 守「射程内零圈号引用
+  + 引的 slug 必须真的存在」，但它**只判号在不在、判不了指得对不对** —— 后者只能人读。
 - **使用者向文档单源**：`docs/usage-guide.md` 是**唯一**的框架使用说明（API 速查 + 类型链路 + 已知边界 + 反例）。
   它被四处消费：① 框架包构建时拷成 `dist/AGENTS.md`（`scripts/copy-assets.mjs`，随 `@migor/agentia` 发布）；
   ② `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；

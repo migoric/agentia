@@ -24,7 +24,7 @@ function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {
  * - save = INSERT OR REPLACE（整行记录 JSON 存 json 列，last-wins）；
  * - byIdempotency 取该键最近一次 save 的记录（按 rowid 倒序，失败重提产生的新任务胜出）；
  * - list 按写入顺序返回；clear 清空整表；
- * - `listDue(before)`（到期索引，2026-09-28 ⑤）：派生列 `wake_at` + `(status, wake_at)`
+ * - `listDue(before)`（到期索引，2026-09-28 ref-due-index-measure）：派生列 `wake_at` + `(status, wake_at)`
  *   索引，只回「在睡且到点」的记录（存量库构造期就地迁移：ALTER + 从 json 回填）；
  * - 构造即就绪（建表 + 索引，无异步），重启续跑同样交给 AsyncRunner.resumePending()。
  *
@@ -61,7 +61,7 @@ export class SqliteTaskStore implements TaskStore {
       )
     `);
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)');
-    // wake_at 派生列（2026-09-28 ⑤，到期索引）：json 内 wakeAt 的反规范化副本，
+    // wake_at 派生列（2026-09-28 ref-due-index-measure，到期索引）：json 内 wakeAt 的反规范化副本，
     // 专供 `listDue` 的索引过滤（status, wake_at）。
     //
     // 为什么是派生列而不是查询时 `json_extract`：json_extract 要对**扫到的每一行**解析
@@ -171,7 +171,7 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   /**
-   * 到期索引（2026-09-28 ⑤ 落地）：只回「在睡且到点」的记录，走 `idx_tasks_due` 索引
+   * 到期索引（2026-09-28 ref-due-index-measure 落地）：只回「在睡且到点」的记录，走 `idx_tasks_due` 索引
    * —— 代价是 O(到期数) 而不是 O(全表)。口径与 `wake-policy.ts` 的 `timerDue` 对齐
    * （status + wake_at 两列；`suspendedReason` 那一半由调用方复核，见 #redispatch）。
    */

@@ -36,7 +36,7 @@ function rec(over: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 /**
- * 旧版本（2026-09-28 ① 之前）落库的形状。
+ * 旧版本（2026-09-28 ref-suspend-state-reason 之前）落库的形状。
  *
  * ⚠️ 故意**不**标成 `TaskRecord`：那个状态值在现类型里根本不存在 —— 「这不是一条合法记录」
  * 正是本文件要对付的东西，用 `as TaskRecord` 一笔带过就等于把问题藏进夹具里。

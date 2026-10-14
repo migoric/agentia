@@ -51,7 +51,7 @@ export interface ApprovalSupervisorDeps {
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
   /**
-   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：approve 进入前等它收口再重判；
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ref-run-root-close）：approve 进入前等它收口再重判；
    * 惰性超时恢复见它即**跳过本轮**（惰性路径下一轮还会再判，跳过不丢）。
    * 与 `#inflight` 互为对侧：两侧的「查对方闸 + 登记自己闸」在同一个同步段 ⇒ 先登记者赢。
    */
@@ -126,7 +126,7 @@ export class ApprovalSupervisor {
    */
   expireIfExpired(rec: TaskRecord, now: number): boolean {
     if (!approvalExpired(rec, now, this.#deps.approvalTimeoutMs)) return false;
-    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ②）：它马上把任务落成终态，超时恢复再来一脚
+    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ref-run-root-close）：它马上把任务落成终态，超时恢复再来一脚
     // 就是「取消后照常执行」那条竞态。惰性路径不丢事：下一轮读还会再判（若取消没成）。
     if (this.#deps.cancelInflight?.(rec.taskId)) return false;
     this.#expireAndResume(rec, now);
@@ -156,7 +156,7 @@ export class ApprovalSupervisor {
     decisions: ApprovalDecisions,
     opts: { decidedBy?: string } = {},
   ): Promise<TaskRecord> {
-    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ②）：否则两边各凭旧快照落库，
+    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ref-run-root-close）：否则两边各凭旧快照落库，
     // 后写的那一份把 cancelled 覆盖成 running —— 任务取消后照常执行、webhook 双发。
     // 检查必须在登记自己闸**之前**、且两者在同一同步段：先看对方、再登记，先登记者赢。
     const settling = this.#deps.cancelInflight?.(taskId);
@@ -173,7 +173,7 @@ export class ApprovalSupervisor {
     return run;
   }
 
-  /** 该任务上在飞的审批/超时恢复（cancel 的等待依据，2026-10-13 ②） */
+  /** 该任务上在飞的审批/超时恢复（cancel 的等待依据，2026-10-13 ref-run-root-close） */
   inflightFor(taskId: string): Promise<TaskRecord> | undefined {
     return this.#inflight.get(taskId);
   }

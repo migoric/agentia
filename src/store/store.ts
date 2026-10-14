@@ -65,13 +65,13 @@ export interface TaskRecord {
    */
   suspendedSince?: number | undefined;
   /**
-   * 挂起原因（2026-09-28 ①）：`approval` = 等人工决定、`timer` = 等一个时刻。
+   * 挂起原因（2026-09-28 ref-suspend-state-reason）：`approval` = 等人工决定、`timer` = 等一个时刻。
    * **随记录落库**（与 `suspendedSince` 同批）：进程重启后靠它决定用哪条闸 ——
    * 审批超时只对 `approval` 成立，到期唤醒只对 `timer` 成立。
    */
   suspendedReason?: SuspendedReason | undefined;
   /**
-   * 时间挂起的目标时刻（epoch ms，2026-09-28 ① 的 timer 侧）：到点由到期扫描唤醒
+   * 时间挂起的目标时刻（epoch ms，2026-09-28 ref-suspend-state-reason 的 timer 侧）：到点由到期扫描唤醒
    * （`resumePending` / `poll` 的惰性路径，判据见 `transport/wake-policy.ts`）。
    * **随记录落库** —— 「睡到后天下午三点接着跑」这件事只有它活得比进程久。
    *
@@ -80,7 +80,7 @@ export interface TaskRecord {
    */
   wakeAt?: number | undefined;
   /**
-   * 挂起期间投递、**尚未注入消息历史**的事件（2026-09-28 ⑥，run 事件投入口）。
+   * 挂起期间投递、**尚未注入消息历史**的事件（2026-09-28 ref-run-event-input，run 事件投入口）。
    * **随记录落库**（重启不丢；先落库再派发那条纪律的载体）。续跑段由引擎在未决
    * tool_use 解决之后渲染成 user 文本消息注入（见 `engine/loop.ts` 的注入点纪律），
    * 跑通（不再挂起）后由宿主清掉 —— 它们已进历史；再次挂起则**保留**（那次续跑
@@ -98,7 +98,7 @@ export interface TaskRecord {
 
 export interface TaskStore {
   /**
-   * 落库。存进去的必须是**副本**而不是调用方的活引用（2026-10-13 ①）——
+   * 落库。存进去的必须是**副本**而不是调用方的活引用（2026-10-13 ref-retry-validation）——
    * 调用方的纪律是「改 rec → save → 继续改 rec → 再 save」，存活引用会让
    * 「两次 save 之间的中间态」对其他读者可见，且某次 save 失败时污染已留在库里。
    */
@@ -109,7 +109,7 @@ export interface TaskStore {
    * approval-supervisor 的「重读 → 改 status → 先落库再派发」）：若 `get` 交出活引用，
    * 变异会在 `save` 之前就被其他读者看见，「未落库的中间态」直接对外可见；
    * save 失败时那些变异就**留在库里**（落不了库的决定却改了记录）。
-   * `byIdempotency` / `list` / `listDue` 同一纪律（2026-10-13 ① 坐实：内建实现
+   * `byIdempotency` / `list` / `listDue` 同一纪律（2026-10-13 ref-retry-validation 坐实：内建实现
    * 统一走 `cloneTaskRecord`，下方）。
    */
   get(taskId: string): MaybePromise<TaskRecord | undefined>;
@@ -118,11 +118,11 @@ export interface TaskStore {
   /** 全表快照。每条都是副本，纪律同 `get` */
   list(): MaybePromise<TaskRecord[]>;
   /**
-   * **可选**：到期索引（2026-09-28 ⑤ 落地）—— 只回「`suspended` 且 `wakeAt <= before`」
+   * **可选**：到期索引（2026-09-28 ref-due-index-measure 落地）—— 只回「`suspended` 且 `wakeAt <= before`」
    * 的记录（`wakeAt` 缺失的不回）。`AsyncRunner` 的扫描在**到期唤醒那一半**用它替代全表
    * 过滤（`listDue?.(now) ?? list()` 的输入），没有实现的 store 回退全表，语义不变。
    *
-   * 实现与否的分判（spec §10 2026-09-28 ⑤ 的实测）：`list()` 是**真查询**的 store
+   * 实现与否的分判（spec §10 2026-09-28 ref-due-index-measure 的实测）：`list()` 是**真查询**的 store
    * （sqlite：10k 记录一轮 ~105ms 线性增长）值得实现；记录本就在内存的（InMemory /
    * File —— list 只是返回 Map snapshot）**不实现**，回退路径就是它们的现状。
    *
@@ -152,7 +152,7 @@ export interface TaskStore {
 }
 
 /**
- * TaskRecord 的深拷贝（2026-10-13 ①，副本契约的唯一落点：`save` 入库与
+ * TaskRecord 的深拷贝（2026-10-13 ref-retry-validation，副本契约的唯一落点：`save` 入库与
  * `get` / `byIdempotency` / `list` 出站都走它）。
  *
  * 递归克隆数组与**纯对象**（原型为 `Object.prototype` 或 null）；函数与类实例
@@ -180,7 +180,7 @@ function cloneData<T>(value: T): T {
 
 export class InMemoryTaskStore implements TaskStore {
   // 刻意**不实现** `listDue`（到期索引）：记录本就在内存 Map 里，`list()` 只是返回 snapshot ——
-  // 到期过滤的成本与全表相同，索引无利可省（实测与触发条件见 spec §10 2026-09-28 ⑤）。
+  // 到期过滤的成本与全表相同，索引无利可省（实测与触发条件见 spec §10 2026-09-28 ref-due-index-measure）。
   // AsyncRunner 的扫描对缺失的 listDue 回退全表过滤，语义不变。
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId

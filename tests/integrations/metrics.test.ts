@@ -1376,7 +1376,7 @@ describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
   });
 
   it('值里含 `,`/`=` 不许并账：两个不同标签集各记各的（combo 身份不是裸拼接）', () => {
-    // 2026-09-27 ⑧ 实测：裸拼接时这两条都拼成 `a=x,b=y,b=z` ⇒ 并成一本账、且按第一条的
+    // 2026-09-27 ref-menu-drift-signals 实测：裸拼接时这两条都拼成 `a=x,b=y,b=z` ⇒ 并成一本账、且按第一条的
     // 标签渲染（第二条的量被错配）。
     const sink = metricsSink({ labelKeys: ['a', 'b'] });
     sink.export(traceOf({ durationMs: 1, input: 10, labels: { a: 'x,b=y', b: 'z' } }));

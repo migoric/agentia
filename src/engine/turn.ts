@@ -141,7 +141,7 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   /** 人工审批决定（HITL）：以 tool_use_id 为键；恢复挂起的 run 时由宿主传入 */
   approvals?: Record<string, ApprovalDecision> | undefined;
   /**
-   * 挂起期间投递的事件（2026-09-28 ⑥；语义见 RunInvocationOptions.events）：
+   * 挂起期间投递的事件（2026-09-28 ref-run-event-input；语义见 RunInvocationOptions.events）：
    * 由 loop.ts 的续跑入口在**未决 tool_use 解决之后**注入消息流（本文件不消费它 ——
    * 注入时机的纪律在 loop.ts，那里才知道 tool_result 已落定）。
    */
@@ -446,7 +446,7 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
  * 预算护栏依赖「记账完成后」的 usage 累计，所以本函数必须先于任何 budget.check 调用。
  *
  * `model` 是本回合**实际**成功的模型（TurnOutcome.model）：fallback 换环后与 args.model
- * 不同 —— 成本估算与未定价探测按错模型算就是记错账（评审 2026-09-27 ② 的核心教训）。
+ * 不同 —— 成本估算与未定价探测按错模型算就是记错账（评审 2026-09-27 ref-sink-failure-warn 的核心教训）。
  */
 export function recordTurnUsage<S extends JsonSchema>(
   ctx: LoopContext<S>,

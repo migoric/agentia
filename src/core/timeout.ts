@@ -4,7 +4,7 @@
  * 为什么在 core：engine 的工具级超时（`engine/turn.ts`）与桥的 MCP 调用超时
  * （`integrations/mcp.ts`）**必须共用同一套判定**。此前两处各写一份，代价是
  * 2026-09-14 的「硬保证」收紧只落进了 `engine/concurrency.ts`，桥那一份继续用竞速判定 ——
- * 同一个承诺两套实现，于是同一个事件在 trace 里能有两种账（见 `docs/spec.md` §10 2026-09-17 ①）。
+ * 同一个承诺两套实现，于是同一个事件在 trace 里能有两种账（见 `docs/spec.md` §10 2026-09-17 ref-mcp-timeout-single-source）。
  * `integrations` 只能依赖 core（`tests/architecture/layering.test.ts` 强制），
  * 所以单源的落点是 core。core 是叶子：本文件只 import `limits.js`（**纯数据表，零 import**）
  * —— 2026-09-28 起它要 `zeroClauseOf`：两处 `assertTimerDelay` 的文案必须与 limits 表同源
@@ -30,7 +30,7 @@ export const TIMED_OUT = Symbol('agentia.timed-out');
  * `withTimeout`（引擎 `toolTimeoutMs`）、`interruptibleSleep`（退避）、
  * `DrainGate.waitForIdle`（drain 预算）、`#raceTimeout`（`runTimeoutMs`）、
  * `composeSignal`（client `timeout`）五处都直喂 `setTimeout` 且只查「非负有限」。
- * 单源收在这里（见 `docs/spec.md` §10 2026-09-28 ⑪）。
+ * 单源收在这里（见 `docs/spec.md` §10 2026-09-28 ref-timer-cap-single-source）。
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
@@ -83,7 +83,7 @@ export function clampTimerDelay(ms: number): number {
  * 为什么需要它：超时此前只能靠**错误文案**辨认 —— 桥抛的是普通 `Error`，而
  * `classifyError` 里没有 timeout 这一类，于是 trace 里记成 `error(unknown)` +
  * `errorKind=threw`，与引擎自己判的超时（`error(timeout)` + `errorKind=timeout`）
- * 成为同一事件的**两种账**（见 `docs/spec.md` §10 2026-09-17 ①）。
+ * 成为同一事件的**两种账**（见 `docs/spec.md` §10 2026-09-17 ref-mcp-timeout-single-source）。
  *
  * 判定契约（对使用者可见）：**任何** `code === 'timeout'` 的错误都会被引擎归为
  * `errorKind='timeout'`，不需要 import 这个类（`isTimeoutError` 也认鸭子类型）。
@@ -119,7 +119,7 @@ export function abortError(message = '已被取消'): Error {
  *
  * 为什么第 3 条也算：`engine/errors.ts` 的分类**此前只有它**认这一条（当时把超时归进 `connection`），
  * 于是「超时」在 trace 里混在「连不上」里，看板与 `trace-diff` 分不出两者。现在超时有自己的
- * `type: 'timeout'`，这条判据由分类与工具级记账**共用**，口径一致（spec §10 2026-09-17 ②）。
+ * `type: 'timeout'`，这条判据由分类与工具级记账**共用**，口径一致（spec §10 2026-09-17 ref-timeout-error-type）。
  */
 export function isTimeoutError(e: unknown): boolean {
   if (e instanceof TimeoutError) return true;
@@ -215,7 +215,7 @@ export async function withTimeout<T>(
  * 不必再等）与 `integrations/anthropic.ts` 的 `interruptibleSleep`（client 层退避）。
  * 那边此前自带一段「与 engine/retry.ts 的 sleep 同语义但不复用它 —— 分层约束：
  * integrations 只能依赖 core」的注解：**正是那条约束把两份代码逼成了重复**，
- * 所以下沉到 core 是让它们合一的唯一合法落点（见 spec §10 2026-09-17 ① 的单源化口径）。
+ * 所以下沉到 core 是让它们合一的唯一合法落点（见 spec §10 2026-09-17 ref-mcp-timeout-single-source 的单源化口径）。
  *
  * ⚠️ 「不合并退避计算器」的例外只针对**引擎层**：`engine/retry.ts` 的 `backoffDelay`
  * 是 ±20% 均匀抖动、底数/上限来自 `RetryOptions`，与 client 层策略不同（见下方

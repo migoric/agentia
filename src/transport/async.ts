@@ -616,7 +616,7 @@ export class AsyncRunner {
     // 仍然走它：**「派发一律走唯一入口」这条纪律不该有例外** —— 少一个例外，就少一处将来
     // 新增恢复路径时会漏的枚举。
     this.#dispatch(rec);
-    // 返回深拷贝（2026-10-13 ③ 收口）：记录会被后台状态机原地推进，浅拷贝只隔顶层 ——
+    // 返回深拷贝（2026-10-13 ref-reject-static-methods 收口）：记录会被后台状态机原地推进，浅拷贝只隔顶层 ——
     // `spec.messages` 等嵌套对象此前与 runner 的活记录共享（HITL 挂起会换 spec.messages）。
     return cloneTaskRecord(rec);
   }
@@ -703,7 +703,7 @@ export class AsyncRunner {
   }
 
   /**
-   * cancel 的 per-task 在飞闸（2026-10-13 ②）—— cancel 与四条推进路径（approve /
+   * cancel 的 per-task 在飞闸（2026-10-13 ref-run-root-close）—— cancel 与四条推进路径（approve /
    * 事件投递 / 到期唤醒 / 审批超时恢复）之间的**互斥**靠它合上：
    * - cancel 进入前：先等该任务的在飞推进收口、**重读**记录再判（凭进闸前的旧快照落
    *   cancelled，会被对方随后的 running 落库覆盖回去 —— 任务取消后照常执行）；
@@ -744,11 +744,11 @@ export class AsyncRunner {
    * （见 `#cancel` 的判据），但**闸不放开**：放开会让等槽位那趟 `#execute` 的 finally
    * 双发 `onFinished`（spec §10 的变异 M23）。
    *
-   * 与推进路径的互斥（2026-10-13 ②）：见 `#cancelInflight` 的注释。并发 cancel 同任务
+   * 与推进路径的互斥（2026-10-13 ref-run-root-close）：见 `#cancelInflight` 的注释。并发 cancel 同任务
    * 串行：第二个等第一个收尾后重读再判（多半撞上「已终态 ⇒ 409」）。
    */
   cancel(taskId: string): MaybePromise<TaskRecord> {
-    // 并发 cancel 串行（2026-10-13 ②）：两个并发 cancel 各自读-改-写会双记账（webhook 双发）
+    // 并发 cancel 串行（2026-10-13 ref-run-root-close）：两个并发 cancel 各自读-改-写会双记账（webhook 双发）
     const own = this.#cancelInflight.get(taskId);
     if (own)
       return own.then(
@@ -812,7 +812,7 @@ export class AsyncRunner {
           ? `task ${taskId} 已在本进程受理，但尚未起跑（正在等并发槽位 / 走恢复前置）—— ` +
               `此刻取消无法与那条在等槽位的执行路径安全收口（会重复记账），暂不支持；` +
               `请待它起跑后再取消，或先降低并发压力`
-          : `task ${taskId} 正在运行但不在本进程，本进程无法中断它（多进程部署见 spec §10 2026-09-28 ④）`,
+          : `task ${taskId} 正在运行但不在本进程，本进程无法中断它（多进程部署见 spec §10 2026-09-28 ref-cancel-api）`,
       );
     }
     // 意图先记下：在飞那条路要靠它把 aborted 的收尾落成 cancelled（否则落成 failed）
@@ -825,7 +825,7 @@ export class AsyncRunner {
     // 等槽位那趟 #execute 的 finally 靠 `#cancelSettled` 跳过它那一份（否则 onFinished 两次）。
     // ⚠️ cancel 自己只为 **queued** 登记（它有活着的、在等槽位的 #execute 来消费）；
     // suspended 的那趟 #execute 早在挂起时就走完了，cancel 直接登记会永远没人摘（泄漏）。
-    // 第二个生产者是 `#executeInner` 的取消意图闸（2026-10-13 ②）：被并发恢复路径派发出
+    // 第二个生产者是 `#executeInner` 的取消意图闸（2026-10-13 ref-run-root-close）：被并发恢复路径派发出
     // 来的那趟自己登记、自己的 finally 消费 —— 覆盖面带消费者一起补，仍不泄漏。
     // 既知边界（多进程）：他进程取消本进程**排队中**的任务时，本进程的 execute finally
     // 在自己的 `#cancelSettled` 里查不到 ⇒ onFinished 会双发（cancel 进程一次 + owner 一次）。
@@ -840,7 +840,7 @@ export class AsyncRunner {
     rec.suspendedReason = undefined;
     rec.wakeAt = undefined;
     this.#approvals.unmarkSuspended(taskId);
-    // ⚠️ 落库**当场发生**（2026-10-13 ②）：不走 `#safeSave` 的微任务延迟 —— cancel 的临界段
+    // ⚠️ 落库**当场发生**（2026-10-13 ref-run-root-close）：不走 `#safeSave` 的微任务延迟 —— cancel 的临界段
     // 必须原子。落库推迟一个微任务，「重读再判」那几条路（readClaimed / 恢复路径的进闸重读）
     // 就会在这个缝里读到取消前的旧状态、照常起跑/派发（「绝不起跑」承诺就是这样被破的）。
     // 失败口径与 #safeSave 相同：不遮罩（记账继续），但必须可观测（onPersistError）。
@@ -853,7 +853,7 @@ export class AsyncRunner {
     }
     if (wasQueued) this.#cancelSettled.add(taskId);
     const finish = (): TaskRecord => {
-      // 取消意图的终点（2026-10-13 ②）：还有活着的 #execute 时留给它消费 —— 它靠这个意图
+      // 取消意图的终点（2026-10-13 ref-run-root-close）：还有活着的 #execute 时留给它消费 —— 它靠这个意图
       // 判「绝不起跑」（等槽位那趟的 readClaimed 可能读到的是落库前的旧快照）；
       // 没有活着的（suspended 取消 / 它已先走完全程）由这里摘掉，不得滞留。
       if (!this.#executions.has(taskId)) this.#cancels.delete(taskId);
@@ -995,10 +995,10 @@ export class AsyncRunner {
   }
 
   /**
-   * 取消的**意图**（2026-09-28 ④）。落库状态按意图判、不从 signal 反推 ——
+   * 取消的**意图**（2026-09-28 ref-cancel-api）。落库状态按意图判、不从 signal 反推 ——
    * 同一条 signal 有三个来源（调用方传入 / `runTimeoutMs` / 取消），反推不出「谁按的」。
    *
-   * 生命周期（2026-10-13 ② 收紧）：登记在 cancel 的临界段**入口**（异步路径在等闸之前
+   * 生命周期（2026-10-13 ref-run-root-close 收紧）：登记在 cancel 的临界段**入口**（异步路径在等闸之前
    * 就立上 —— 它同时是 `#executeInner` 取消意图闸的判据），摘除在四处：run 收尾
    * （`cancelIntent` 取值处）、`#executeInner` 的意图闸、cancel 自己的 `finish`
    * （仅当没有活着的 `#execute` 会消费它时）、`#execute` 的 finally（兜底）。
@@ -1013,7 +1013,7 @@ export class AsyncRunner {
    * （onFinished 触发两次 / 流被关两次）—— 用这个集合把「谁负责记账」说定：cancel 收尾了，
    * finally 就只做它自己那份（在飞递减、通知等待者、排空通知）。
    *
-   * 两个生产者（2026-10-13 ② 补齐）：① cancel 的 queued 分支（老的那条）；② `#executeInner`
+   * 两个生产者（2026-10-13 ref-run-root-close 补齐）：① cancel 的 queued 分支（老的那条）；② `#executeInner`
    * 的取消意图闸 —— 被并发恢复路径派发出来的 suspended 取消也有一条活着的 `#execute`，
    * 它在意图闸拦下起跑、同样要把「记账归 cancel」说定。两个生产者都保证有消费者
    * （那趟 `#execute` 自己的 finally），不会滞留。
@@ -1187,7 +1187,7 @@ export class AsyncRunner {
         // 「本进程已受理」的终点（与 #execute 同寿）。删在最后：此前若 cancel 挤进来，
         // 它看到的仍是「本进程在推进这条」，文案不会突然改口。
         this.#executions.delete(rec.taskId);
-        // 取消意图的兜底摘除（2026-10-13 ②）：正常路径里它已被各自的出口消费
+        // 取消意图的兜底摘除（2026-10-13 ref-run-root-close）：正常路径里它已被各自的出口消费
         // （run 收尾 / 意图闸 / cancel 自己的 finish），这里是「早退路径没走到任何出口」的
         // 兜底 —— 意图滞留会让一条**后来**的同任务取消记录误导收尾判定（意图只认 taskId）。
         this.#cancels.delete(rec.taskId);
@@ -1251,7 +1251,7 @@ export class AsyncRunner {
           Object.assign(rec, claimed);
           return;
         }
-        // 取消意图闸（2026-10-13 ②）：cancel 已在收尾这条任务（意图先于落库可见、且
+        // 取消意图闸（2026-10-13 ref-run-root-close）：cancel 已在收尾这条任务（意图先于落库可见、且
         // 在还有活着的 #execute 时不会被摘除）⇒ **绝不起跑**。没有它时这条缝真实存在：
         // 上面的 readClaimed 读到的是 cancel 落库前的快照，这里照常置 running 落库，
         // 就把 cancelled 覆盖回去 —— 任务取消后照常执行、webhook 双发。
@@ -1417,7 +1417,7 @@ export class AsyncRunner {
   }
 
   /**
-   * 落库失败的上报口（`#safeSave` 与 `cancel` 的临界段共用，2026-10-13 ② 抽出）。
+   * 落库失败的上报口（`#safeSave` 与 `cancel` 的临界段共用，2026-10-13 ref-run-root-close 抽出）。
    * 落库失败不遮罩主流程：任务结果仍在内存记录里可见。
    * 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
    */
@@ -1449,7 +1449,7 @@ export class AsyncRunner {
           timer = setTimeout(() => {
             onTimeout?.();
             // TimeoutError（code='timeout'）：classifyError 归 `timeout` 一类账 ——
-            // 与引擎工具超时 / MCP 桥兜底同口径（spec §10 2026-09-17 ②「超时自成一类」）。
+            // 与引擎工具超时 / MCP 桥兜底同口径（spec §10 2026-09-17 ref-timeout-error-type「超时自成一类」）。
             // 此前这里是裸 Error → 落 unknown，同一件事在异步宿主这条路径上记成另一本账。
             reject(new TimeoutError(`task ${taskId} 执行超时（${this.runTimeoutMs}ms）`));
           }, this.runTimeoutMs);
