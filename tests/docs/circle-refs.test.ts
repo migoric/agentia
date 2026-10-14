@@ -1,48 +1,57 @@
 /*
- * 圈号 / slug 引用守卫 —— 「引了 spec §10 的哪条决策」这件事必须可解析。
+ * 引用守卫 —— 「引了 spec §10 的哪条决策」这件事必须可解析。
  *
  * ## 为什么要有它
  *
- * `spec.md` §10 用「日期 + 圈号」给每条决策定锚（`### 2026-10-13 ref-taskstore-copy-contract：…`），全仓各处就靠
- * `（2026-10-13 ref-taskstore-copy-contract）` 这种写法指回决策原文。这个写法**没有任何东西守着**：
+ * `spec.md` §10 给每条决策定锚，全仓各处靠 `（日期 + 引用键）` 指回决策原文。这个写法
+ * 过去**没有任何东西守着**，实测暴露过三类真实的坏引用：
  *
- * - 圈号是**按天**编的，且同一条决策会被**重排**（串行合并时，批次二自己的分支把四件事编成
- *   ⑨⑩⑪⑫，同一分支的 tests 仍写 ①②③④ ⇒ 偏差恒为 +8，**落地当天就是自相矛盾的**）；
- * - 还有一类是**从写下那天起就不存在**的号：九月底的两条 src 注释引了该日 ⑧ 之后的号，
- *   而该日只有 ①–⑧（用 `git log -S` 限 `docs/spec.md` 查过，从来没有过）；`spec.md` 内
- *   另有一处把 2026-09-11 的条目号写成了圈号，而**该日的 §10 条目用字母编号（R1–R6）**——
- *   **同一个提交**里另一处已经写着「见 §10 2026-09-11 R1 条」，两处自相矛盾。
+ * - **位置号会漂**：圈号是**按天**编的，且同一条决策会被**重排**（串行合并时，批次二自己的分支把
+ *   四件事编成 ⑨⑩⑪⑫，同一分支的 tests 仍写 ①②③④ ⇒ 偏差恒为 +8，**落地当天就是自相矛盾的**）；
+ * - **从写下那天起就不存在的号**：九月底的两条 src 注释引了该日 ⑧ 之后的号，而该日只有 ①–⑧
+ *   （用 `git log -S` 限 `docs/spec.md` 查过，从来没有过）；`spec.md` 内另有一处把 2026-09-11 的
+ *   条目号写成了圈号，而**该日的 §10 条目用字母编号（R1–R6）**——**同一个提交**里另一处已经写着
+ *   「见 §10 2026-09-11 R1 条」，两处自相矛盾。
  *
  * 三类共同的后果一样：**读者按号去查，查到的不是你指的那件事**（或者什么都查不到）。
- * 这与本仓反复收口的「文档承诺了、代码没有」是同一族病，只是发生在引用层面。
  *
- * ## P1 放宽期（2026-10-14 起；**退出条件 = P3**）
+ * ## 形态：引用键 = **slug**（2026-10-14 起）
  *
- * 锚点正在从「日期 + 位置号」迁到「日期 + slug」（设计稿见
- * `docs/plans/2026-10-14-ref-slug-migration.md`）。P1 只给锚点**加名**、**不动任何一条引用**，
- * 所以本守卫此刻接受**两种**引用形态：
+ * 锚点从「日期 + 位置号」迁到「日期 + 名字」（设计稿
+ * `docs/plans/2026-10-14-ref-slug-migration.md`）：
  *
- *   `（2026-10-13 ref-taskstore-copy-contract）`                     ← 圈号（P1 期全仓现状，仍是仅有的形态）
- *   `（2026-10-13 ref-guard-scope-round4）` ← slug（新形态；本行即是全仓第一条 slug 引用）
+ * ```
+ *   锚点  ### <日期> ⑨ ref-<名>：<标题>
+ *   引用  （<日期> ref-<名>）
+ * ```
  *
- * ⚠️ **这是一次有期限的放宽，不是放松**：
+ * ⚠️ 上面**刻意用占位符**（`<日期>` / `<名>`）。写一个真日期 + 真圈号进来，它就成了一条
+ * **「日期 + 圈号」形态的残留**，会被下面第 3 个用例咬红 —— 实测踩过：本版头注初稿从旧头注
+ * 抄了一句 `（如 <日期> ① 起它还是…）`（那是**段落续行**的例子），当场被自己的判据报出来。
  *
- * 1. **退出条件写在代码里** —— P3 收口时删掉 `REF` 里的 `[CIRCLED]+` 那一支（以及随之退休的
- *    `anchors` 表）。写在这里是为了让「哪天该收」有据可查，而不是靠谁记得；
- * 2. **另一头同时收紧** —— `anchors` 有几行，slug 锚点就必须有几行（下面的 `anchorRows` /
- *    `slugRows` 相等断言）。**不允许「只加了 slug、同日圈号被误删」这种半迁移状态** ——
- *    否则 P3 收口时锚点会对不齐，而那时引用已经全改完了；
- * 3. **放宽的那一支要能自证** —— 断言 slug 锚点数下界（`slugs.size >= 119`），否则解析器退化成 0
- *    也没人知道（放宽的代码最容易变成死代码）。
+ * ⚠️ **圈号留在锚点行上，但已降级为「显示编号」，不再是地址** —— 它不随「同一天插一条」而稳定，
+ * 那正是这次迁移要消灭的性质。所以本守卫**只认 slug**：`（日期 圈号）` 不再是引用形态，
+ * 写下去**匹配不到任何东西**，也就不会被校验（见下面第 3 个用例：射程内它会直接红）。
+ *
+ * ### 迁移三步与本文件的对应
+ *
+ * | 阶段 | 动作 | 守卫形态 |
+ * |---|---|---|
+ * | P1 加名 | 给每条锚点补 slug，**引用一处不动** | 放宽：接受「一串圈号」**或**「一个/slug 串」 |
+ * | P2 换引用 | 脚本批量把 `（日期 圈号）` 换成 `（日期 slug）` | 同上（混用期） |
+ * | **P3 收口** | 圈号成为显示编号 | **只认 slug**（← 本文件当前状态） |
+ *
+ * ⚠️ P1/P2 期的那条放宽**不是放松，是有期限的**，且**退出条件写在代码里**（P1 时就写明了
+ * 「P3 收口时删掉 `REF` 里的 `[CIRCLED]+` 那一支」）—— 这不是新决定，是执行既定退出条件。
  *
  * ## 守什么（一条规则，两档射程）
  *
  * 规则：**若某个 `(日期 + 引用键)` 的「日期」在 §10 里「有条目」，则那个引用键必须真的存在。**
- * 「引用键」在 P1 期 = 一串圈号 **或** 一个 slug。
+ * 「引用键」= **一串空格分隔的 slug**（与迁移前「一串圈号」对称：`（日期 ②③）` 指该日两条决策，
+ * 迁移后是 `（日期 ref-a ref-b）`；实测本仓有 5 处这种形态，另有 1 处范围写法 `⑨–⑫` 在 P2
+ * 已**展开**成逐个 slug —— 范围语义依赖序号连续，slug 无序，故不保留范围写法）。
  *
  * 「有条目」按**行首形态**判、与有没有编号无关：`### 日期 …`、`**日期 …`、`- 日期：…`。
- * **取「有条目」而不是「有圈号锚点」是有意的** —— 后者会把「日期有条目、但条目用字母编号」
- * 那一整类（2026-09-11 的 R1–R6）整体漏出射程，而给这种日期加圈号**一定是错的**。
  *
  * - **档 A（全查引用）**：`AGENTS.md` / `docs/` 下的 md 与 astro / `src` / `tests` / `scripts` /
  *   `examples` / 两个附属包的 `src` 与 `test` —— 这些地方的 `(日期 键)` 一律是 spec 引用。
@@ -50,28 +59,45 @@
  *   也用 `（日期 圈号）` 这个形状，但**含义随版本节而变，两节两种惯例**：`[0.10.0]` 那节照抄
  *   §10 的号（证据：该节 ⑳ 的标题与 §10 同号条目几乎逐字相同），而 `[0.10.2]` 那节用的是
  *   **该节自己的条目序号**（证据：该节「④ 脚手架默认入口」对应 spec 的 ②）⇒ 全查会误报。
+ *   ⚠️ 这条**在 P3 之后依然必要**，而且理由更强了：那些「本节序号」的标题**永远**不会变成 slug，
+ *   所以档 B 若无标记过滤，第 3 个用例（零圈号）会把它们全报成残留。
  *
- * ## 定点不咬的两类（都是**规则的自然结果**，不是豁免名单）
+ * ## 定点不咬的三类（都是**规则的自然结果**，不是豁免名单）
  *
  * 1. **日期在 §10 里没有条目** —— 它只在**别的条目的正文**里被提到（如 2026-10-11）⇒ 那个号
  *    指的是**别的文档自己的编号**（如 `docs/plans/2026-10-11-execute-inner-debt.md` 的条目号），
- *    规则第一条就不成立。实测射程内这一档共 8 处，形态一致。
- * 2. **同日首条没编号**（如 `### 2026-09-20：第九轮复审收口`）⇒ 它没有锚点可引，
- *    全仓也确实没人引它。这是编号风格，不是缺陷。⚠️ 这一类**因此也没有 slug**（P1 射程只含
- *    「带圈号的锚点定义行」）—— 它既不该被引，就不需要一个名字。
+ *    规则第一条就不成立。实测射程内 3 处，形态一致。
+ * 2. **同日首条没编号**（如 `### 2026-09-20：第九轮复审收口`）⇒ 它没有锚点可引，全仓也确实没人引它。
+ *    ⚠️ 它**因此也没有 slug**（P1/P2 射程只含「带圈号的锚点定义行」）—— 它既不该被引，就不需要名字。
+ * 3. **`docs/plans/**` 与 `docs/reviews/**`**（第 3 个用例显式排除）—— 它们是**带日期的快照**，
+ *    里面的圈号引用写于迁移之前，那就是历史（改了反而是伪造）。⚠️ 这个「不咬」是**刻意的**，
+ *    所以它在代码里写成一个具名常量 `SNAPSHOT`，而不是靠「正则刚好没匹配到」。
  *
  * ## 本守卫判不了的（只能人读）
  *
- * 它只判「**键在不在**」，判不了「**键指得对不对**」：指错了主题、但那个键本身是该日真实存在的
- * 键 —— 例如把当日的 ⑩⑪ 写成 ②③，而 ②③ 也是同一天的号 —— 机器判不了，因为要判「指得对不对」
+ * 它只判「**键在不在**」，判不了「**键指得对不对**」：指错了主题、但那个键本身真实存在 ——
+ * 例如把当日的 ⑩⑪ 写成 ②③，而 ②③ 也是同一天的号 —— 机器判不了，因为要判「指得对不对」
  * 就得理解主题。⚠️ 本仓**最大的一类错引（重排后未同步）全部属于这一类**（它们的号当时都存在于
  * 该日）⇒ **那一批从来不是本守卫的功劳，是人逐条读出来的**。别把本守卫的存在当成
  * 「引用已经安全了」—— 它挡的是「查不到」，不挡「查错了」。
+ * ⚠️ 另有一类**从来不在射程**：**不带日期的引用**（`§10 ⑧` / `同日 ⑧` / `spec §10 ④` —— 日期写在
+ * 上一句里）。它们形态上就匹配不到 `REF`（那要求日期**紧邻**键）⇒ P2/P3 的「引用已全换成 slug」
+ * 只对**带日期**的那一类成立。实测 35 处，已登记进 `docs/guards.md` §2（含「为什么还没有守卫」）——
+ * 它不是 P3 漏掉的，是另一条规则的事。
+ * ⚠️ 迁移（P2）同理：**slug 解决的是「地址会漂」，不解决「地址指错了」**。P2 的机械替换把
+ * 「位置号」翻成了「名字」，但它翻的**是同一个指代** —— 原来指错主题的，换完仍然指错主题。
  *
- * ⚠️ 还有一条**本文件自己踩得上的坑**：本文件在档 A 射程内（`tests/` 下），所以
- * **头注里举例写的 `（日期 键）` 也是真引用**，那个键必须真的存在于 §10 —— 否则守卫会被自己的
- * 注释咬红（上面 P1 段举的 `（2026-10-13 ref-guard-scope-round4）` 是实测存在的真锚点，
- * 不是随手编的例子）。
+ * ## 本文件自己踩得上的两个坑
+ *
+ * 1. **头注里举例写的 `（日期 键）` 也是真引用**（本文件在档 A 射程内，`tests/` 下）—— 那个键
+ *    必须真的存在于 §10，否则守卫会被自己的注释咬红（下面举的 `（2026-10-13 ref-guard-scope-round4）`
+ *    是实测存在的真锚点，不是随手编的例子）。
+ * 2. **写头注时别用「真日期 + 真圈号」**（哪怕是在描述历史）—— 这个坑**先后踩了三次**：
+ *    P1 时在设计稿与 §10 条目里用真锚点举例（成了真引用，当场被咬）；P2 的替换脚本把一句
+ *    「`日期 ②③`」的说明文字当引用一并换掉（结果对、但**方向是反的**：说明文字本该豁免，
+ *    却跟着被改写）；P3 本版头注又从旧头注抄了一句段落续行的例子（`日期 ① 起它还是…`），
+ *    当场被第 3 个用例报成残留。⇒ 规则：**描述引用形态的句子一律用占位符**；
+ *    只有**不带日期**的圈号串（`⑨⑩⑪⑫`）才能裸写 —— 它匹配不到任何正则。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,37 +110,45 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚';
 const DATE = '20\\d\\d-\\d\\d-\\d\\d';
 /**
- * P1 的 slug：**强制 `ref-` 前缀** + kebab-case。
+ * slug：**强制 `ref-` 前缀** + kebab-case。
  *
  * 前缀是有用的，不只是好看：它让「数字开头」这种形态**构造不出来**（`ref-2fa` 以 `r` 起头），
- * 于是「slug 会不会与圈号在解析时混淆」这个问题直接不成立 —— 设计稿 §7 曾把它列为待做负向
- * 实验的开放问题（见设计稿 §7.1 的定稿结论）。
+ * 于是「slug 会不会与圈号在解析时混淆」这个问题直接不成立（设计稿 §7 曾把它列为待做负向
+ * 实验的开放问题，见 §7.1 的定稿结论）。
  */
 const SLUG = 'ref-[a-z0-9]+(?:-[a-z0-9]+)*';
 /**
- * 引用：日期 + **紧跟的一个引用键**（P1 期：一串圈号 **或** 一个 slug）。
+ * 引用键：**一串空格分隔的 slug**。
  *
- * ⚠️ 圈号那一支是**有实测理由**才吃「一整串」的：`（2026-10-13 ref-run-root-close ref-reject-static-methods）` 这种写法指该日的**两条**
- * 决策（本仓历史上真有一行是这个形状，`tests/transport/resume-scanner.test.ts` 里那处），
- * 而「只认第一个」的版本对第二个及以后**完全不校验** ⇒ 那半个引用是裸的。
- * 实测：改成一串后射程内多校验 14 处、**新增违规 0**（即零误报，纯增量）。
- *
- * ⚠️ slug 那一支**刻意不吃「空格分隔的多个 slug」**：P1/P2 期迁移脚本逐个替换，
- * 一次一个；要支持 `（日期 ref-a ref-b）` 的话请同时也把校验改成逐个 —— 别只放宽正则。
+ * ⚠️ 吃「一串」不是可选的宽松：`（日期 ②③）` 这种「一条引用指该日两条决策」的写法在本仓真实存在
+ * （P2 实测 5 处），迁移后就是 `（日期 ref-a ref-b）`。**只认第一个 slug 的版本对第二个及以后
+ * 完全不校验** ⇒ 那半个引用是裸的。
  */
-const REF = new RegExp(`(${DATE})\\s*([${CIRCLED}]+|${SLUG})`, 'g');
-
-/** 锚点**定义行**只认这两种形态：`### 日期 圈号…` 与 `**日期 圈号 —— 标题**`。 */
-const ANCHOR = new RegExp(`^(?:#{3,6}\\s*|\\*\\*\\s*)(${DATE})\\s*([${CIRCLED}])`);
+const SLUG_SEQ = `${SLUG}(?:\\s+${SLUG})*`;
+/** 引用：日期 + 紧跟的一串 slug。**圈号不在此列** —— 它已不是地址（见头注「形态」）。 */
+const REF = new RegExp(`(${DATE})\\s*(${SLUG_SEQ})`, 'g');
 
 /**
- * **P1 的锚点形态**：`### 日期 圈号 <slug>…`（slug 插在圈号之后、其余原样）。
+ * 锚点**定义行**：`### 日期 [圈号] slug…`。
  *
- * ⚠️ 难点在 P3：那时圈号会从「地址」退化成「显示编号」，本正则要跟着改成 slug 可选在圈号前后
- * 两种位置 —— 现在只认一种（本仓现状），是因为 P1 的写入形态只有一种。
+ * ⚠️ 圈号写成**可选**是有意的 —— 它已降级为显示编号，将来若有人把它去掉，锚点仍然合法、仍然可引。
+ * 而 slug **必在**：没有 slug 的定义行不构成锚点（它不是地址）。
  */
 const SLUG_ANCHOR = new RegExp(
-  `^(?:#{3,6}\\s*|\\*\\*\\s*)(${DATE})\\s*([${CIRCLED}])\\s+(${SLUG})`,
+  `^(?:#{3,6}\\s*|\\*\\*\\s*)(${DATE})\\s*(?:([${CIRCLED}])\\s+)?(${SLUG})`,
+);
+/** 带圈号的定义行 —— 只用于「有圈号必有 slug」（防半迁移）与「定义行排除」。 */
+const ANCHOR = new RegExp(`^(?:#{3,6}\\s*|\\*\\*\\s*)(${DATE})\\s*([${CIRCLED}])`);
+/**
+ * **「日期 + 圈号」形态** —— P3 的**残留计数**专用（不是引用形态，平时不该出现）。
+ *
+ * 吃「范围连接符」是为了**发现**它：`（日期 ⑨–⑫）` 指该日四条决策，若替换脚本只吃 `⑨`
+ * 会留下孤儿的 `–⑫`。P2 已经把它展开成逐个 slug，所以本正则在这里的作用是**把这种形态也
+ * 算进残留** —— 它同样是「位置号地址」，同样不该再出现。
+ */
+const CIRC_REF = new RegExp(
+  `(${DATE})\\s*[${CIRCLED}]+(?:\\s*[–—−~〜∼至-]\\s*[${CIRCLED}]+)*`,
+  'g',
 );
 
 /**
@@ -123,9 +157,6 @@ const SLUG_ANCHOR = new RegExp(
  * 为什么需要它：`2026-09-11` 在 §10 有**条目**（`- 2026-09-11：**R1–R5 一轮落地**`），
  * 但条目里用的是**字母编号**（R1–R6）⇒ 它不产生任何圈号锚点，于是所有「该日 + 圈号」的引用
  * 会被下面的 `dates.has()` 直接跳过。而那种引用**一定是错的** —— 该日根本没有圈号可引。
- * ⚠️ 判据取「有条目」而非「有锚点」正是为了把这一类收进射程。实测：收进来后射程内只多出
- * **1** 处（`docs/spec.md` 里那处），`2026-10-11` 那 8 处仍正确留在射程外（它在 §10 里
- * 只被**别的条目的正文**提到、自己不构成条目行）。
  */
 const ENTRY = new RegExp(`^\\s*(?:#{3,6}\\s*|\\*\\*\\s*|[-*]\\s+)(${DATE})`);
 
@@ -133,26 +164,25 @@ const ENTRY = new RegExp(`^\\s*(?:#{3,6}\\s*|\\*\\*\\s*|[-*]\\s+)(${DATE})`);
  * 建 §10 的锚点集合（只取 `## 10.` 到下一个 `## `）。
  *
  * ⚠️ 刻意**不**把「以日期+圈号开头的普通行」当锚点：全文件这种行只有 5 处，逐行读全是**引用**
- * （如 `2026-10-13 ref-retry-validation 起它还是…` 是段落续行 —— 注意这里没有可引的号，它自己就是一句引用），
- * 把它们收成锚点会**伪造**标题：第一版解析器就这么错过一次，把段落续行当成了某条决策的标题。
+ * （如 `<日期> ① 起它还是…` 是段落续行 —— 这里刻意写占位符，理由见下面「本文件自己踩得上的坑」），
+ * 把它们收成锚点会**伪造**标题：
+ * 第一版解析器就这么错过一次，把段落续行当成了某条决策的标题。
  * **收紧比放宽重要** —— 假锚点会让错引用被算成「合法」，而漏一个真锚点只会报一次假红。
  *
- * 返回三个口径，**它们的数量关系本身就是 P1 的断言**：
+ * 返回的口径，**它们的数量关系本身就是断言**：
  * - `anchorRows`：带圈号的锚点**定义行数**（同日重号算两行 —— 本仓有 1 处）
- * - `anchors`：`日期+圈号` 的**唯一键**表（同日重号先到先得 ⇒ 比 `anchorRows` 少）
- * - `slugRows` / `slugs`：同上，键换成 slug（slug 全局唯一 ⇒ 两者应当相等）
+ * - `slugs`：slug → `{ date, circ, line }`（slug 全局唯一 ⇒ 它天然是地址）
+ * - `anchorNoSlug`：有圈号但**没有合法 slug** 的行号 —— 「半迁移」证据
+ * - `sameDayRepeats` / `defLines`：同日重号（只报不咬）、定义行行号（第 3 个用例排除用）
  */
 function specAnchors(): {
-  anchors: Map<string, number>;
   dates: Set<string>;
-  anchorDates: Set<string>;
   slugs: Map<string, { date: string; circ: string; line: number }>;
   anchorRows: number;
   slugRows: number;
-  /** 有圈号但（没有 slug / slug 形态不合法）的行号 —— P1 的「半迁移」证据 */
   anchorNoSlug: number[];
-  /** 同一天里重复的圈号（`日期 圈号` → 出现的行号列表）—— 只报，不咬（见头注「定点不咬」） */
   sameDayRepeats: string[];
+  defLines: Set<number>;
 } {
   const lines = readFileSync(join(repoRoot, 'docs', 'spec.md'), 'utf8').split('\n');
   const start = lines.findIndex((l) => /^##\s*10\./.test(l));
@@ -165,49 +195,48 @@ function specAnchors(): {
     }
   }
 
-  const anchors = new Map<string, number>();
   const slugs = new Map<string, { date: string; circ: string; line: number }>();
+  const anchorDates = new Set<string>();
   const entryDates = new Set<string>();
   const anchorNoSlug: number[] = [];
+  const defLines = new Set<number>();
   const circRows = new Map<string, number[]>();
   let anchorRows = 0;
   let slugRows = 0;
   for (let i = start; i < end; i++) {
-    const m = ANCHOR.exec(lines[i]);
-    if (m) {
+    const s = SLUG_ANCHOR.exec(lines[i]);
+    if (s) {
+      slugRows += 1;
+      anchorDates.add(s[1]);
+      // 同名 slug 只留第一条，重复的那条由 `slugs.size < slugRows` 的断言报出来
+      if (!slugs.has(s[3])) slugs.set(s[3], { date: s[1], circ: s[2] ?? '', line: i + 1 });
+    }
+    const a = ANCHOR.exec(lines[i]);
+    if (a) {
+      defLines.add(i + 1);
       anchorRows += 1;
-      const key = `${m[1]} ${m[2]}`;
-      if (!anchors.has(key)) anchors.set(key, i + 1); // 同日重号（本仓有 1 处）：先到先得
+      const key = `${a[1]} ${a[2]}`;
       const rows = circRows.get(key) ?? [];
       rows.push(i + 1);
       circRows.set(key, rows);
-
-      const s = SLUG_ANCHOR.exec(lines[i]);
-      if (s) {
-        slugRows += 1;
-        // 同名 slug 只留第一条，重复的那条由 `slugs.size < slugRows` 的断言报出来
-        if (!slugs.has(s[3])) slugs.set(s[3], { date: s[1], circ: s[2], line: i + 1 });
-      } else {
-        anchorNoSlug.push(i + 1);
-      }
+      if (!s) anchorNoSlug.push(i + 1);
       continue;
     }
+    if (s) continue; // 无圈号但有 slug 的锚点行：合法（圈号是可选的显示编号）
     const e = ENTRY.exec(lines[i]);
     if (e) entryDates.add(e[1]);
   }
   const sameDayRepeats = [...circRows.entries()]
     .filter(([, v]) => v.length > 1)
     .map(([k, v]) => `${k}（行 ${v.join(' / ')}）`);
-  const anchorDates = new Set([...anchors.keys()].map((k) => k.slice(0, 10)));
   return {
-    anchors,
     dates: new Set([...anchorDates, ...entryDates]),
-    anchorDates,
     slugs,
     anchorRows,
     slugRows,
     anchorNoSlug,
     sameDayRepeats,
+    defLines,
   };
 }
 
@@ -259,61 +288,57 @@ const SCOPE_DIRS = [
   'packages/trace-view/test',
 ];
 const TOP_FILES = ['AGENTS.md', 'CONTRIBUTING.md'];
-/** 档 B：**版本节之间惯例不同**（见头注），故只查带 `§10` / `spec.md` 标记的引用。 */
-const MARKER_ONLY = ['CHANGELOG.md', 'packages/cli/CHANGELOG.md'];
+/**
+ * 档 B：**版本节之间惯例不同**（见头注），故只查带 `§10` / `spec.md` 标记的引用。
+ *
+ * ⚠️ **刻意不含 `packages/cli/CHANGELOG.md`** —— 它是**构建产物**（`.gitignore` 里写着：
+ * 「copy-assets 从仓库根拷贝，随包发布」）⇒ 它**不在版本控制里**，只在**本机磁盘**上存在。
+ * 校验它的后果是实测过的（P2 落地时踩到）：本机那份还是迁移前的旧副本 ⇒ 本机跑守卫
+ * **红 46 处**，而 CI / 新克隆 / `git worktree` 里**根本没有这个文件** ⇒ CI 全绿。
+ * 这正是「本机读数 ≠ CI 读数」的典型来源 —— **产物一律不进射程**，它的内容由根
+ * `CHANGELOG.md` 那一档覆盖，去掉它不丢覆盖。
+ */
+const MARKER_ONLY = ['CHANGELOG.md'];
 const MARKER = /§\s*10|spec\.md/;
+/**
+ * **刻意的例外（具名，不靠「正则刚好没匹配到」）**：`docs/plans/**` 与 `docs/reviews/**` 是
+ * 带日期的**快照**（设计稿 §2 的非目标：不改历史）⇒ 第 3 个用例（零圈号引用）不看它们。
+ */
+const SNAPSHOT = [/^docs\/plans\//, /^docs\/reviews\//];
 
-test('spec §10 的引用必须可解析：日期有条目 ⇒ 引用键（圈号或 P1 期 slug）必须存在', () => {
-  const { anchors, dates, slugs, anchorRows, slugRows } = specAnchors();
+const SPEC = join(repoRoot, 'docs', 'spec.md');
+const FILES = [
+  ...TOP_FILES.map((f) => join(repoRoot, f)),
+  ...SCOPE_DIRS.flatMap((d) => walk(join(repoRoot, d))),
+  ...MARKER_ONLY.map((f) => join(repoRoot, f)),
+];
+const MARKER_ONLY_SET = new Set(MARKER_ONLY.map((f) => join(repoRoot, f)));
+
+test('spec §10 的引用必须可解析：引用键（一律是 slug）必须存在于 §10', () => {
+  const { slugs, anchorRows, slugRows } = specAnchors();
 
   // 真空护栏 ①：锚点表本身不许空（解析器退化 ⇒ 下面的断言会 vacuously 全绿）
   assert.ok(
-    anchors.size >= 100 && dates.size >= 15,
-    `只解析出 ${anchors.size} 个锚点 / ${dates.size} 个日期段 —— 远低于预期（§10 现有 100+ 个锚点），解析器已失效`,
+    slugs.size >= 100,
+    `只解析出 ${slugs.size} 个 slug 锚点（量级下界 100，2026-10-14 实测 121）—— 解析器已失效：` +
+      `要么锚点被批量回退了，要么 SLUG_ANCHOR 正则坏了（它要求「日期 [+ 圈号] + slug」）`,
   );
 
   // 真空护栏 ②：**「有条目但无圈号锚点」那一类必须真的还在**。它才是本守卫与「只认锚点」的分野；
-  // ENTRY 判据一旦退化，这一类整片消失，而它的错引用（下面射程内的那一处）会**静默变绿**。
+  // ENTRY 判据一旦退化，这一类整片消失，而它的错引用会**静默变绿**。
+  const { dates } = specAnchors();
   const unnumbered = [...dates].filter(
-    (d) => !new Set([...anchors.keys()].map((k) => k.slice(0, 10))).has(d),
+    (d) => !new Set([...slugs.values()].map((v) => v.date)).has(d),
   );
   assert.ok(
     unnumbered.length >= 3,
-    `只解析出 ${unnumbered.length} 个「在 §10 有条目、但条目无圈号锚点」的日期（预期 ≥ 3，实测 5）` +
+    `只解析出 ${unnumbered.length} 个「在 §10 有条目、但条目无 slug 锚点」的日期（预期 ≥ 3）` +
       ` —— ENTRY 判据退化了：给字母编号的日期硬加圈号这一类会整片漏出射程`,
   );
 
-  // 真空护栏 ③（P1 新增，设计稿 §3.4 第 3 条）：放宽的那一支要能自证存在。
-  // 没有它就退化成死代码 —— 「放宽」与「放弃校验」在输出上长得一样。
-  //
-  // ⚠️ **下界是「量级」护栏，不是逐条精确计数**（119 = 落地当日的量级；实测 121）。
-  // 它挡的是**崩塌**：解析器退化成个位数、或有人批量回退锚点。
-  // 它**挡不住**下面两种**单条**退化 —— 别把它当成「锚点数被钉住了」：
-  //   · 「删掉某条锚点的**圈号**」⇒ 那行整条滑出 ANCHOR 射程，但它同时落成一条
-  //     `### 日期 slug：…` 的形态而**被 `REF` 当成引用**，slug 表里又没有它 ⇒ 本测试末尾的
-  //     `bad` 报「引了 slug 但 §10 没有这个锚点」（这条路比数字下界更硬：它说的是「有人查不到」）；
-  //   · 「删掉 slug、留住圈号」⇒ 第二个测试的 `anchorNoSlug` 报半迁移。
-  //
-  // ⚠️ 上一版本这里写的是「下界取紧值 120 ⇒ 能挡住删圈号」，**那句话只在我还没往 §10 加决策
-  // 之前成立** —— 加一条决策它就松了一档，而注释还留着旧理由（守卫病根 1：写死的理由会腐烂）。
-  // 现在的写法只声称它真能做的事。
-  assert.ok(
-    slugs.size >= 119,
-    `只解析出 ${slugs.size} 个 slug 锚点（量级下界 119，2026-10-14 实测 121）—— P1 的 slug 支路已崩塌：` +
-      `要么锚点被批量回退了，要么 SLUG_ANCHOR 正则失效（注意它要求「日期 + 圈号 + slug」三段齐全）`,
-  );
-
-  const files = [
-    ...TOP_FILES.map((f) => join(repoRoot, f)),
-    ...SCOPE_DIRS.flatMap((d) => walk(join(repoRoot, d))),
-    ...MARKER_ONLY.map((f) => join(repoRoot, f)),
-  ];
-  const markerOnly = new Set(MARKER_ONLY.map((f) => join(repoRoot, f)));
-
   let checked = 0;
-  let slugRefs = 0;
   const bad: string[] = [];
-  for (const file of files) {
+  for (const file of FILES) {
     const rel = relative(repoRoot, file);
     let text: string;
     try {
@@ -323,17 +348,14 @@ test('spec §10 的引用必须可解析：日期有条目 ⇒ 引用键（圈�
     }
     text.split('\n').forEach((line, i) => {
       for (const m of line.matchAll(REF)) {
-        if (markerOnly.has(file)) {
+        if (MARKER_ONLY_SET.has(file)) {
           const before = line.slice(Math.max(0, (m.index ?? 0) - 60), m.index);
           if (!MARKER.test(before)) continue;
         }
+        checked += 1;
         const date = m[1];
-        const key = m[2];
-
-        // --- P1 的 slug 支路（⚠️ P3 收口时删掉本支与上面的 `[CIRCLED]+` 相反的一支）---
-        if (key.startsWith('ref-')) {
-          checked += 1;
-          slugRefs += 1;
+        // ⚠️ 逐个校验 —— `m[2]` 是一**串** slug（见 `REF` 的说明），只查第一个会让后面那些变裸的。
+        for (const key of m[2].split(/\s+/)) {
           const hit = slugs.get(key);
           if (!hit) {
             bad.push(
@@ -347,71 +369,47 @@ test('spec §10 的引用必须可解析：日期有条目 ⇒ 引用键（圈�
                 `\n        ${line.trim().slice(0, 120)}`,
             );
           }
-          continue;
-        }
-
-        // --- 圈号支路（P1 期仍是仅有的形态；P3 之后它整体退休）---
-        if (!dates.has(date)) continue; // 规则不成立：该日期在 §10 没有条目（只在别的条目正文里被提到）
-        // ⚠️ 逐个校验 —— `m[2]` 是一**串**圈号（见 `REF` 的说明），只查第一个会让后面那些变裸的。
-        for (const circ of key) {
-          checked += 1;
-          if (!anchors.has(`${date} ${circ}`)) {
-            const total = [...anchors.keys()].filter((k) => k.startsWith(`${date} `)).length;
-            const why =
-              total === 0
-                ? '该日在 §10 有条目、但条目**没有圈号**（用的是字母等别的编号）⇒ 圈号在这里无号可指'
-                : `该日共 ${total} 个锚点`;
-            bad.push(
-              `${rel}:${i + 1}  引了 ${date} ${circ}，但 §10 没有这个锚点（${why}）` +
-                `\n        ${line.trim().slice(0, 120)}`,
-            );
-          }
         }
       }
     });
   }
 
-  // 真空护栏 ④：真扫到了引用（否则「一条都没查」也会绿）
+  // 真空护栏 ③：真扫到了引用（否则「一条都没查」也会绿）
   assert.ok(checked >= 200, `只检查到 ${checked} 处引用（预期 200+）—— 射程或正则坏了`);
-
-  // P1 判据（设计稿 §6.1 判据 1）：**新形态真的通了** —— 射程内至少有一条 slug 引用可解析。
-  // P1 不动引用，所以这一条只由「锚点侧 + 新增的活样本」共同满足；它掉了就说明
-  // slug 支路没人走过（死代码），而 P2 会在没有活样本的状态下开始批量替换。
-  assert.ok(
-    slugRefs >= 1,
-    '射程内一条 slug 引用都没有 —— P1 的「新形态通了」没有活证据（见设计稿 §6.1 判据 1）',
-  );
 
   assert.deepEqual(
     bad,
     [],
     '有引用指向 §10 里不存在的锚点 —— 读者按它去查会查不到（或查到别的决策）。' +
-      '改法：把键改成该日真实存在的那个（先读 §10 的锚点表认主题，别按位置猜）；' +
-      '若该日在 §10 根本没有圈号（条目用字母编号），就**不要用圈号去引它**。',
+      '改法：改成该条决策真实存在的那个 slug（先读 §10 的锚点表认主题，别按位置猜）。',
   );
 
   // 顺带把两个口径打在输出里 —— 它们变了（比如锚点被删）时，从日志里一眼能看出
   assert.ok(
-    anchorRows >= slugRows,
-    `slug 锚点行(${slugRows}) 多于圈号锚点行(${anchorRows})，不可能`,
+    slugRows >= anchorRows,
+    `带 slug 的锚点行(${slugRows}) 少于带圈号的锚点行(${anchorRows})，不可能（圈号行必须都有 slug）`,
   );
 });
 
-test('P1 锚点侧：有圈号必有 slug、slug 唯一、形态合法（放宽期的「另一头收紧」）', () => {
+test('锚点侧：有圈号必有 slug、slug 唯一、形态合法', () => {
   const { anchorRows, slugRows, slugs, anchorNoSlug, sameDayRepeats } = specAnchors();
 
-  // ① 「有圈号 ⇒ 有 slug」：不允许半迁移（设计稿 §3.4 第 2 条）。
-  //    这一条与「幽灵豁免」互为对侧：它挡的是「加了名但圈号丢了」，而 P3 收口时才发现就晚了。
+  // ① 「有圈号 ⇒ 有 slug」：不允许半迁移 —— 迁移已收口，但这条断言**现在反而更重要**：
+  //    它挡的是「改锚点形态时只改一半」（例如想删掉显示用的圈号，结果把 slug 也删了）。
   assert.deepEqual(
     anchorNoSlug,
     [],
     `以下锚点行有圈号却没有合法 slug（半迁移状态）：行 ${anchorNoSlug.join(', ')}\n` +
-      `        P1 要求 slug 与圈号**同时存在**——加 slug 时别动圈号，改形态时别只改一半。`,
+      `        圈号是显示编号、slug 才是地址 —— 两个可以同时在，但**不能只有圈号**。`,
   );
-  assert.equal(
-    slugRows,
-    anchorRows,
-    `圈号锚点行 ${anchorRows} 行，带 slug 的 ${slugRows} 行 —— 两者必须相等`,
+  // ⚠️ P1 期这里写的是 `slugRows === anchorRows` —— 那时「有 slug 必有圈号」与「有圈号必有 slug」
+  //    是同一条事实的两面。**P3 之后不再成立**：圈号已降级为**可去掉的显示编号** ⇒
+  //    `slugRows > anchorRows` 是**合法**状态（锚点仍然可引，只是不再显示当天的序号）。
+  //    故只保留单向的那一条（下面 ① 的 `anchorNoSlug` 为空），量级方向由 `slugRows >= anchorRows` 兜。
+  assert.ok(
+    slugRows >= anchorRows,
+    `带 slug 的锚点行 ${slugRows} 行、带圈号的 ${anchorRows} 行 —— 前者不该更少：` +
+      `有圈号的锚点行都必须有 slug（少的那一行会把一个真锚点变成不可引）`,
   );
 
   // ② slug 全局唯一。**取「全局」而不是设计稿说的「同日唯一」**：实测 121 个名字本就互不相同，
@@ -419,7 +417,7 @@ test('P1 锚点侧：有圈号必有 slug、slug 唯一、形态合法（放宽�
   assert.equal(
     slugs.size,
     slugRows,
-    `slug 锚点 ${slugRows} 行但只有 ${slugs.size} 个不同的名字 —— 有重名 slug。` +
+    `带 slug 的锚点 ${slugRows} 行但只有 ${slugs.size} 个不同的名字 —— 有重名 slug。` +
       `重名会让引用解析「查到别的那条」，正是本设计要消灭的状态。`,
   );
 
@@ -431,10 +429,67 @@ test('P1 锚点侧：有圈号必有 slug、slug 唯一、形态合法（放宽�
     'slug 长度超过 48 —— slug 是地址，不是标题；太长会在引用里喧宾夺主',
   );
 
-  // ④ 同日重号：**只报不咬**（本仓有 1 处，是真历史，P1 不改历史）。
+  // ④ 同日重号：**只报不咬**（本仓有 1 处，是真历史，不改历史）。
   //    但它必须被打印出来 —— 「同一天有两个 ②」正是位置号失效的活证据，也是 slug 的收益点。
   if (sameDayRepeats.length > 0) {
     console.log(`  ℹ️ §10 同日重号 ${sameDayRepeats.length} 处（slug 能区分它们，圈号不能）：`);
     for (const r of sameDayRepeats) console.log(`     ${r}`);
   }
+});
+
+/**
+ * **P3 的核心判据**：射程内（除定义行、快照、日期无条目）不许再有「日期 + 圈号」形态。
+ *
+ * 它守的不是「写得对不对」，而是「**这个写法还在不在**」—— 迁移的完成态应当是可机械判的，
+ * 否则「改完了没有」只能靠人扫。⚠️ 三项排除都是**减法**，各自有出处（见头注「定点不咬的三类」），
+ * 写成显式的三类而不是「给 `isDefLine` 加个开关」，是为了**读判据的人能顺着三项去查**。
+ */
+test('P3 收口：射程内（非定义行、非快照、日期有条目）不许再有「日期 + 圈号」引用', () => {
+  const { dates, defLines } = specAnchors();
+  const leftovers: string[] = [];
+  let scanned = 0;
+  for (const file of FILES) {
+    const rel = relative(repoRoot, file);
+    if (SNAPSHOT.some((re) => re.test(rel))) continue; // ① 快照：设计稿 §2 明说不动
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    text.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(CIRC_REF)) {
+        // ② §10 的定义行：圈号在那里是**显示编号**（这是它唯一合法存在的地方）
+        if (file === SPEC && defLines.has(i + 1)) continue;
+        // ③ 档 B 同口径：CHANGELOG 里没带 `§10` / `spec.md` 标记的圈号指的是**本节序号**
+        if (MARKER_ONLY_SET.has(file)) {
+          const before = line.slice(Math.max(0, (m.index ?? 0) - 60), m.index);
+          if (!MARKER.test(before)) continue;
+        }
+        // ④ 该日期在 §10 没有条目 ⇒ 那个号指别的文档自己的编号（规则第一条不成立）
+        if (!dates.has(m[1])) continue;
+        scanned += 1;
+        leftovers.push(`${rel}:${i + 1}  ${m[0]}\n        ${line.trim().slice(0, 120)}`);
+      }
+    });
+  }
+
+  // 真空护栏：扫到的「该被换掉的」位置数不许是 0 以外的假值 —— 这里反过来：
+  // 射程里**本来就不该有**，所以没有下限护栏，但要有「真的扫过东西」的证据
+  assert.ok(
+    defLines.size >= 100,
+    `§10 定义行只解析出 ${defLines.size} 行 —— 排除项②退化成 0 ⇒ 本用例会把定义行全报成残留`,
+  );
+
+  assert.deepEqual(
+    leftovers,
+    [],
+    `射程内还有 ${leftovers.length} 处「日期 + 圈号」引用（P2 的替换射程口径见设计稿 §7.3）。\n` +
+      `        圈号已不再是地址 ⇒ 这种写法**匹配不到任何锚点**，读者按它去查什么也查不到。\n` +
+      `        改法：换成该条决策的 slug（读 §10 的锚点表；` +
+      `若是「一条引用指该日多条」，用空格分隔多个 slug）。\n` +
+      `        ⚠️ 若这一处是在**描述编号机制本身**（不是引用某条决策），正确的改法是**改写这句话**，\n` +
+      `        而不是给它套一个 slug —— 套上去会变成一条指向错误主题的引用。`,
+  );
+  console.log(`  ℹ️ 残留判据：射程内扫过 ${scanned} 处「日期 + 圈号」（该值恒为 0 才通过）`);
 });

@@ -66,6 +66,7 @@ SKIP_VERIFY=1 git push                # 急着推时跳过
 | 新增了公共导出没改官网 | `tests/docs/api-page.test.ts` 做**反向全覆盖**：`src/index.ts` 的每个导出都必须出现在 `packages/website/src/fragments/api.html`（含页头统计数字） |
 | 某步验证「本地过了」但 CI 挂了 | 先分清是哪个 job。`verify-all.sh` 现在**含 lint**（第 1 步），但它**不含** CI 独有的 `import-floor`（Node 18/20 导入下限）、`e2e:mcp` 与 `e2e:mcp:server` —— 这四个是必需检查，本地得单独跑 |
 | 语义变更没留决策记录 | 改语义要同步 `docs/spec.md` §10；方向性工作更新 `docs/roadmap.md` |
+| §10 引用写成圈号 | 圈号是位置号、会漂 ⇒ 一律写 `（日期 ref-名）`；写法见 `AGENTS.md`「设计决策」 |
 
 ## 发版流程
 

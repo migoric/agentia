@@ -461,6 +461,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
     `npm run build:cli`（→ CLI `dist/AGENTS.md`）与 `npm run build:website`
     （→ `llms.txt` / `llms-full.txt`），否则线上与实际说明漂移。
 - **设计决策**：改语义的决定要同步 `docs/spec.md` §10 决策记录；方向性工作更新 `docs/roadmap.md`。
+  **引用某条决策一律写 `（日期 ref-名）`，别写圈号**：圈号是**按天编的位置号**（同一天里插一条、重排
+  一次就漂），2026-10-14 起它降级为**显示编号**、不再是地址；slug（`ref-` 前缀 + kebab-case，写在锚点
+  的「日期 + 圈号」之后）才是地址、且全仓唯一。`tests/docs/circle-refs.test.ts` 守「射程内零圈号引用
+  + 引的 slug 必须真的存在」，但它**只判号在不在、判不了指得对不对** —— 后者只能人读。
 - **使用者向文档单源**：`docs/usage-guide.md` 是**唯一**的框架使用说明（API 速查 + 类型链路 + 已知边界 + 反例）。
   它被四处消费：① 框架包构建时拷成 `dist/AGENTS.md`（`scripts/copy-assets.mjs`，随 `@migor/agentia` 发布）；
   ② `packages/cli` 构建时拷成 `dist/AGENTS.md`，`agentia create` 写进新项目的 `AGENTS.md`；
