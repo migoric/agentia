@@ -1,6 +1,6 @@
 {
   "name": "@migor/trace-view",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "private": true,
   "type": "module",
   "description": "Agentia 可观测面渲染器：trace 调用树（框架无关、零依赖）—— 官网 playground 与 CLI inspector 共用",

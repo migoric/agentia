@@ -7042,7 +7042,16 @@ git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` 
     外移；`#executeInner` 结果记账外移 + 14 条直接单测）+ c8 分支覆盖率棘轮 88 → 89；
     **无破坏性变更**，框架公共 API 与 `exports` 逐字未变（本版唯一碰 `src/index.ts` 的是版本常量
     那一行），脚手架是**生成物** ⇒ 既有使用者不需要任何动作）；
-  `AGENTIA_VERSION = '0.10.2'`。决策均见 §10。
+  → v0.10.3（**把「可观测」从「能导出」推进到「跨进程接得上、agent 自己查得到」**：MCP 桥按 SEP-414
+    出入站携带 `traceparent`（跨进程 trace 接得上）+ OTLP 导出对齐 semconv（三个缓存/压缩键 +
+    可选的 `execute_tool` 投影，**默认关**）+ 可读面三件（CLI `report` 加会话/任务维度、交接与护栏
+    四个 additive `agentia.*` 属性、两个 MCP 只读工具）+ 五轮深评静默项收口与门禁加固（含决策引用
+    从「日期 + 圈号」迁到「日期 + slug」，302 处）；**无破坏性变更** —— 公共导出面**零增删改**
+    （`src/index.ts` 本版只动版本常量那一行），既有使用者不需要任何动作；
+    ⚠️ **三条读数会变（变小）**：嵌套 capability 的 tokens/cost 只认顶层（此前外层内层各计一次、
+    列不可加总，影响 `buildRunReport` / trace-view 排行 / CLI report / dev 面板 / 官网 playground）、
+    `report` 按 `traceId` 去重（append-only 不再翻倍）、`retry` 坏值不再谎报「用户取消」）；
+  `AGENTIA_VERSION = '0.10.3'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
