@@ -498,7 +498,7 @@ async function handleCancel(taskId: string, ctx: HttpCtx): Promise<void> {
 }
 
 /**
- * POST /tasks/<id>/events（run 事件投入口，2026-09-28 ⑥）：投一个事件给挂起的任务
+ * POST /tasks/<id>/events（run 事件投入口，2026-09-28 ref-run-event-input）：投一个事件给挂起的任务
  * —— 事件落 `pendingEvents`、状态回 running，先落库再派发，醒来进消息历史。
  * body `{ eventId?, type, payload }`（白名单，全是字符串，多一个字段 → 400）；
  * 不存在 → 404；不在 suspended 状态、或同 eventId 重复投递 → 409。

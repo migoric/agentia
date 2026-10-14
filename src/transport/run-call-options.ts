@@ -90,7 +90,7 @@ export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions 
         : {}),
     // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
     ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
-    // 事件投入口（2026-09-28 ⑥）：挂起期间投递的事件随记录进引擎，由它在
+    // 事件投入口（2026-09-28 ref-run-event-input）：挂起期间投递的事件随记录进引擎，由它在
     // 未决 tool_use 解决之后注入消息流（为什么不能由宿主直接追加进
     // spec.messages 的末尾：见 signalTask 与 engine/loop.ts 的注入点纪律）
     ...(rec.pendingEvents !== undefined && rec.pendingEvents.length > 0

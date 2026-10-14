@@ -44,7 +44,7 @@ export interface McpToolsOptions {
   /**
    * **兜底**单次 `callTool` 超时（毫秒），缺省 60000；非正数 = 不限。
    *
-   * ⚠️ 语义（见 spec §10 2026-09-17 ①）：**引擎设了 `toolTimeoutMs` 时本项不参与判定** ——
+   * ⚠️ 语义（见 spec §10 2026-09-17 ref-mcp-timeout-single-source）：**引擎设了 `toolTimeoutMs` 时本项不参与判定** ——
    * 一次调用只有一个裁判，否则同一件事会有两个计时器、两种账。它只在两种情况生效：
    * ① 桥脱离引擎单用（直接 `tool.run(...)`，没有 ctx）；② 引擎没设 `toolTimeoutMs`。
    *
@@ -167,7 +167,7 @@ export async function mcpTools(
           ...(ctx?.abandoned !== undefined ? { abandoned: ctx.abandoned } : {}),
           ...(traceparent !== undefined ? { traceparent } : {}),
         };
-        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ①）：引擎**表过态**时，桥不启动自己的计时器 ——
+        // 裁判权（2026-09-17，见 spec §10 2026-09-17 ref-mcp-timeout-single-source）：引擎**表过态**时，桥不启动自己的计时器 ——
         // 两个计时器判同一件事，只会得到两种账（桥那份曾被记成 error(unknown)/errorKind=threw），
         // 而且桥的纯竞速还会把超了预算的调用记成成功。`timeoutMs` 退化为兜底（只在脱离引擎单用、
         // 或引擎压根没设 toolTimeoutMs 时生效）。

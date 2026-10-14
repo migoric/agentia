@@ -168,7 +168,7 @@ export function wireSpanId(id: string): string {
  * （采样闸门要看完好整棵 trace 才判得出来），而出站调用发生在**运行期** ——
  * 那时「这条 trace 会不会被采样掉」还没有答案。所以恒 `00` 是唯一不撒谎的选择
  * （`00` = 不声明「已采样」）；编一个 `01` 是替下游做决定。⚠️ 别下一轮「顺手」改成跟随采样
- * （见 `docs/spec.md` §10 2026-09-21 ⑦）。入站侧 `parseTraceparent` 也从不读 flags。
+ * （见 `docs/spec.md` §10 2026-09-21 ref-cost-sampling）。入站侧 `parseTraceparent` 也从不读 flags。
  *
  * 调用方保证给的是内部 id 或线缆 id（本函数只做投影，不做合法性判定）。
  */

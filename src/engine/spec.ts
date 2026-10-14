@@ -111,7 +111,7 @@ export interface RunInvocationOptions {
    */
   maxEventChars?: number | false;
   /**
-   * 挂起期间投递的事件（2026-09-28 ⑥，run 事件投入口）：随 `TaskRecord.pendingEvents`
+   * 挂起期间投递的事件（2026-09-28 ref-run-event-input，run 事件投入口）：随 `TaskRecord.pendingEvents`
    * 落库（纯数据、可序列化，重启不丢），续跑段由引擎在**未决 tool_use 解决之后**
    * 渲染成 user 文本消息注入消息流（为什么不是宿主直接追加到消息末尾：续跑判定
    * 只认历史**末尾一条**，追加 user 消息会把续跑判成新对话 —— 见 engine/loop.ts）。
@@ -135,7 +135,7 @@ export interface RunInvocationOptions {
    * 会话请走程序内的 `RunAppOptions.session`。
    *
    * ⚠️ 程序内直接 `app.run(messages, { sessionId })` 同样**不生效**（`AgentApp.run`
-   * 不消费它）—— 入口会 `console.warn` 一次并指出改用 `session`（2026-10-12 ③；
+   * 不消费它）—— 入口会 `console.warn` 一次并指出改用 `session`（2026-10-12 ref-session-id-warn；
    * 此前是静默丢弃：run 根没有 `session.id`、历史接不上、零信号）。
    */
   sessionId?: string;

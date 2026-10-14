@@ -97,7 +97,7 @@ export function parseApproveBody(
 }
 
 /**
- * 解析 `POST /tasks/<id>/events` 的 body（2026-09-28 ⑥，run 事件投入口）；
+ * 解析 `POST /tasks/<id>/events` 的 body（2026-09-28 ref-run-event-input，run 事件投入口）；
  * 形状不合法返回 undefined（调用方回 400）。
  *
  * **白名单**（B1）：只接受 `{ eventId?, type, payload }` 三个键，**多一个字段即拒** ——

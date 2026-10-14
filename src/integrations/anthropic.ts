@@ -22,7 +22,7 @@ import { zeroClauseOf } from '../core/limits.js';
  *
  * signal 直接进 fetch（这正是 2026-09-14 那个 bug 的根治 —— 当时 SDK 只在
  * RequestOptions 里认 signal，放 body 里会被静默丢弃，在飞 run 中止失效、
- * 超时后继续烧 token；实测对照见 docs/spec.md §10 的 2026-09-14 ③）。
+ * 超时后继续烧 token；实测对照见 docs/spec.md §10 的 2026-09-14 ref-real-api-signal）。
  *
  * 重试语义与 SDK 缺省对齐（maxRetries=2：408 / 409 / 429 / 5xx / 连接错误，
  * 指数退避，尊重 `retry-after` 响应头）。引擎层另有一层重试兜底
@@ -269,7 +269,7 @@ function composeSignal(
     // APIConnectionTimeoutError → connection 同语义
     controller.abort(new DOMException(`Anthropic 请求超过 ${timeoutMs}ms`, 'TimeoutError'));
   }, timeoutMs);
-  timer.unref(); // 兜底计时器不得拽住进程（spec 2026-09-14 ④ 同条教训）
+  timer.unref(); // 兜底计时器不得拽住进程（spec 2026-09-14 ref-deadline-timer 同条教训）
   const onAbort = (): void => controller.abort(paramsSignal?.reason);
   if (paramsSignal) {
     if (paramsSignal.aborted) controller.abort(paramsSignal.reason);

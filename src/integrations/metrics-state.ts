@@ -157,7 +157,7 @@ const OTHER_LABEL = '__other__';
  * 为什么不能裸拼：这个字符串同时是 Map 的 identity（不只是展示形）。裸拼时
  * `[a='x,b=y', b='z']` 与 `[a='x', b='y,b=z']` 都拼成 `a=x,b=y,b=z` —— 两个不同的
  * 标签集并进同一本账，且 `pairs` 只留第一次那份 ⇒ 后者的量被挂在前者的标签下
- * （2026-09-27 ⑧ 实测）。转义之后正常值（不含这三个字符的）拼法与展示形**逐字不变**，
+ * （2026-09-27 ref-menu-drift-signals 实测）。转义之后正常值（不含这三个字符的）拼法与展示形**逐字不变**，
  * 只有病态值才多出反斜杠，而那是它唯一的无歧义写法。
  *
  * 渲染侧不复用它 —— 那边的标签逐键从 `pairs` 出来（Prometheus 只要求转义值里的
@@ -383,14 +383,14 @@ export class MetricsState {
    * 与上面三个维度不同：这里**没有** per-combo 时长窗口（时长直方图 × 标签组合的内存
    * 是 cap × windowSize 的另一份乘法，收益不抵代价），只有四个计数。
    * ⚠️ 键是 `labelCombo()` 的产物：值里的 `,` / `=` / `\` 会被转义 —— 裸拼接会让
-   * 两个不同的标签集拼出同一个键（2026-09-27 ⑧ 实测：`a="x,b=y",b="z"` 与
+   * 两个不同的标签集拼出同一个键（2026-09-27 ref-menu-drift-signals 实测：`a="x,b=y",b="z"` 与
    * `a="x",b="y,b=z"` 撞成一个键 ⇒ 后者被并进前者的账、还按前者的标签渲染）。
    */
   readonly runLabels = new Map<string, RunLabelAcc>();
   /** 每个配置的 labelKey 一本基数配额（构造时按 labelKeys 建齐） */
   readonly labelBudgets = new Map<string, KeyBudget>();
   /**
-   * combo 键空间的配额（R8-P4 补课，2026-09-27 ⑧）：**组合数**才是真正的基数维度 ——
+   * combo 键空间的配额（R8-P4 补课，2026-09-27 ref-menu-drift-signals）：**组合数**才是真正的基数维度 ——
    * 每键一本配额只封住值域，combo 是叉乘（`(maxLabelValues+1)^labelKeys.length`），
    * 缺省 100 键域 + 3 键就是一百万条常驻条目，而 `droppedLabelValues` 一行都看不见它。
    */
@@ -495,7 +495,7 @@ export class MetricsState {
         const value = typeof raw === 'string' ? raw : '';
         perKey.push([key, this.labelBudgets.get(key)!.take(value)]);
       }
-      // combo 数上限（2026-09-27 ⑧）：每键配额只封住值域，**组合数**是叉乘、才是真正的
+      // combo 数上限（2026-09-27 ref-menu-drift-signals）：每键配额只封住值域，**组合数**是叉乘、才是真正的
       // 基数维度（缺省 100 值域 × 3 键 = 一百万）。超限后**新的**组合全折进一个桶，
       // 量照收、只丢标签粒度 —— 与另外三道上限同款，且折叠发生必须可见
       // （`snapshot().droppedLabelCombos` / `dropped_keys{kind="label:combos"}`）。

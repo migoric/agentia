@@ -22,7 +22,7 @@ export function approvalExpired(rec: TaskRecord, now: number, timeoutMs: number)
   return (
     timeoutMs > 0 &&
     rec.status === 'suspended' &&
-    // ⚠️ 必须再卡**原因**（2026-09-28 ①）：`approvalTimeoutMs` 是「等人工」的闸，
+    // ⚠️ 必须再卡**原因**（2026-09-28 ref-suspend-state-reason）：`approvalTimeoutMs` 是「等人工」的闸，
     // 拿它去判一条在等时刻的 run（reason='timer'）＝ 提前叫醒它，而且
     // `#expireAndResume` 紧接着就重派（补不出任何 deny 决定，因为它没有待决项）。
     rec.suspendedReason === 'approval' &&

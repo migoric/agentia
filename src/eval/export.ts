@@ -167,7 +167,7 @@ export function exportRun(trace: Trace): ExportRecord {
     }
   }
 
-  // 收尾判定（2026-09-27 ⑤）：整棵 trace 一行正文都没有、且本 run 没开 traceContent
+  // 收尾判定（2026-09-27 ref-export-training-data）：整棵 trace 一行正文都没有、且本 run 没开 traceContent
   // ⇒ 缺的不只是「终端回合那句话」：**混合回合**（模型先说一句再调工具）的真实正文同样
   // 不在 trace 里，而只看「本回合有没有 tool_use」是判不出来的（那种回合按定义就是
   // 「本来没文本」）。两条合取才成立：有正文就不标（合成 / 老 trace 也照顾到），
@@ -175,7 +175,7 @@ export function exportRun(trace: Trace): ExportRecord {
   if (!anyTextRecorded && !textRecorded && !incomplete.includes('assistant-text')) {
     incomplete.push('assistant-text');
   }
-  // SFT 形状（2026-09-27 ⑤）：末条是 user ⇒ 这条样本**没有 loss 目标**（训练器会静默
+  // SFT 形状（2026-09-27 ref-export-training-data）：末条是 user ⇒ 这条样本**没有 loss 目标**（训练器会静默
   // 丢掉它），而它恰恰是「run 没有终答」的形状（半截 run / 只剩工具往返）。标注出来，
   // 别让下游以为每条都能直接用：`--ok-only` 挡不住它 —— status ok ≠ 有终答。
   if (

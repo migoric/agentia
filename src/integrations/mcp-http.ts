@@ -154,7 +154,7 @@ export function createStreamableHttpMcpConnector(
     if (!res.ok) throw mcpHttpError(res.status, method, await readMcpText(res));
     // 计时裁判权在调用方（initialize / notifications / tools/list 都在调用点自带
     // guard —— 它们是装配期路径、没有别的裁判）；`tools/call` 不在此起计时器：
-    // 它的裁判是引擎的 `toolTimeoutMs`（spec §10 2026-09-17 ① 超时单源化）——
+    // 它的裁判是引擎的 `toolTimeoutMs`（spec §10 2026-09-17 ref-mcp-timeout-single-source 超时单源化）——
     // 再包一层 guard 就是双计时器，同一事件两本账（stdio 侧就没有这层）。
     return readMcpResult(res, id, method);
   };

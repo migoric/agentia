@@ -42,7 +42,7 @@ export interface AgentLoopResult<T = unknown> {
    */
   pendingApprovals: string[] | undefined;
   /**
-   * 挂起原因（`stopReason === 'suspended'` 时非空，2026-09-28 ①）：
+   * 挂起原因（`stopReason === 'suspended'` 时非空，2026-09-28 ref-suspend-state-reason）：
    * `approval` = 等人工决定、`timer` = 等一个时刻。**由出口的调用方给** ——
    * 出口自己不认识「为什么挂起」，它只保证这个位一定在场。
    */
@@ -57,7 +57,7 @@ export interface AgentLoopResult<T = unknown> {
    */
   wakeAt: number | undefined;
   /**
-   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ⑥）**真注入了消息流**
+   * 本段是否把传入的 `events`（run 事件投入口，2026-09-28 ref-run-event-input）**真注入了消息流**
    * （字段在场）。宿主据此清 `TaskRecord.pendingEvents`：注入过 ⇒ 事件已在历史里，
    * 簿记清掉（否则下次续跑会**重复注入**）；没注入（续跑入口的再挂起出口在注入点
    * 之前返回）⇒ 簿记必须留住，等跑通的那次。

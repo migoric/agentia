@@ -165,7 +165,7 @@ export interface ToolRunContext {
    *
    * 存在的意义是**划定裁判权**：工具（尤其带自己计时器的桥，见 `integrations/mcp.ts`）
    * 据此知道「这次调用的超时由引擎判」，从而不再启动第二个计时器 —— 两个计时器判同一件事，
-   * 只会得到两种账（桥那份曾被记成 `error(unknown)` + `errorKind=threw`，见 spec §10 2026-09-17 ①）。
+   * 只会得到两种账（桥那份曾被记成 `error(unknown)` + `errorKind=threw`，见 spec §10 2026-09-17 ref-mcp-timeout-single-source）。
    *
    * ⚠️ 它是本次调用的**配置值**，不是「剩余时间」。
    */
@@ -203,7 +203,7 @@ export interface ToolRunContext {
    */
   approval?: ApprovalDecision;
   /**
-   * 「现在还不是时候，T 之后再问我」（durable timer，2026-09-28 ① 的 timer 侧）。
+   * 「现在还不是时候，T 之后再问我」（durable timer，2026-09-28 ref-suspend-state-reason 的 timer 侧）。
    * 工具在执行期调用它 = 请求**本回合到此为止**：引擎丢弃本回合这批工具的结果、
    * 把整批 tool_use 挂起（`stopReason: 'suspended'` + `suspendedReason: 'timer'` +
    * 目标时刻 `wakeAt`），到点后由宿主续跑并**重跑这一批**（与审批续跑的形态一致）。

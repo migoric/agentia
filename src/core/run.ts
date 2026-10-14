@@ -11,7 +11,7 @@ import type { SpanError } from './trace.js';
  * 收尾释放）、`resumePending` 不捡走（它不是孤儿，崩溃续跑语义不适用于「在等」）；
  * 消息历史（含未决 tool_use）与待决清单随 TaskRecord 落库。
  *
- * 「挂起」是**一个状态 + 一个原因**（2026-09-28 ①：从前 `awaiting_approval` 一个状态兼职
+ * 「挂起」是**一个状态 + 一个原因**（2026-09-28 ref-suspend-state-reason：从前 `awaiting_approval` 一个状态兼职
  * 两件事）：状态只说「它在等」，等什么由 `SuspendedReason` 说 —— 判据（审批超时 / 能否
  * 审批）落在**原因**上，于是「时间挂起被审批超时提前叫醒」这类误伤在类型上就写不出来。
  */
@@ -76,7 +76,7 @@ export function isTerminalStatus(status: RunStatus): boolean {
 }
 
 /**
- * run 事件（2026-09-28 ⑥，run 事件投入口）：外部系统投给一条**挂起** run 的一条输入
+ * run 事件（2026-09-28 ref-run-event-input，run 事件投入口）：外部系统投给一条**挂起** run 的一条输入
  * （`AsyncRunner.signalTask` / `POST /tasks/:id/events`；审批是它的特例）。
  *
  * 白名单形状（设计稿 B1）：**全是字符串** —— 外部永远不能构造消息块，投毒面只到

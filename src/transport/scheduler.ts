@@ -206,7 +206,7 @@ export class Scheduler {
   }
 
   private dispatch(job: Job): void {
-    // drain 感知（2026-10-13 ④）：runner 停机后 submit 必抛「正在优雅停机」—— 不设这道闸，
+    // drain 感知（2026-10-13 ref-submenu-name-check）：runner 停机后 submit 必抛「正在优雅停机」—— 不设这道闸，
     // 停机窗口里每个 tick 都换一条 console.error（纯刷屏；停机语义本来就是「不再往前推」，
     // 跳过 tick 不是故障，不报）。
     if (this.runner.isDraining) return;

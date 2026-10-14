@@ -406,7 +406,7 @@ export const LIMIT_SEMANTICS = [
     zero: 'invalid',
     zeroClause: '0 = 一个标签组合都认不下，全折进一个桶',
     badValue: 'throws',
-    note: '**组合数**上限（2026-09-27 ⑧ 补的第四条基数上限）。`maxLabelValues` 只封每个键的**值域**，而进内存的是组合，数量是叉乘 `(maxLabelValues+1)^labelKeys.length` —— 缺省 100 × 3 键就是一百万条，且每键的 dropped 计数看不见它。与另外三道同款：超限折进一个全 `__other__` 的桶（量不丢），折叠数见 `droppedLabelCombos` / `dropped_keys{kind="label:combos"}`。',
+    note: '**组合数**上限（2026-09-27 ref-menu-drift-signals 补的第四条基数上限）。`maxLabelValues` 只封每个键的**值域**，而进内存的是组合，数量是叉乘 `(maxLabelValues+1)^labelKeys.length` —— 缺省 100 × 3 键就是一百万条，且每键的 dropped 计数看不见它。与另外三道同款：超限折进一个全 `__other__` 的桶（量不丢），折叠数见 `droppedLabelCombos` / `dropped_keys{kind="label:combos"}`。',
   },
 ] as const satisfies readonly LimitSemantic[];
 

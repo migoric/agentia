@@ -84,13 +84,13 @@ export function routeRequest(pathname: string, method: string, hasMetrics: boole
       const id = decodeSegment(rest.slice(0, -'/approve'.length));
       return id === undefined ? { kind: 'badTaskId' } : { kind: 'approve', taskId: id };
     }
-    // 取消（2026-09-28 ④）：与 approve 同款排法 —— 先判方法、再解码
+    // 取消（2026-09-28 ref-cancel-api）：与 approve 同款排法 —— 先判方法、再解码
     if (rest.endsWith('/cancel')) {
       if (method !== 'POST') return refuse('POST', false);
       const id = decodeSegment(rest.slice(0, -'/cancel'.length));
       return id === undefined ? { kind: 'badTaskId' } : { kind: 'cancel', taskId: id };
     }
-    // 事件投入口（2026-09-28 ⑥）：同款排法 —— 先判方法、再解码
+    // 事件投入口（2026-09-28 ref-run-event-input）：同款排法 —— 先判方法、再解码
     if (rest.endsWith('/events')) {
       if (method !== 'POST') return refuse('POST', false);
       const id = decodeSegment(rest.slice(0, -'/events'.length));

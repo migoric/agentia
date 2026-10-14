@@ -61,7 +61,7 @@ export interface ResumeScannerDeps {
   /** 停机闸读数（`wakeDue` 的配套 5：drain 之后不唤醒，见 `drain-gate.ts`） */
   isDraining(): boolean;
   /**
-   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：到期唤醒见它即**跳过本轮**
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ref-run-root-close）：到期唤醒见它即**跳过本轮**
    * （惰性路径下一轮还会再判；cancel 会把任务落终态，唤醒就是「取消后照常执行」）。
    */
   cancelInflight?(taskId: string): Promise<unknown> | undefined;
@@ -96,7 +96,7 @@ export class ResumeScanner {
     if (this.#inflightResume) return this.#inflightResume;
     const listed = this.#deps.store.list();
     const staleAfterMs = opts.staleAfterMs ?? 0;
-    // 到期索引（2026-09-28 ⑤ 落地）：store 实现了 `listDue` 时，「到期唤醒」那一半的
+    // 到期索引（2026-09-28 ref-due-index-measure 落地）：store 实现了 `listDue` 时，「到期唤醒」那一半的
     // 输入走索引（只回到期的记录），否则回退全表过滤 —— 语义不变，只是扫描规模不同。
     // ⚠️ 它**只**替代那一半的输入：挂起读数重建 / 审批超时 / 孤儿认领的职责
     // 仍是全表 `list()`（它们要的不只是「到期的」），别把整个扫描的输入源换掉。
@@ -142,7 +142,7 @@ export class ResumeScanner {
     // 不设这道闸，一条天级的 sleeping run 会在停机窗口里被叫起来接着跑 —— 部署卡在它身上。
     // （重启后由新进程的首次 resumePending 唤醒：那时停机窗口早过去了。）
     if (this.#deps.isDraining()) return false;
-    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ②）：它马上把任务落终态，唤醒就是「取消后照常执行」。
+    // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ref-run-root-close）：它马上把任务落终态，唤醒就是「取消后照常执行」。
     // 惰性路径跳过不丢事：下一轮读还会再判（若取消没成）。
     if (this.#deps.cancelInflight?.(rec.taskId)) return false;
     if (this.#inflightWakes.has(rec.taskId)) return false;
@@ -155,7 +155,7 @@ export class ResumeScanner {
     return true;
   }
 
-  /** 该任务上在飞的到期唤醒（cancel 的等待依据，2026-10-13 ②） */
+  /** 该任务上在飞的到期唤醒（cancel 的等待依据，2026-10-13 ref-run-root-close） */
   inflightWakeFor(taskId: string): Promise<TaskRecord> | undefined {
     return this.#inflightWakes.get(taskId);
   }
@@ -194,7 +194,7 @@ export class ResumeScanner {
     // 到期唤醒（durable timer）：在睡且到点的 timer 挂起 ⇒ 认领 + 重派（醒来重跑那一批）。
     // 与上面那条循环并列而不是合并：两条闸的**原因判据互斥**，各读各的一眼可见；
     // 合并成一个循环会让「谁的责任」藏进条件里。drain 之后不唤（`wakeDue` 里那道闸）。
-    // 输入（2026-09-28 ⑤）：store 提供到期索引时 `due` 是「只回到期的」那一半 ——
+    // 输入（2026-09-28 ref-due-index-measure）：store 提供到期索引时 `due` 是「只回到期的」那一半 ——
     // 仍过 `timerDue` 复核（索引口径是 status+wakeAt，原因那一半由这里兜，且
     // `#wakeDueInner` 进闸后还会重读再判一次）。
     let woken = 0;
@@ -221,7 +221,7 @@ export class ResumeScanner {
     for (const rec of pending) {
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
       rec.ownerId = this.#deps.ownerId; // 认领：此后本进程的记录不再被（自己）重派
-      // 同步抛错防护（2026-10-13 ③，与 #wakeDueInner 同款）：FileTaskStore 磁盘失败在这里
+      // 同步抛错防护（2026-10-13 ref-reject-static-methods，与 #wakeDueInner 同款）：FileTaskStore 磁盘失败在这里
       // 同步抛出 —— 不接住就逃出 resumePending（宿主启动路径直接崩）。落不了库 = 没推进：
       // 不派发、不计入返回值；warn 出来（静默留尸的话任务搁死到重启都没人知道）。
       let saved: MaybePromise<void>;

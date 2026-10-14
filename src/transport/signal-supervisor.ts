@@ -78,7 +78,7 @@ export interface SignalSupervisorDeps {
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
   /**
-   * cancel 的 per-task 在飞闸读数（2026-10-13 ②）：投递进入前等它收口再重判
+   * cancel 的 per-task 在飞闸读数（2026-10-13 ref-run-root-close）：投递进入前等它收口再重判
    * （否则事件落库与 cancelled 落库互相覆盖，两边都说了假话）。
    * ⚠️ 必须在**入链之前**等：链尾一旦被 cancel 当成「在飞推进」等下去就是死等。
    */
@@ -96,7 +96,7 @@ export class SignalSupervisor {
   }
 
   /**
-   * 投递一个事件给**挂起**的任务（2026-09-28 ⑥，run 事件投入口；
+   * 投递一个事件给**挂起**的任务（2026-09-28 ref-run-event-input，run 事件投入口；
    * `POST /tasks/:id/events` 的宿主方法侧，与 approve/cancel 对称）。
    *
    * 语义（设计稿 §3 逐条的落点）：
@@ -120,10 +120,10 @@ export class SignalSupervisor {
    * （两条并发事件是两条不同的输入，共享 = 静默丢一条）。与其它恢复路径
    * （approve / 到期唤醒，各有自己的闸）的竞速：进闸后重读再判挡住绝大多数；
    * 剩下的窄窗口与既有「approve × wakeDue 分闸」同类（那两条按挂起原因天然互斥，
-   * 事件两种原因都适用，是这个闸新盖的缝 —— 已记在 spec §10 2026-09-28 ⑥）。
+   * 事件两种原因都适用，是这个闸新盖的缝 —— 已记在 spec §10 2026-09-28 ref-run-event-input）。
    */
   signalTask(taskId: string, event: TaskEvent): Promise<TaskRecord> {
-    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ②）。**入链之前**等：
+    // cancel 在飞 ⇒ 等它收口再重走一遍（2026-10-13 ref-run-root-close）。**入链之前**等：
     // 链尾会同步登记进 `#inflight`，cancel 侧的「等在飞推进」正等它 —— 进了链再等
     // cancel，就是两边互等的死锁。
     const settling = this.#deps.cancelInflight?.(taskId);
@@ -148,7 +148,7 @@ export class SignalSupervisor {
     return run;
   }
 
-  /** 该任务上在飞的事件投递链尾（cancel 的等待依据，2026-10-13 ②） */
+  /** 该任务上在飞的事件投递链尾（cancel 的等待依据，2026-10-13 ref-run-root-close） */
   inflightFor(taskId: string): Promise<TaskRecord> | undefined {
     return this.#inflight.get(taskId);
   }

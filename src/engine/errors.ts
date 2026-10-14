@@ -20,14 +20,14 @@ export function isAbortError(e: unknown): boolean {
 }
 
 /**
- * 分类器**能产出的全部类别** —— 单一真源（2026-09-29 ⑤）。
+ * 分类器**能产出的全部类别** —— 单一真源（2026-09-29 ref-soak-error-taxonomy）。
  *
  * 为什么需要这个常量：在此之前「到底有哪几类」只活在 `classifyError` 的字面量里，
  * 任何想按类别表态的地方（浸泡验证的判据、看板、`trace-diff`）都只能**再手写一份清单**，
  * 而漏一类的表现是**静默**的。实测过一次（就是加这个常量的原因）：
  * `scripts/e2e-soak.ts` 里手写的 `['api','server','rate_limit']` 漏了 `connection`，
  * 默认 60 秒的跑法永远撞不到 —— 而 2 小时那轮（719 万 run / 811 万请求）撞到 **1 次**
- * 就让整轮报红，红的是判据、不是被测的代码（spec §10 2026-09-29 ⑤）。
+ * 就让整轮报红，红的是判据、不是被测的代码（spec §10 2026-09-29 ref-soak-error-taxonomy）。
  *
  * 消费方式：`Record<ErrorType, …>` 的**穷尽表** —— 加一类而不表态 ⇒ `TS2741`
  * （与 `SUCCESS_STOP_REASON` / `KIND_SPEC` 同款护栏，见 `docs/guards.md`）。
