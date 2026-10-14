@@ -20,7 +20,7 @@
 //      `timeout` 属 hard-red（出现即红 —— `unknown` 是「分类器失手」，后两类在这套跑法里不该发生），
 //      其余**允许但分类计数并打印**。⚠️ 这里原先是一份手写的三名字白名单（`api` / `server` /
 //      `rate_limit`），漏了框架自己的 `connection` ⇒ 2026-09-29 那轮 2 小时（719 万 run）撞到
-//      **1 次**就报红，**红的是判据、不是被测的代码**（spec §10 2026-09-29 ⑤）；
+//      **1 次**就报红，**红的是判据、不是被测的代码**（spec §10 2026-09-29 ref-soak-error-taxonomy）；
 //      ⚠️ 守那张表的是 `npm run typecheck:tests`（不是 `typecheck` —— `scripts/` 不在根
 //      tsconfig 的 include 里，写错命令＝没有护栏，见 soak-error-posture.ts 头注）；
 //   ③ metricsSink 的 snapshot 与实测计数逐一对得上，render() 恒定发三个 dropped_keys 样本；
