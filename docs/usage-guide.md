@@ -94,7 +94,7 @@ npx agentia --version            # CLI 版本（= -v）
 > `npx @migor/cli create` —— npm 上另有一个别人的 `agentia` 包，短名会装错东西。
 > 想全局装上（到处都能敲 `agentia`）：`npm i -g @migor/cli`。
 
-四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
+四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。类形态要注入依赖时，在类上写 `static readonly deps = ['WORKDIR']` —— `discover` 会把它带上（**不必**把该能力挪到显式 `providers` 再注册一遍，那样同一 token 会有两份、靠「后注册覆盖先注册」碰巧成立）；`deps` 写成非字符串数组会**响亮报错**，不当成「没有依赖」。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
 
 ### 2.1 脚手架生成的文件（**装配与启动是分开的**）
 

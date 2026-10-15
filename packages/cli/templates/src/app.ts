@@ -1,10 +1,9 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createApp, loadEnvFile, SystemPrompt } from '@migor/agentia';
+import { createApp, jsonlTraceSink, loadEnvFile, SystemPrompt } from '@migor/agentia';
 import type { AgentApp, SessionStore } from '@migor/agentia';
 import { FileSessionStore } from './session-store.js';
-import ReadFileTool from './tools/read-file/index.js';
 
 /**
  * 应用装配 —— **与启动分离**（app.ts 只负责「造一个 app」，不负责「跑一次」）。
@@ -61,6 +60,20 @@ export const PROJECT_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 /** 会话文件：整段对话历史（跨进程重启接得上）。已进 .gitignore */
 export const SESSION_FILE = resolve(PROJECT_ROOT, '.agentia', 'session.json');
 
+/**
+ * trace 落盘文件（一行一条裸 Trace）。已进 .gitignore。
+ *
+ * 为什么**默认就接上**：框架的差异化是「每次 run 都产出可观测调用树」，但框架刻意
+ * **不内建**任何出口（spec §9.3 —— 出口只有 `sinks` 这条缝），于是「缝在那儿、没人接」
+ * 时表现是：同步 `/run` 的 trace 随响应回去了，而**异步 `/tasks` 的 trace 落进任务库里
+ * 没有任何人导出**，「这个任务为什么慢」要排查时它正好不在。接上这一条之后
+ * `agentia report` / `diff` / `harvest` / `export` 开箱可读。
+ *
+ * ⚠️ 落的是**完整 trace**（含 prompt 与工具出入参）⇒ 上线前按你自己的合规要求处置
+ * （删这一行即关掉；换 OTLP / 指标见 docs/observability.md 的配方）。
+ */
+export const TRACE_FILE = resolve(PROJECT_ROOT, '.agentia', 'traces.jsonl');
+
 export interface CreateAgentAppOptions {
   /** 只收集这些 token（能力文件夹名）上的能力；不传 = 全量。dev 环的「能力选择」喂这里 */
   toolSources?: string[];
@@ -74,21 +87,23 @@ export async function createAgentApp(opts: CreateAgentAppOptions = {}): Promise<
     discover: capabilityPaths(),
     providers: [
       // 工作目录以**值**注入给需要它的能力（D3-D：现成 DI，零框架改动）。
-      // 消费方式：能力类写 `constructor(private readonly root: string)`，并在 providers
-      // 里声明 `{ provide: '<能力 token>', useClass: Xxx, deps: ['WORKDIR'] }`
-      // （discover 自动注册的 provider **没有 deps**，所以要注入的能力得从 discover 挪到显式
-      // providers；同一个 token 混用不会重复收集菜单）。
-      // ⚠️ 若同时用 src/registry.ts（那里也有一份 `WORKDIR = process.cwd()`）：
-      // 同 token **后注册覆盖先注册**，registry 的 providers 必须排在**这份之前**，
-      // 否则面板喂进来的 workdir 会被 process.cwd() 静默顶掉。
+      // 消费侧两选一，推荐第一种（依赖声明跟着能力走，装配文件不必知道）：
+      //   ① 能力类自带 `static readonly deps = ['WORKDIR']` —— discover 扫到就带上，
+      //      脚手架的 read-file 就是这么接的；
+      //   ② 在这里显式声明 `{ provide: '<token>', useClass: Xxx, deps: ['WORKDIR'] }`
+      //      （能力不走 discover、或依赖是装配期才知道的值时用这个）。
+      // ⚠️ **别两条同时用**：同一 token 出现两份时框架会告警（后注册覆盖先注册，
+      // 谁生效取决于顺序）。`src/registry.ts` 里也有一份 `WORKDIR`（显式装配路线），
+      // 值与这里相同 ⇒ 混用不会改变语义，但真要二选一时留 `app.ts` 这份。
       { provide: 'WORKDIR', useValue: opts.workdir ?? PROJECT_ROOT },
-      // 例子：把工作目录注入给 read-file 工具（脚手架自带的第二个能力，
-      // 也是「面板上的文件夹选择器真的生效」的那个接线）
-      { provide: 'read-file', useClass: ReadFileTool, deps: ['WORKDIR'] },
     ],
     // 收窄发生在 createApp 期：toolSources 是 token 级白名单，一次收窄顺带把装配期
     // 静态校验与 prompts.versions 那本账一起收窄。不传 = 全量（缺省路径）。
     ...(opts.toolSources && opts.toolSources.length > 0 ? { toolSources: opts.toolSources } : {}),
+    // trace 出口（观测）。框架刻意不内建 ⇒ 不接就是「跑得挺好、什么都看不见」；
+    // 接入后 dev 面板、同步 /run、异步 /tasks 三条路都经 `app.run` ⇒ 这一处全覆盖。
+    // 删掉即关闭；换 OTLP / 指标配方见框架 docs/observability.md。
+    sinks: [jsonlTraceSink({ path: TRACE_FILE })],
     system: new SystemPrompt().add(
       'role',
       '你是 __PROJECT_NAME__ 的主 agent，按任务自主调度菜单里的能力。',

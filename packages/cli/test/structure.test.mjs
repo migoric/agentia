@@ -110,10 +110,19 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   ⚠️ serverTs **收敛成了** mainTs（同一个函数名换了模板），不是删了一个 accessor ——
     //   所以本表条目数不变。见 docs/plans/2026-10-09-scaffold-default-service.md。
     'templates.ts': 280,
-    'doctor.ts': 213,
+    // 2026-10-16（脚手架可观测缺口，**新检查**，见 spec §10 2026-10-16
+    //   ref-scaffold-observability-gap）：213 → 258（+45）。两笔：① `src/app.ts` 未配
+    //   `sinks` ⇒ 警告（+18，含「注释掉的不算接上」那条判据注）；② 项目内 `AGENTS.md`
+    //   的版本标记比对（+27，无标记 / 不同版 / 同版三条分支 + 各自的「为什么必须说」注）。
+    //   ⚠️ 两笔都是**纯体检**（不改任何文件），行为断言在 `add-doctor.test.mjs` 各 3 条
+    //   （含「注释掉的 sinks 仍算未接」这一条反向），做过变异验证。
+    'doctor.ts': 258,
     // 2026-09-27（R8-P3b `agentia export` 命令注册）：206 → 219（+13 = import/帮助表/
     //   USAGE 表/分发分支，全是接线；新命令的本体在 export.ts）
-    'cli.ts': 219,
+    // 2026-10-16（CLI 版本读法**抽成单源**）：219 → 202（−17）。`readCliVersion` 搬到
+    //   `version.ts`（create 写版本标记、doctor 要比对，三处各读一次就会漂）⇒ 本文件
+    //   −18 行（函数体 + 它的「为什么不存常量」注）+ 1 行 import。**净减，不抬价。**
+    'cli.ts': 202,
     'native-pick.ts': 198,
     // 2026-10-12（**G6 会话 / 任务维度 —— 新功能**，设计稿
     //   `docs/plans/2026-10-12-observability-g6-g7-g8.md` §2）：194 → 339（+145）。
@@ -137,7 +146,10 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   后续步骤文案多一行「跑一次就退出的批处理」）。新模板本体在
     //   templates/src/{main,batch}.ts，不在这个棘轮面内（归 tsconfig.templates.json
     //   与 templates.test.mjs 的形状断言照看）。
-    'create.ts': 148,
+    // 2026-10-16（写 `AGENTS.md` 时插一行版本标记 —— **新行为**，同一条决策）：148 → 155（+7
+    //   = 1 行 `write` 改写 + 6 行「为什么必须带标记」的注：这份是快照、CLI 没有任何命令
+    //   会更新它，而 AI 正是照它写代码）。本体（标记格式与匹配正则）在 `version.ts`。
+    'create.ts': 155,
     'dev-logic.ts': 58, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
     // 2026-09-23 B 阶段新增（显式状态机：类型 + update 纯函数；零副作用零 node:* import）
     // 2026-09-27 复核尾巴：703 → 708（+5，纯注释 —— abort-grace-expired 的相位弱化边界注）
@@ -161,6 +173,12 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'add.ts': 72,
     'npm-bin.ts': 59,
     'layout.ts': 51,
+    // 2026-10-16 新增（同批决策 ref-scaffold-observability-gap）：**36 行 = 版本读法单源**。
+    //   三处共用（`--version` / `create` 写标记 / `doctor` 比对标记），抽出来就是为了让
+    //   「当前 CLI 是哪一版」只有一种读法 —— 三处各读一次就会漂，而漂移的表现是
+    //   doctor **永远说「版本一致」**（假绿）。净增里 22 行是注（为什么读文件不存常量、
+    //   为什么需要版本标记），本体 14 行。
+    'version.ts': 36,
   };
   // 2026-09-23 实测总行数（`wc -l packages/cli/src/*`，wc 的计数 = 换行数）。
   // A 阶段后实测仍恰好 7410：dev.ts 1148→1133、新增 dev-logic 58，差额由同期
@@ -274,7 +292,18 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // 补账（2026-10-13，D2 守卫射程 —— CLI 开 exactOptionalPropertyTypes 的连带）：
   //   9488 → 9489（+1，**全在 `harvest.ts`**，构成见上方该文件的基线条目）。
   //   同批改的是 diff.ts / export.ts 的类型标注（对齐框架侧 `| undefined`），行数不变。
-  const TOTAL_BUDGET = 9489;
+  // 补账（2026-10-16，脚手架可观测缺口 —— **新行为 + 单源抽取**）：9489 → 9560（+71）。
+  // 四笔（与上方各文件的补账注一一对应，此处不重复解释）：
+  //     +45   doctor.ts     两条新体检（未配 sinks / AGENTS.md 版本漂移）
+  //     −17   cli.ts        `readCliVersion` 搬走（本笔是**减**，不是加）
+  //      +7   create.ts     写 AGENTS.md 时插版本标记
+  //     +36   version.ts    新文件：版本读法 + 标记格式 + 匹配正则（单源）
+  //   ─────
+  //     +71   四笔之和，与实测总量一致（现算 9560，见下方断言）
+  // ⚠️ 本笔的性质：**不是纯搬移也不是纯注释**，是真新增体检行为；但它换掉的是一类
+  //   「缝在那儿、没人接 ⇒ 无报错」的静默失效（trace 没出口 / AI 说明过期），
+  //   且每条都有用例 + 变异验证（`add-doctor.test.mjs` 共 6 条）。
+  const TOTAL_BUDGET = 9560;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
