@@ -13,7 +13,7 @@
 
 **请勿用公开 issue 报漏洞。** 走 GitHub 的私有通道：
 
-→ [**Report a vulnerability**](https://github.com/retrychx/agentia/security/advisories/new)（Security → Advisories）
+→ [**Report a vulnerability**](https://github.com/migoric/agentia/security/advisories/new)（Security → Advisories）
 
 请尽量附上：受影响版本、最小复现、影响面（能读到什么 / 能改到什么）、以及你建议的缓解方式。
 

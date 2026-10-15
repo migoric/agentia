@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        ⚠️ 安全漏洞请**不要**在这里报 —— 走 [私有通道](https://github.com/retrychx/agentia/security/advisories/new)。
+        ⚠️ 安全漏洞请**不要**在这里报 —— 走 [私有通道](https://github.com/migoric/agentia/security/advisories/new)。
 
   - type: input
     id: version

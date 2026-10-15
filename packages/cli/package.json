@@ -13,10 +13,10 @@
     "dist",
     "CHANGELOG.md"
   ],
-  "repository": "retrychx/agentia",
+  "repository": "migoric/agentia",
   "homepage": "https://agentia-web.pages.dev",
   "bugs": {
-    "url": "https://github.com/retrychx/agentia/issues"
+    "url": "https://github.com/migoric/agentia/issues"
   },
   "license": "MIT",
   "keywords": [

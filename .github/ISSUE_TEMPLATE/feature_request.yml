@@ -26,5 +26,5 @@ body:
     attributes:
       value: |
         > 请先对照框架的**边界**：只给缝、不给策略；零新增运行时依赖（可选能力走 duck-typed / peer）；
-        > 不做部署 / 凭据 / 进程级决策。详见 [`docs/roadmap.md`](https://github.com/retrychx/agentia/blob/main/docs/roadmap.md)
-        > 与 [`docs/spec.md`](https://github.com/retrychx/agentia/blob/main/docs/spec.md)。
+        > 不做部署 / 凭据 / 进程级决策。详见 [`docs/roadmap.md`](https://github.com/migoric/agentia/blob/main/docs/roadmap.md)
+        > 与 [`docs/spec.md`](https://github.com/migoric/agentia/blob/main/docs/spec.md)。

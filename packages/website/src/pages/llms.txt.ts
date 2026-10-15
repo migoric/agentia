@@ -114,7 +114,7 @@ ${boundaryLines.join('\n')}
 
 ## 可选
 
-- [GitHub](https://github.com/retrychx/agentia)
+- [GitHub](https://github.com/migoric/agentia)
 `;
 
   return new Response(body, {

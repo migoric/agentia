@@ -18,7 +18,7 @@
 1. `npm test` —— 稿里的守卫条数、安装面积都由它现场复算；红了说明文案已经过期。
 2. 版本号 —— 以 README 顶部「版本」行与 npm 页为准（`0.x` 期间**锁精确版本**，别在稿里写 `^`）。
 3. 三件套链接（全文统一，别混用）：
-   - 仓库：`https://github.com/retrychx/agentia`
+   - 仓库：`https://github.com/migoric/agentia`
    - npm：`https://www.npmjs.com/package/@migor/agentia`
    - 官网：`https://agentia-web.pages.dev`（文档 `/docs`、取舍 `/tradeoffs`）
 
@@ -157,7 +157,7 @@ MCP stdio 连接器是**内置**的 —— 因为它只用 Node 标准库（spaw
 
 开源，MIT。`npx @migor/cli create my-app` 就能试。
 
-- 仓库：https://github.com/retrychx/agentia
+- 仓库：https://github.com/migoric/agentia
 - npm：https://www.npmjs.com/package/@migor/agentia
 - 文档：https://agentia-web.pages.dev/docs　·　取舍：https://agentia-web.pages.dev/tradeoffs
 
@@ -177,7 +177,7 @@ Agentia：一个零运行时依赖的 TypeScript Agent 框架，`npm i` 只往 `
 最奇怪的一条经验：「测试永远绿」是 bug。每条不变量登记一条守卫，改坏代码确认它真的变红，抓到过 3 个假守卫 —— 代码对、绿也对，守的是另一件事。
 
 开源 MIT：`npx @migor/cli create my-app`
-仓库 github.com/retrychx/agentia
+仓库 github.com/migoric/agentia
 
 ---
 
@@ -233,7 +233,7 @@ Selection advice is worth more when the author tells you when to walk away.
 **8/**
 MIT licensed. `npx @migor/cli create my-app`
 
-Repo: github.com/retrychx/agentia
+Repo: github.com/migoric/agentia
 Docs: agentia-web.pages.dev
 
 Feedback welcome — especially on what we got wrong.
@@ -279,7 +279,7 @@ MIT，`npx @migor/cli create my-app`。
 提交目标：`https://github.com/e2b-dev/awesome-ai-sdks`（插入到 E2B 之后、AgentOps 之前，按字母序）
 
 ```markdown
-## [Agentia](https://github.com/retrychx/agentia)
+## [Agentia](https://github.com/migoric/agentia)
 A zero-runtime-dependency declarative agent framework in TypeScript. Declare capabilities with 4 decorators (`@Tool`, `@Skill`, `@SubAgent`, `@Prompt`), wire them with dependency injection, and ship a service with built-in tracing, cost accounting, and async task stores.
 
 <details>
@@ -293,7 +293,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Declare cap
 - **Guard-driven development** — 90+ invariants registered and mutation-batteried; "tests that always pass" are treated as bugs
 
 ### Links
-- [GitHub](https://github.com/retrychx/agentia)
+- [GitHub](https://github.com/migoric/agentia)
 - [Documentation](https://agentia-web.pages.dev)
 - [Tradeoffs / when not to use](https://agentia-web.pages.dev/tradeoffs)
 - [npm](https://www.npmjs.com/package/@migor/agentia)
