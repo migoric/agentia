@@ -1,6 +1,6 @@
 # __PROJECT_NAME__
 
-基于 [Agentia](https://github.com/retrychx/agentia) 框架的 agent 应用。
+基于 [Agentia](https://github.com/migoric/agentia) 框架的 agent 应用。
 
 ## 目录约定
 
@@ -122,7 +122,7 @@ npm run build && npm run start:batch -- "你的问题"   # = node dist/batch.js 
 ## 更完整的生产配方
 
 要 metrics（`/metrics`）/ OTLP 导出 / Dockerfile / compose 编排，直接抄框架仓库的
-[`examples/deploy/`](https://github.com/retrychx/agentia/tree/main/examples/deploy)
+[`examples/deploy/`](https://github.com/migoric/agentia/tree/main/examples/deploy)
 与 `docs/deployment.md` —— `src/main.ts` 是它的精简版，两者同一套 API；上线前的决定清单
 也在那份 `docs/deployment.md` 里。API 细节见本项目 `AGENTS.md` 的「触发与宿主」节。
 

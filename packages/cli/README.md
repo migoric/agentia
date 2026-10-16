@@ -38,7 +38,7 @@ npx agentia --version              # 版本（= -v）
 - **`agentia report <trace.jsonl>`** —— 把落盘的 trace 汇成调优报告：「**哪个能力慢 / 贵 / 爱失败**」的排行。面对一堆旋钮时，这是「该拧哪个」的依据。
 - **`agentia create` 建出来的工程默认就落盘** —— `src/app.ts` 里接了一条 `jsonlTraceSink`，trace 落在工程根的 `.agentia/traces.jsonl`（已 gitignore）⇒ `report` / `diff` / `harvest` 开箱可读。删那一行即关，**关掉之后异步 `/tasks` 的 trace 落进任务库没人导出**；`agentia doctor` 会查这一行并告警。
 
-落库检索 / 采样 / 脱敏、指标与 OTLP 导出都在框架侧的 `TraceSink` 缝上做 —— **策略归宿主，框架只给缝**。详见 [`@migor/agentia`](https://www.npmjs.com/package/@migor/agentia) 的「可观测性与成本」一节，以及仓库的 [`docs/observability.md`](https://github.com/retrychx/agentia/blob/main/docs/observability.md)。
+落库检索 / 采样 / 脱敏、指标与 OTLP 导出都在框架侧的 `TraceSink` 缝上做 —— **策略归宿主，框架只给缝**。详见 [`@migor/agentia`](https://www.npmjs.com/package/@migor/agentia) 的「可观测性与成本」一节，以及仓库的 [`docs/observability.md`](https://github.com/migoric/agentia/blob/main/docs/observability.md)。
 
 ## 目录约定
 
