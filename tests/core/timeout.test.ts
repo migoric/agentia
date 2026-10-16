@@ -22,7 +22,12 @@ import {
 
 describe('core/timeout：共享超时原语（engine 与桥共用）', () => {
   it('哨兵区别于「工具恰好返回了 undefined」', async () => {
-    const out = await withTimeout(Promise.resolve(undefined), 50);
+    // 预算取 1000ms 而不是 50ms（plan 2026-10-17 §2.3）：`withTimeout` 的硬超时判据是
+    // **实测耗时**（`src/core/timeout.ts:205`），而它在同步段记起点、在微任务里记终点
+    // （:178 / :185）—— 宿主被饿住 50ms 时，**立即 resolve** 的 promise 也会被判成超时。
+    // 这条验的是「哨兵可区分」（`TIMED_OUT` ≠ `undefined`），不是计时精度 ⇒
+    // 预算取一个负载不可能吃掉的量级。⚠️ 别按「反正会立刻返回」把它调小。
+    const out = await withTimeout(Promise.resolve(undefined), 1_000);
     assert.notEqual(out, TIMED_OUT);
     assert.equal(out, undefined);
   });

@@ -60,10 +60,17 @@ const labeledSamples = (
   return out;
 };
 
-export function renderPrometheus(state: MetricsState, p: string): string {
-  const out: string[] = [];
-  // 归因标签（R8-P4）：四个 run 级家族在全局样本之外追加带标签的样本；
-  // 全局那行（无 label）保持**第一个** —— renderOpenMetrics 靠精确匹配它挂 exemplar。
+/**
+ * 四个 **run 级家族**（`runs_total` / `runs_failed_total` / `tokens_total` / `cost_usd_total`）：
+ * 全局样本在前，紧跟其后的是**归因标签**（R8-P4）样本。
+ *
+ * ⚠️ 全局那行（无 label）必须保持**第一个** —— `renderOpenMetrics` 靠精确匹配它挂 exemplar。
+ * ⚠️ 带标签的 token 样本是**四类之和**（combo 标签不再拆 kind —— 两类标签叉乘会把序列数打飞）。
+ *
+ * 抽出来的原因：这四块是同一件事（「全局 + 每类标签」的并列展开），与 `renderPrometheus`
+ * 其余部分不同源；抽前它是全仓最大的可调用体（224 行 / 方法级阈值 240，余量 16）。
+ */
+function appendRunFamilies(out: string[], state: MetricsState, p: string): void {
   const labelRuns = labeledSamples(state, (a) => a.runs);
   out.push(
     family(`${p}runs_total`, 'counter', 'run 总数（成功 + 失败）', [
@@ -78,7 +85,6 @@ export function renderPrometheus(state: MetricsState, p: string): string {
       ...labelFailed.map((s) => `${p}runs_failed_total${s.text} ${s.value}`),
     ]),
   );
-  // 带标签的 token 样本是**四类之和**（combo 标签不再拆 kind —— 两类标签叉乘会把序列数打飞）
   const labelTokens = labeledSamples(state, (a) => a.tokens);
   out.push(
     family(
@@ -101,6 +107,12 @@ export function renderPrometheus(state: MetricsState, p: string): string {
       ...labelCost.map((s) => `${p}cost_usd_total${s.text} ${s.value}`),
     ]),
   );
+}
+
+export function renderPrometheus(state: MetricsState, p: string): string {
+  const out: string[] = [];
+  // 四个 run 级家族（全局样本 + 归因标签样本）⇒ 抽成 `appendRunFamilies`（见其定义处）
+  appendRunFamilies(out, state, p);
   // 基数上限的**可见性**：被折叠掉的不同键数。与 `snapshot()` 的同名字段一一对应 ——
   // 此前只有 snapshot() 有、render() 没有，于是「按文档把 metricsSink 接到 /metrics」的部署
   // **完全看不见折叠发生**（静默丢失）；而同一份文件对「算不出成本的 turn」专门发了

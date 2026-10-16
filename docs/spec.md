@@ -7013,6 +7013,84 @@ git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` 
 （多进程会交错，协调属部署层）。去重只认**对象同一性** ⇒ 两份不同实现的 sink 写同一文件
 （例如一个 `jsonlTraceSink` + 一个手写 `appendFileSync` sink）**不在**本条射程内。
 
+### 2026-10-17 ① ref-flaky-timer-tests：与墙钟赛跑的测试族换成「等真实事件」
+
+**决定**：把 5 处「用固定墙钟断言必然性」的测试判据换掉 —— 能等的换成 `waitFor`
+（`tests/helpers.ts:88`，仓内既有工具），不能等的（**否定断言**：「不得再发生」）改成
+**按 tick 间隔的倍数**给窗口。**不改 `src/`。**
+
+**为什么**：完整套件连跑 7 次，**5 次红**，且每次红的用例不同（`Scheduler.every.maxInFlight` /
+`tools/call 不起第二个计时器` / `StreamableHTTP 超时裁判权` / `anthropic TimeoutError 中止` /
+`core/timeout 哨兵`）。根因是一条共用的错误假设：`timeout: 30` 配下界 `dt >= 20`、
+`sleep(40)` 配 5ms tick —— 余量都是**毫秒级**，而满载 runner 上一次事件循环饿住就能吃掉它。
+定向对照（32 核起 32 个 burner，`git show HEAD:` 取原版）：
+
+| 版本 | 5 次跑 |
+|---|---|
+| 旧版（`timeout: 30`，无 `waitFor`） | **4 次红** |
+| 新版（`timeout: 300` + `waitFor(hits >= 1)`） | **5 次全绿** |
+
+⚠️ 顺带记一条方法论：**4 个 burner 复现不出，必须饱和**（`mcpConnector.test.ts:45-51`
+既有的那条注释说的「单跑与 10 路 CPU 忙循环下都复现不出」得到了独立复现）。
+
+**影响面**：`tests/limits.test.ts`（阳性对照）、`tests/integrations/anthropic.test.ts`、
+`tests/core/timeout.test.ts`、`tests/integrations/mcpConnector.test.ts`（慢调用改**测试掌控的
+闸门** —— 抬预算会同时削弱区分力，闸门不会）、`tests/transport/scheduler.test.ts`。
+修后完整套件连跑 **6 次全绿**；`verify-all.sh` 八步全绿。
+
+**边界**：`withTimeout` 的硬超时判据（实测耗时）**是有意的语义**（`src/core/timeout.ts:139-144`
+写着「21ms 完成 / 20ms 预算由成功变超时 —— 这正确」），所以 `core/timeout.test.ts` 那条改的是
+**用例的预算量级**（50ms → 1000ms），不是源码；不引入假时钟（仓内多处依赖**真**时序：跨进程
+握手、真实 SSE、子进程 spawn）。
+
+### 2026-10-17 ② ref-rapid-requires-dist：`rapid` 分片的缺产物前置
+
+**决定**：`scripts/verify-all.sh` 在 `rapid` 分片且缺 `dist/index.js` 时**响亮失败并给出下一步**
+（exit 2），不再让两步类型检查各吐一片级联错误。
+
+**为什么**：`rapid` 选的三步里，`types` / `tests-types` 的被测文件（`tests/types/*.ts`、
+`scripts/e2e-cli.ts`）从 `../../dist/index.js` 导入 —— 而脚本注释此前写的是「秒级、零网络、
+**不需要构建产物**」。干净克隆实测：缺产物跑 `rapid` ⇒ **1/3**，报 **30 条 TS 错误**
+（全是 `TS2307` 及其引发的 `Unused '@ts-expect-error'`，**没有一条是真缺陷**）；
+`npm run build` 之后 ⇒ **3/3**。而 `.githooks/pre-push` 用的正是 `rapid` ⇒ 干净克隆上必红、
+且红的是 30 条假信号。
+
+**影响面**：`scripts/verify-all.sh`（用法注释 + 顶部边界 ④ + 前置检查）；步骤数不变（仍是 8，
+`ci.yml` 的 job 名不必动）。有产物时 `rapid` 行为不变（实测 3/3 全绿）。
+
+**边界**：分片只服务本地；CI 走缺省全链（`build` 先于这两步），不存在这个前置。
+`tests/scripts/verify-all-wiring.test.ts` 的 `ci_only` 对拍不受影响。
+
+### 2026-10-17 ③ ref-assembly-pure-extract：装配期纯件与大体量函数的三处外移
+
+**决定**：把三处「同源但不同责」的代码抽出，纯搬移、**零行为变化**：
+① `toolkit/module.ts` 的构造抽走「能力引用图成环检测」与「菜单重名查重」（两个装配期纯件）；
+② `integrations/mcp-stdio.ts` 的构造抽走「stdout 分帧 → 按 id 派发」（`attachResponseReader`）；
+③ `integrations/metrics-render.ts` 的 `renderPrometheus` 抽走四个 run 级家族
+（`appendRunFamilies`）。
+
+**为什么**：方法级体量闸（`tests/architecture/method-size.test.ts`，阈值 **240**）的实测读数是
+
+| 可调用体 | 抽前 | 抽后 |
+|---|---:|---:|
+| `toolkit/module.ts :: constructor` | 236（余量 4） | **195** |
+| `integrations/mcp-stdio.ts :: createStdioMcpConnector` | 235（余量 5） | **206** |
+| `integrations/metrics-render.ts :: renderPrometheus` | 224 | **187** |
+
+余量 4~5 行意味着「加一个分支就可能顶线」—— 那是**下一次改动**替这次付账。
+抽后全仓最大体 **218 行**（`engine/loop.ts :: agentLoop`，余量 22）。
+
+**影响面**：三个 `src/` 文件 + 三个新模块级函数（各自的「为什么抽、口径是什么」写在函数头注）；
+`tests/toolkit/**`、`tests/integrations/mcpConnector.test.ts`、`tests/integrations/metrics.test.ts`
+全绿；`verify-all.sh` 八步全绿。
+
+**边界**：**没有**继续拆 `agentLoop`（218 行）—— 它是主循环、回合间状态收在 `LoopContext`
+里一气呵成，拆它换来的余量不抵可读性损失；本仓对「不该拆的大函数」有既定态度
+（见 `source-size.test.ts` 头注：报告 §2 那批最长也只有 260 行代码）。
+⚠️ **本次没有腾出「棘轮余量」**：`packages/cli` 的 `TOTAL_BUDGET` 余量仍是 0 ——
+实证（零死导出、重复代码已被 `duplicated-blocks` 守卫覆盖）表明**搬移不降总量**，
+真降需要删减/精简，另案。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

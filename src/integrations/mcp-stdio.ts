@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import {
   DEFAULT_CLIENT_INFO,
   DEFAULT_PROTOCOL_VERSION,
@@ -137,12 +138,11 @@ export function createStdioMcpConnector(
   let proc: ChildProcess | null = null;
   let fatal: Error | null = null;
   let closed = false;
-  let buf = '';
   let nextId = 1;
   let ready: Promise<void> | null = null;
   /** spawn 时建立（`close()` 靠它等真的退出）；从未 spawn 过则为 null */
   let exitTracker: ChildExitTracker | null = null;
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  const pending = new Map<number, PendingWaiter>();
 
   /** 进程已死 / 已 close 时一次性拒绝全部在途请求 —— 不留永久挂起的 promise */
   const fail = (err: Error): void => {
@@ -184,15 +184,11 @@ export function createStdioMcpConnector(
       /* 吞掉：EPIPE 是「进程没了」的次生现象，不是根因 */
     });
 
-    p.stdout?.setEncoding('utf8');
-    p.stdout?.on('data', (chunk: string) => {
-      // 分帧上限（2026-09-28 外部深评 S6）：对端一直吐不带换行的字节 ⇒ 缓冲无界增长
-      // ⇒ 先 OOM 再谈协议。这不是罕见输入：stdout 混日志的 server 本来就常见，
-      // 而**一个不换行的日志行**正是这形态。
-      // 超限的处置：一次性拒绝全部在途请求（`fail` 置 fatal）并**终止子进程** ——
-      // 帧边界已经丢了，再读下去既救不回那条「一行」，也答不出任何在途请求。
-      if (buf.length + chunk.length > MAX_FRAME_CHARS) {
-        buf = '';
+    // stdout 的「分帧 → 按 id 派发」整段抽成 `attachResponseReader`（见其定义处）：
+    // 它在构造里占近四成行数（本构造 235 行 / 方法级阈值 240）。超限的处置留在**工厂侧**
+    // —— 它要终止子进程、置 fatal，那两件事属于工厂的状态。
+    if (p.stdout) {
+      attachResponseReader(p.stdout, pending, () => {
         p.stdout?.destroy();
         p.kill();
         fail(
@@ -201,32 +197,8 @@ export function createStdioMcpConnector(
               '对端没有按换行分隔报文（或吐了一条巨型「日志行」）；已丢弃缓冲并终止连接',
           ),
         );
-        return;
-      }
-      buf += chunk;
-      for (;;) {
-        const nl = buf.indexOf('\n');
-        if (nl < 0) break;
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line.trim() === '') continue;
-        let msg: unknown;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          continue; // MCP 规定 stdout 只走协议，但 server 混日志进来是常事
-        }
-        if (!isJsonRpcResponse(msg)) continue; // 通知（无 id）不配对
-        const waiter = pending.get(msg.id);
-        if (!waiter) continue;
-        pending.delete(msg.id);
-        try {
-          waiter.resolve(unwrap(msg, 'response'));
-        } catch (e) {
-          waiter.reject(e instanceof Error ? e : new Error(String(e)));
-        }
-      }
-    });
+      });
+    }
 
     return p;
   };
@@ -355,4 +327,62 @@ export function createStdioMcpConnector(
       await reapChild(p, exitTracker);
     },
   };
+}
+
+/** 在途请求的记账条目（`send` 写入、`attachResponseReader` 兑现） */
+type PendingWaiter = { resolve: (v: unknown) => void; reject: (e: Error) => void };
+
+/**
+ * 把子进程 stdout 的「字节流 → 已配对响应」接上：**分帧 → 按 id 派发**。
+ *
+ * 抽出来的原因（方法级体量闸）：它在 `createStdioMcpConnector` 里占近四成行数，而它与
+ * 连接器其余状态的交互只有三处 —— `stream`（输入）、`pending`（派发目标）、`onOverflow`
+ * （超限处置）。缓冲（`buf`）只在这个 reader 里用（已核：文件其余位置零引用）⇒ 随它搬进来
+ * 当局部状态，不外泄。
+ *
+ * 三条口径**是搬移、不是重写**：
+ * - **帧上限**（2026-09-28 外部深评 S6）：对端一直吐不带换行的字节 ⇒ 缓冲无界增长 ⇒ 先 OOM
+ *   再谈协议。这不是罕见输入：stdout 混日志的 server 本来就常见，而**一个不换行的日志行**
+ *   正是这形态。超限交给调用方处置（终止子进程 + 置 fatal）—— 帧边界已经丢了，再读下去
+ *   既救不回那条「一行」，也答不出任何在途请求；
+ * - **JSON 解析失败就跳过**：MCP 规定 stdout 只走协议，但 server 混日志进来是常事；
+ * - **没有 id 的通知不配对**（`isJsonRpcResponse` 判定）。
+ */
+function attachResponseReader(
+  stream: Readable,
+  pending: Map<number, PendingWaiter>,
+  onOverflow: () => void,
+): void {
+  let buf = '';
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk: string) => {
+    if (buf.length + chunk.length > MAX_FRAME_CHARS) {
+      buf = '';
+      onOverflow();
+      return;
+    }
+    buf += chunk;
+    for (;;) {
+      const nl = buf.indexOf('\n');
+      if (nl < 0) break;
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line.trim() === '') continue;
+      let msg: unknown;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isJsonRpcResponse(msg)) continue;
+      const waiter = pending.get(msg.id);
+      if (!waiter) continue;
+      pending.delete(msg.id);
+      try {
+        waiter.resolve(unwrap(msg, 'response'));
+      } catch (e) {
+        waiter.reject(e instanceof Error ? e : new Error(String(e)));
+      }
+    }
+  });
 }

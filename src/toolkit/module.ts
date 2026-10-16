@@ -448,44 +448,10 @@ export class AgentApp {
       (token) => wrappedByToken.get(token) ?? [],
     );
 
-    // ── 能力引用图成环检测（2026-09-28）────────────────────────────────────────────
-    // 上面那次切片已经把**引用存在性**校验完了（未注册 provider / 不存在的能力名都在
-    // `resolveRefTools` 里抛过），所以这里可以放心按 token 扇出。
-    //
-    // 为什么要挡成环：能力是**运行期**展开的（`subagentToTool` 的 resolveTools 是延迟 thunk，
-    // `wrappedByToken` 此刻已全部建满）⇒ 一旦成环，模型点一次就是无限递归；而 `maxIterations`
-    // 只限每层的**宽度**、深度没有任何闸 ⇒ 树按 宽度^深度 炸开（token 与内存双爆），
-    // 且要到运行期才显形。DI 容器有环检测（`container.ts`），能力图此前没有。
-    // 实现在 `capability-cycles.ts`（纯件：不碰 DI、可单独单测）。
-    // ⚠️ 这里**刻意只取两类**（不遍历 CAPABILITY_KINDS）：只有 @SubAgent / @Skill 有
-    // `tools` 引用，@Tool 与 @Prompt 没有「能力引用」这回事 —— 那是语义上的不对称，不是漏项
-    //（同一条说明也在 capability-slice.ts 的文件头，别为了「看起来整齐」改成遍历）。
-    const graphInputs: CapabilityRefInput[] = providerList.flatMap((p) => {
-      const collected = collectedByToken.get(p.provide);
-      if (collected === undefined) return [];
-      return [
-        ...collected.subagent.map((c) => ({
-          token: p.provide,
-          kind: 'subagent' as const,
-          name: c.name,
-          refs: c.spec.tools ?? [],
-        })),
-        ...collected.skill.map((c) => ({
-          token: p.provide,
-          kind: 'skill' as const,
-          name: c.name,
-          refs: c.spec.tools ?? [],
-        })),
-      ];
-    });
-    const cycle = findCapabilityCycle(buildCapabilityGraph(graphInputs));
-    if (cycle !== undefined) {
-      throw new Error(
-        `能力引用成环：${cycle.map((n) => n.label).join(' → ')}。` +
-          '@SubAgent / @Skill 的 tools 引用不得绕回自己 —— 递归能力没有深度闸，' +
-          '模型一次自我调用就是无限递归（拆掉环，或把「递归」改成普通工具自己实现）',
-      );
-    }
+    // ── 能力引用图成环检测（2026-09-28）⇒ 已抽成装配期纯件 `assertNoCapabilityCycle` ──
+    // 口径、为什么挡成环、以及「刻意只取两类」那条不对称，都随注释搬到了函数定义处
+    //（方法级体量闸：本构造此前 236 行 / 阈值 240，余量只剩 4 行）。
+    assertNoCapabilityCycle(providerList, collectedByToken);
 
     // toolSources 是「取哪些 provider 的能力」的白名单，同一 token 写重只该取一次：
     // 不去重则会 flatMap 收两遍该 provider 的能力，最后撞上「菜单能力重名」——
@@ -514,14 +480,7 @@ export class AgentApp {
     ];
 
     // §7 静态校验（最小落地）：菜单统一查重 —— 重名会让模型在歧义菜单里猜，直接报错。
-    const dup = new Map<string, number>();
-    for (const t of this._tools) dup.set(t.name, (dup.get(t.name) ?? 0) + 1);
-    const dupNames = [...dup.entries()].filter(([, n]) => n > 1).map(([n]) => n);
-    if (dupNames.length > 0) {
-      throw new Error(
-        `菜单能力重名（tool/skill/subagent/prompt 共用命名空间）: ${dupNames.join(', ')}`,
-      );
-    }
+    assertNoDuplicateToolNames(this._tools);
 
     // 孤儿能力告警：toolSources 显式收窄时，被排除 provider 上的能力不在主菜单
     // （模型无法直接调用）；但**仍可被其他能力的 tools 引用**（引用是作者显式声明），
@@ -683,6 +642,73 @@ function warnDuplicateTokens(providers: Provider[]): void {
       ' —— 常见于 discover 扫出来的能力与 registry.ts / 应用级手写 providers 各声明一份；' +
       '要哪份生效就让它排在后头，或干脆只留一份。',
   );
+}
+
+/**
+ * 能力引用图**不得成环**（2026-09-28，本轮从 `AgentApp` 构造抽出的装配期纯件）。
+ *
+ * 上面那次切片已经把**引用存在性**校验完了（未注册 provider / 不存在的能力名都在
+ * `resolveRefTools` 里抛过），所以这里可以放心按 token 扇出。
+ *
+ * 为什么要挡成环：能力是**运行期**展开的（`subagentToTool` 的 resolveTools 是延迟 thunk，
+ * `wrappedByToken` 此刻已全部建满）⇒ 一旦成环，模型点一次就是无限递归；而 `maxIterations`
+ * 只限每层的**宽度**、深度没有任何闸 ⇒ 树按 宽度^深度 炸开（token 与内存双爆），
+ * 且要到运行期才显形。DI 容器有环检测（`container.ts`），能力图此前没有。
+ * 实现在 `capability-cycles.ts`（纯件：不碰 DI、可单独单测）。
+ * ⚠️ 这里**刻意只取两类**（不遍历 CAPABILITY_KINDS）：只有 @SubAgent / @Skill 有
+ * `tools` 引用，@Tool 与 @Prompt 没有「能力引用」这回事 —— 那是语义上的不对称，不是漏项
+ *（同一条说明也在 capability-slice.ts 的文件头，别为了「看起来整齐」改成遍历）。
+ *
+ * 抽出来的原因：它是**装配期的一趟完整校验**，与构造里「读选项、建容器」那半边不同源；
+ * 留在构造里会把后者顶到方法级体量闸（240 行）的线上（抽前 236 行 / 余量 4）。
+ */
+function assertNoCapabilityCycle(
+  providerList: Provider[],
+  collectedByToken: Map<Token, CollectedByKind>,
+): void {
+  const graphInputs: CapabilityRefInput[] = providerList.flatMap((p) => {
+    const collected = collectedByToken.get(p.provide);
+    if (collected === undefined) return [];
+    return [
+      ...collected.subagent.map((c) => ({
+        token: p.provide,
+        kind: 'subagent' as const,
+        name: c.name,
+        refs: c.spec.tools ?? [],
+      })),
+      ...collected.skill.map((c) => ({
+        token: p.provide,
+        kind: 'skill' as const,
+        name: c.name,
+        refs: c.spec.tools ?? [],
+      })),
+    ];
+  });
+  const cycle = findCapabilityCycle(buildCapabilityGraph(graphInputs));
+  if (cycle !== undefined) {
+    throw new Error(
+      `能力引用成环：${cycle.map((n) => n.label).join(' → ')}。` +
+        '@SubAgent / @Skill 的 tools 引用不得绕回自己 —— 递归能力没有深度闸，' +
+        '模型一次自我调用就是无限递归（拆掉环，或把「递归」改成普通工具自己实现）',
+    );
+  }
+}
+
+/**
+ * 菜单能力**不得重名**（§7 静态校验的最小落地；本轮从 `AgentApp` 构造抽出）。
+ *
+ * 重名会让模型在歧义菜单里猜 —— 那是「不报错但结果不可预期」，比构造期报错贵得多。
+ * 共用同一个命名空间：tool / skill / subagent / prompt。
+ */
+function assertNoDuplicateToolNames(tools: AgentTool[]): void {
+  const dup = new Map<string, number>();
+  for (const t of tools) dup.set(t.name, (dup.get(t.name) ?? 0) + 1);
+  const dupNames = [...dup.entries()].filter(([, n]) => n > 1).map(([n]) => n);
+  if (dupNames.length > 0) {
+    throw new Error(
+      `菜单能力重名（tool/skill/subagent/prompt 共用命名空间）: ${dupNames.join(', ')}`,
+    );
+  }
 }
 
 /**

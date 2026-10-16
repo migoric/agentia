@@ -736,21 +736,38 @@ describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补�
     // 反向验证：旧实现里 rpc() 末尾无条件 guard(readResult(...))，本用例会红在
     // 30ms 超时被拒（而 spec §10 2026-09-17 ref-mcp-timeout-single-source 与文档都说 callTool 的裁判是引擎/桥）。
     const { fetchImpl } = fakeServer();
+    // 慢调用由**测试掌控的闸门**控制，而不是固定的 `setTimeout(120)`（plan 2026-10-17 §3 #5）：
+    // 原设计「30ms 预算 vs 120ms 慢调用」只差 4×，绝对量级太小 —— 把预算抬到负载下不误伤
+    // 握手，就会**同时**削弱区分力。换成闸门后：错误实现（把 timeoutMs 也用在 call 上）会在
+    // timeoutMs 内 reject ⇒ 区分力更强，而正确实现的结果与任何墙钟无关。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     const slow: typeof fetch = (async (url: unknown, init: unknown) => {
       const i = init as { body?: string };
       const method = i.body ? (JSON.parse(i.body) as { method?: string }).method : undefined;
       const res = await fetchImpl(url as never, init as never);
-      if (method === 'tools/call') await new Promise((r) => setTimeout(r, 120));
+      if (method === 'tools/call') await gate;
       return res;
     }) as unknown as typeof fetch;
     const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
       fetchImpl: slow,
-      timeoutMs: 30, // 握手/list 的裁判；若它管到 call，120ms 的调用必被掐
+      timeoutMs: 300, // 握手/list 的裁判；若它管到 call，闸门放行前后必被掐
     });
     open.push(connector);
-    const out = (await connector.callTool('get-time', {})) as {
-      content: Array<{ text: string }>;
-    };
+    // 错误实现此刻就 reject ⇒ 先挂上 handler（否则是 unhandled rejection，测试会红在别处
+    // 而看不出是这条），并让消息自己说清「被谁掐了」。
+    const pending = connector.callTool('get-time', {}).then(
+      (v) => v as { content: Array<{ text: string }> },
+      (e: unknown) => {
+        throw new Error(`慢调用不该被连接器 timeoutMs 掐掉（裁判是引擎）：${String(e)}`);
+      },
+    );
+    // 等「明显超过 timeoutMs」再放行 —— 这一步的墙钟只用来**制造超时窗口**，不承担断言。
+    await new Promise((r) => setTimeout(r, 900));
+    release();
+    const out = await pending;
     assert.equal(out.content[0]?.text, 'ok', '慢调用必须等完 —— 引擎没设超时时它就该等');
   });
 
