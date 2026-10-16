@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+### 文档：补「本地怎么调」—— 四条路径 + 可直接复制的 curl（2026-10-16）
+
+- **为什么**：`docs/usage-guide.md` 的 HTTP 端点契约表是完整的，但**一个可直接复制的命令都没有**
+  （全文 0 处 `curl`）；更要紧的是没写那句「**这里没有『一个业务一个 URL』的接口层**」——
+  照别的框架的经验来找，会一直找错东西：加一个 `@Tool` **不会**多出一条路，
+  **调哪个能力由模型决定、不在 URL 里**。
+- **加了什么**：① 不起服务跑一次（`start:batch`）；② curl 四句（`/healthz` / `/run` / `/run` + SSE /
+  `/tasks`）；③ `agentia dev` 面板；④ **想单挑某一个工具**走 `createMcpServer`（每个 `@Tool`
+  变成一个标准 MCP tool —— 这才是「一个能力一个接口」的形态，只是它长在 MCP 层，不是 HTTP 路由层）。
+- **两个写进去的判据**（都是「只看 curl 退出码就会误判」的那类）：`POST /run`
+  **失败也回 200**（硬失败在响应体的 `status:"failed"` + `error` 字段里，脚本要判 `status`
+  不是判 `$?`）；SSE 那条必须加 `curl -N`，否则是 curl 自己在缓冲、看着像服务没吐东西。
+- **落在**：`docs/usage-guide.md`（= 项目内 `AGENTS.md` 的单源）§6.2 新增一小节 +
+  模板 `README.md` 新增「本地怎么调」。文档字数闸对 `usage-guide` **刻意不设上限**
+  （参考手册按需查，见 `doc-budget.test.ts`），故无需调数。
+
 ### 修复：会话（对话历史）读写失败零信号（2026-10-16 ① ref-session-failure-loud）
 
 - **病灶**：`loadSession` / `appendSession` 两个「辅助动作失败不得击穿 run」的 `catch` 是**裸吞**

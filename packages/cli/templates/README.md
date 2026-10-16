@@ -93,6 +93,43 @@ npm start       # 起 HTTP 服务（= node dist/main.js）
 （`@migor/agentia` 同样导出、同一套 API，代价是单写者前提）。`npm run dev` 与
 `npm run start:batch` 不碰它，它们的 Node 下限仍是 18。
 
+## 本地怎么调
+
+⚠️ 先认下这条，否则会照着别的框架的经验找错东西：**这里没有「一个业务一个 URL」的接口层**。
+HTTP 面就上面那几条**固定**端点 —— 加一个 `@Tool` 不会多出一条路，**调哪个能力由模型决定，
+不在 URL 里**。⇒ 想要「一个能力一个接口」的形态，走下面的 ③。
+
+**① 不起服务（最快）**：
+
+```bash
+npm run build && npm run start:batch -- "你的问题"   # 只跑一轮、打印结果、退出
+```
+
+**② 起了服务之后**（`npm start`，端口 `PORT` 缺省 3000）：
+
+```bash
+curl -s localhost:3000/healthz                    # 先确认活着（不鉴权）
+curl -s localhost:3000/run \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"介绍一下你自己"}'                 # body 也收裸字符串 "..." 与 messages 数组
+curl -sN localhost:3000/run \
+  -H 'content-type: application/json' \
+  -H 'Accept: text/event-stream' -d '"你的问题"'   # -N 关掉 curl 缓冲 ⇒ 逐帧滚动
+```
+
+⚠️ 两个别只看 curl 退出码的判据：
+① `POST /run` **失败也回 200** —— 硬失败在响应体的 `status: "failed"` + `error` 字段里
+（框架用 `rethrow:false` 语义：失败不用 HTTP 错误码表达）⇒ 脚本里判 `status`，别判 `$?`；
+② SSE 那条必须加 `-N`，否则是 curl 自己在缓冲，看起来像「服务没吐东西」。
+
+**③ 想单挑某一个工具**（不想让模型决定）：用 `createMcpServer(app, { transport: 'stdio' })`，
+每个 `@Tool` 变成一个标准 MCP tool，`tools/call` 直接调 —— 这是「一个能力一个接口」的形态，
+只是它长在 MCP 层、不是 HTTP 路由层。范围**只到 tools**（不含 skill / subagent / prompt）。
+
+**④ 带调用树可视化地调**：`npm run dev`（= `agentia dev`）—— 终端打出
+`Inspector: http://127.0.0.1:<随机端口>/?t=<token>`，浏览器里选能力 / 工作目录、输 prompt，
+右栏实时调用树；改代码自动重启。
+
 ## trace 出口（默认开着）
 
 每次 run 的调用树默认落盘到 `.agentia/traces.jsonl`（已进 `.gitignore`）—— 接的是
