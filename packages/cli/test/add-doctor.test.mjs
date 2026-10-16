@@ -18,6 +18,12 @@ if (distReadyOrLoud(DIST, 'packages/cli/dist/add.js ')) {
 }
 const SKIP = !resolvePackageName ? '未构建 packages/cli/dist —— 先跑 npm run build:cli' : false;
 
+/* 版本号单源（与 CLI 同一个 dist 模块）—— 版本漂移闸要拿它构造「同一版」的标记 */
+let readCliVersion = null;
+if (!SKIP) {
+  ({ readCliVersion } = await import(new URL('../dist/version.js', import.meta.url).href));
+}
+
 describe('add.resolvePackageName', { skip: SKIP }, () => {
   it('file: 协议本地路径 → 解析出 package.json 的 name（原实现把 file:./pkg 当包名）', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-pkg-'));
@@ -199,5 +205,107 @@ export const providers = [
 ];
 `);
     assert.ok(out.includes('悬空条目'), `别名绑定应检出悬空条目，实际:\n${out}`);
+  });
+});
+
+describe('doctor trace 出口闸（2026-10-16 ref-scaffold-observability-gap）', { skip: SKIP }, () => {
+  /** 写一份 src/app.ts（可含 sinks 也可不含），跑 doctor 并捕获输出 */
+  function appDoctorOutput(appTs) {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-doctor-sinks-'));
+    const cwd = process.cwd();
+    const logs = [];
+    const realLog = console.log;
+    console.log = (...a) => {
+      logs.push(a.join(' '));
+    };
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'app.ts'), appTs);
+      process.chdir(dir);
+      doctor();
+      process.exitCode = undefined;
+      return logs.join('\n');
+    } finally {
+      console.log = realLog;
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('app.ts 未配 sinks ⇒ 警告（trace 没有任何出口，异步任务的 trace 躺在库里没人导出）', () => {
+    const out = appDoctorOutput(`import { createApp } from '@migor/agentia';
+export async function createAgentApp() {
+  return createApp({ name: 'x', system: 'sys' });
+}
+`);
+    assert.ok(out.includes('未配 sinks'), `应警告 trace 无出口，实际:\n${out}`);
+    assert.ok(out.includes('/tasks'), '警告要说清后果落在哪条路（异步任务）');
+  });
+
+  it('已配 sinks ⇒ 不算警告，且进 ok 清单（出声闸不得误报）', () => {
+    const out = appDoctorOutput(`import { createApp, jsonlTraceSink } from '@migor/agentia';
+export async function createAgentApp() {
+  return createApp({ name: 'x', system: 'sys', sinks: [jsonlTraceSink({ path: 't.jsonl' })] });
+}
+`);
+    assert.ok(!out.includes('未配 sinks'), `已配出口不该警告，实际:\n${out}`);
+    assert.ok(out.includes('已配 trace 出口'), '应进 ok 清单');
+  });
+
+  it('整行注释掉的 sinks 仍然算「没接上」（判据只认代码里的）', () => {
+    const out = appDoctorOutput(`import { createApp } from '@migor/agentia';
+export async function createAgentApp() {
+  return createApp({
+    name: 'x',
+    system: 'sys',
+    // sinks: [jsonlTraceSink({ path: 't.jsonl' })],
+  });
+}
+`);
+    assert.ok(out.includes('未配 sinks'), `注释掉 = 出口没接上，应警告，实际:\n${out}`);
+  });
+});
+
+describe('doctor AGENTS.md 版本漂移闸（2026-10-16 ref-scaffold-observability-gap）', {
+  skip: SKIP,
+}, () => {
+  /** 写一份项目根 AGENTS.md，跑 doctor 并捕获输出 */
+  function guideDoctorOutput(agentsMd) {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-doctor-guide-'));
+    const cwd = process.cwd();
+    const logs = [];
+    const realLog = console.log;
+    console.log = (...a) => {
+      logs.push(a.join(' '));
+    };
+    try {
+      writeFileSync(join(dir, 'AGENTS.md'), agentsMd);
+      process.chdir(dir);
+      doctor();
+      process.exitCode = undefined;
+      return logs.join('\n');
+    } finally {
+      console.log = realLog;
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('无版本标记 ⇒ 警告（旧版脚手架 / 手写 ⇒ 对不出是否同版）', () => {
+    const out = guideDoctorOutput('# Agentia 使用说明\n\n正文\n');
+    assert.ok(out.includes('没有版本标记'), `无标记应警告，实际:\n${out}`);
+    assert.ok(out.includes('v' + readCliVersion()), '警告要给出当前 CLI 版本，否则无从判断');
+  });
+
+  it('标记与 CLI 不同 ⇒ 警告「说明可能已过期」（AI 正是照它写代码）', () => {
+    const out = guideDoctorOutput('<!-- agentia-guide-version: 0.0.1 -->\n# 说明\n');
+    assert.ok(out.includes('已过期'), `版本漂移应警告，实际:\n${out}`);
+    assert.ok(out.includes('0.0.1'), '要说清是哪一版写的');
+  });
+
+  it('标记与 CLI 同版 ⇒ 进 ok 清单（出声闸不得误报）', () => {
+    const out = guideDoctorOutput(`<!-- agentia-guide-version: ${readCliVersion()} -->\n# 说明\n`);
+    assert.ok(!out.includes('已过期'), `同版不该警告，实际:\n${out}`);
+    assert.ok(out.includes('版本标记与 CLI 一致'), '应进 ok 清单');
   });
 });

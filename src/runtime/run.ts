@@ -299,6 +299,12 @@ const EMPTY_REPLY_MARK = '（本次无文本输出）';
 /**
  * 读会话历史，拼在传入 messages 之前。失败当「无历史」继续 ——
  * 与 memory 水合同款防护：辅助动作失败不得击穿 run。
+ *
+ * ⚠️ 但**不再零信号**（2026-10-16 ref-session-failure-loud，与 `flushSinks` / memory 回写
+ * 同款纪律）：吞之前落一条 `console.warn`。理由是本处失败的**形状最坏** —— 它没有
+ * 「报错」，只是让本次 run 变成「第一轮」，而下一次 `append` 会把坏的那份覆盖掉 ⇒
+ * **整段对话历史无声消失**，使用者只会觉得「它忘了」。没有这条告警时，唯一的可见性
+ * 出口是 dev runner 启动期那次探测（生产路径根本没有）。
  */
 async function loadSession(
   session: { store: SessionStore; id: string } | undefined,
@@ -308,13 +314,19 @@ async function loadSession(
   try {
     const history = await session.store.load(session.id);
     return history.length > 0 ? [...history, ...incoming] : incoming;
-  } catch {
+  } catch (e) {
+    console.warn(
+      '[agentia] 会话历史读取失败，本次 run 按「没有历史」继续（多轮会表现为这是第一轮）：' +
+        (e instanceof Error ? e.message : String(e)),
+    );
     return incoming;
   }
 }
 
 /**
- * 把本轮消息 + 回复追加回会话（**只在成功路径调用**）。失败吞掉（同 memory 回写防护）。
+ * 把本轮消息 + 回复追加回会话（**只在成功路径调用**）。失败吞掉（同 memory 回写防护），
+ * 但**不再零信号**：吞之前落一条 `console.warn`（2026-10-16 ref-session-failure-loud，
+ * 同 `loadSession` 那条理由 —— 写失败 = 这一轮白聊，下一个 run 看不到它）。
  *
  * 三条不变量（都是为了下一轮还能把这个历史发出去）：
  * 1. **只有成功路径回写** —— 失败时若只存下用户的提问，历史就会以 user 结尾，
@@ -338,8 +350,11 @@ async function appendSession(
       ...incoming,
       { role: 'assistant', content: finalText || EMPTY_REPLY_MARK },
     ]);
-  } catch {
-    /* ignore */
+  } catch (e) {
+    console.warn(
+      '[agentia] 会话历史回写失败，本轮对话不会被记住：' +
+        (e instanceof Error ? e.message : String(e)),
+    );
   }
 }
 

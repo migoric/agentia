@@ -23,6 +23,7 @@ import {
   toolIndexTs,
 } from './templates.js';
 import { registerCapability } from './registry.js';
+import { GUIDE_VERSION_MARKER, readCliVersion } from './version.js';
 
 function write(dir: string, rel: string, content: string): void {
   const file = join(dir, rel);
@@ -113,13 +114,19 @@ export function createProject(name: string, parent: string | undefined): number 
   // 生成 .env 却不忽略它，等于把 key 直接送进用户的第一个 commit。
   write(dir, '.env', projectDotEnv());
   write(dir, '.env.example', projectDotEnvExample());
-  // AI 使用说明：让 Claude Code / Cursor / Copilot 等一进项目就拿到权威 API 速查
-  write(dir, 'AGENTS.md', guide);
+  // AI 使用说明：让 Claude Code / Cursor / Copilot 等一进项目就拿到权威 API 速查。
+  // ⚠️ 头部带一行**版本标记**（2026-10-16 ref-scaffold-observability-gap）：这份说明是
+  // `docs/usage-guide.md` 的**快照**，而 CLI **没有任何命令会更新它** —— 升级框架后它会
+  // 静默过期，偏偏 AI 就是照它写代码的。有了标记，`agentia doctor` 才能把
+  // 「说明是 vX 写的、当前 CLI 是 vY」说出口（此前只能靠人记得对拍）。
+  write(dir, 'AGENTS.md', `${GUIDE_VERSION_MARKER(readCliVersion())}\n${guide}`);
 
   registerCapability(dir, 'hello', 'tool');
-  // read-file 的构造器要一个工作目录（DI 注入），而 discover 自动注册的 provider
-  // **没有 deps** ⇒ 它必须走显式注册（registry.ts 的 providers 里那个 WORKDIR 是它的依赖）。
-  // 不登记的话 `agentia doctor` 会报「存在但未登记」—— 新生成的工程不该自带一条警告。
+  // read-file 的构造器要一个工作目录（DI 注入）。它的依赖声明**写在能力类上**
+  //（`static readonly deps = ['WORKDIR']`，discover 会带上），所以默认路由（discover）
+  // 下 `app.ts` 不必为它再注册一遍 —— 这里登记是给**显式装配路线**（registry.ts）
+  // 用的：那份 providers 里要带上 deps，顺带也让 `agentia doctor` 不报「存在但未登记」
+  //（新生成的工程不该自带一条警告）。
   registerCapability(dir, 'read-file', 'tool', ['WORKDIR']);
 
   console.log(`已创建项目 ${dir}

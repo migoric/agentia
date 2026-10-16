@@ -5,7 +5,8 @@ dist
 .env
 .env.local
 
-# dev 环的本地状态：对话历史（.agentia/session.json）等 —— 是本机调试产物，不进版本库
+# dev 环与运行期的本地状态：对话历史（.agentia/session.json）、trace 落盘（.agentia/traces.jsonl）
+# —— 都是本机产物，且 trace 含 prompt 与工具出入参，绝不进版本库
 .agentia/
 
 # 默认服务入口（src/main.ts）的 SQLite 任务库（wal/shm 是它的伴生文件）

@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import type { Trace, TraceSink } from '../core/trace.js';
 
 /**
@@ -17,12 +17,30 @@ import type { Trace, TraceSink } from '../core/trace.js';
  *
  * 前提：**单进程写者**（同 FileTaskStore）—— 多进程写同一文件会交错，
  * 跨进程协调（锁 / 队列）属部署层职责，不在本实现内。
+ *
+ * **同一路径进程内返回同一个 sink**（2026-10-16 ref-sink-exactly-once）：`jsonlTraceSink({ path: X })`
+ * 调两次得到的是**同一个对象**，而不是两个各自 append 的写者。为什么必须幂等 ——
+ * 两条 sink 对口同一个文件时，一次 run 会落**两行**同 traceId 的记录，而
+ * `report` / `diff` / `harvest` 是把「一行 = 一次 run」当前提的 ⇒ 表现不是「报错」，
+ * 而是「这次 run 被数了两次」（成本翻倍、错误率减半）。**比不落盘更难发现**：不落盘
+ * 是「没有数据」，重复落盘是「数据看起来很正常，但错了」。
+ * 现实里撞到它的形状：脚手架的 `createApp({ sinks })` 与 `agentia dev` 的
+ * `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写（各自都合理）⇒ 幂等让
+ * 「两处都接」退化成「恰好一次」，而不是「谁也不知道对方也写了」。
+ * ⚠️ 幂等的粒度是**进程内按解析后的绝对路径**；跨进程仍受上面「单进程写者」前提约束。
  */
+const sinkByPath = new Map<string, TraceSink>();
+
 export function jsonlTraceSink(options: { path: string }): TraceSink {
-  mkdirSync(dirname(options.path), { recursive: true });
-  return {
+  const path = resolve(options.path);
+  const existing = sinkByPath.get(path);
+  if (existing !== undefined) return existing;
+  mkdirSync(dirname(path), { recursive: true });
+  const sink: TraceSink = {
     export(trace: Trace): void {
-      appendFileSync(options.path, `${JSON.stringify(trace)}\n`, 'utf8');
+      appendFileSync(path, `${JSON.stringify(trace)}\n`, 'utf8');
     },
   };
+  sinkByPath.set(path, sink);
+  return sink;
 }

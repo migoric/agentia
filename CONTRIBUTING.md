@@ -6,7 +6,7 @@
 ## 快速上手
 
 ```bash
-git clone https://github.com/retrychx/agentia.git
+git clone https://github.com/migoric/agentia.git
 cd agentia
 npm install
 npm run build          # 编译到 dist/

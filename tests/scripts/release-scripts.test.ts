@@ -64,8 +64,8 @@ const FIXTURE: Record<string, string> = {
     '# Changelog\n\n按 Keep a Changelog。\n\n' +
     `## [${V0}] - 2026-01-01\n\n### 变更\n\n` +
     '- 夹具初始态：这一节的正文足够长，好让「内容过短」那条结构要求也通过。\n\n' +
-    `[Unreleased]: https://github.com/retrychx/agentia/compare/v${V0}...HEAD\n` +
-    `[${V0}]: https://github.com/retrychx/agentia/releases/tag/v${V0}\n`,
+    `[Unreleased]: https://github.com/migoric/agentia/compare/v${V0}...HEAD\n` +
+    `[${V0}]: https://github.com/migoric/agentia/releases/tag/v${V0}\n`,
   'examples/README.md': `用发布版就把这行换成 "@migor/agentia": "^${V0}"。\n`,
   'examples/complete/Dockerfile': `# 想改用发布版，依赖改成 ^${V0}，即可退回常规写法。\n`,
   'examples/complete/README.md':

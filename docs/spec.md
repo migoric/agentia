@@ -6923,6 +6923,96 @@ calls / errors / 耗时照计（它自己这次调用的真账）⇒ 各行可�
 全换成 slug」只对**带日期**的那一类成立。实测 **35 处**（探针 `.workbuddy/probes/2026-10-14-dateless-circ.mjs`，
 git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` §2 —— 它不是本轮漏掉的，是另一条规则的事。
 
+### 2026-10-16 ① ref-session-failure-loud：会话（对话历史）读写失败不得零信号
+
+**决定**：`loadSession` / `appendSession` 两个「辅助动作失败不得击穿 run」的 `catch` 从**裸吞**
+改为**吞之前落一条 `console.warn`**（与 `flushSinks` / memory 回写 / metrics 导出同款纪律）。
+不抛、不改 run 结果 —— 变的只是「有没有声音」。
+
+**为什么**：这一处的失败**形状最坏**。读失败 ⇒ 本次 run 表现成「这是第一轮」（没有任何报错）；
+写失败 ⇒ 这一轮白聊；而下一次 `append` 会把坏的那份覆盖掉 ⇒ **整段对话历史无声消失**，
+使用者只会觉得「它忘了」。更糟的是 `TraceSink` 拿不到它（没有事件、没有标记），
+唯一可见性出口是 dev runner **启动期**那次探测 —— 生产路径根本没有。同族的
+`sessionId` 在 `app.run` 不生效已经是响亮的（`module.ts` 那条 warn），本处不该例外。
+
+**影响面**：`src/runtime/run.ts` 两处 catch + 注释；`tests/runtime/session.test.ts` 加「两次都要出声」
+与「正常路径零告警」两条（两条 `catch` 各自做过反向验证：摘掉告警 ⇒ 恰好那条红）。
+
+**边界（如实写）**：只到 `console.warn`，**不进 trace**（这两个动作一个在 run 起跑前、
+一个在成功路径收尾，没有现成的 span 可挂；要挂得先定「会话维 span」这件事，本轮不做）。
+⇒ 采集端要接它，仍得从 stdout / 日志接。
+
+### 2026-10-16 ② ref-di-dup-loud：显式侧 DI token 重名出声 + 能力类自带依赖声明
+
+**决定**：两件配套的事 ——
+① `AgentApp` 装配期对**显式 providers** 里的同 token 重复注册给一条 `console.warn`
+（覆盖语义**不变**：仍是后注册覆盖先注册）；模块级 → 应用级那条**刻意不告警**（那是设计好的覆盖）；
+② `discover` 支持能力类自带依赖声明：类上写 `static readonly deps = ['WORKDIR']` 时，
+扫出来的 provider **带上 deps**；`deps` 形状不是字符串数组则**响亮报错**（不当成「没有依赖」去无参构造）。
+
+**为什么**：此前「discover 自动注册的 provider 没有 deps」⇒ 需要注入的能力只能**挪出 discover**、
+在装配文件里**再注册一遍** ⇒ 同一 token 出现两份（一份无 deps、一份有），靠「后注册覆盖先注册」
+碰巧成立 —— 顺序一变就静默失效，而框架零信号。真实形态是脚手架里 `WORKDIR` 被声明两遍
+（`discover` 那份与 `registry.ts` 那份，值还不同）。② 让依赖声明跟着**能力**走，
+装配文件不必知道；① 则保证真出现重复时有人被叫醒 —— 与「子菜单能力重名」那条响亮报错同档
+（此前只有**工具名**层守着，**DI token** 层没有）。
+
+**影响面**：`src/toolkit/discover.ts`（`staticDepsOf`）+ `src/toolkit/module.ts`（`warnDuplicateTokens`）；
+`tests/toolkit/discover.test.ts` 三条（含「真的注入」的端到端一条 + 坏形状报错 + 普通类行为不变）、
+`tests/toolkit/module.test.ts` 三条（重名告警 / 模块覆盖**不**告警 / 无重复零告警）；
+脚手架模板 `read-file` 改用 `static deps`、`app.ts` 删掉那条冗余注册、`registry.ts` 的 `WORKDIR`
+改为按文件位置解析（与 `app.ts` 逐字同值）；`docs/usage-guide.md`（= 项目内 `AGENTS.md` 的单源）补形态说明。
+
+**边界**：`static deps` 只被 `discover` 读 —— 显式 `providers` / `registry.ts` 那条路仍照旧写
+`deps: [...]`（两条路并存是有意的，不是重复）。重名告警是 `warn`，**不是错误**：既有工程
+不会因为升级而启动失败。
+
+### 2026-10-16 ③ ref-scaffold-observability-gap：脚手架把「卖点」接上默认路径 + 模板编译级对拍
+
+**决定**：三件都在**脚手架侧**（框架核心**刻意不内建** trace 出口这件事不变，见 §9.3）——
+① 模板 `app.ts` 默认接一条 `jsonlTraceSink`（落 `.agentia/traces.jsonl`，已 gitignore；
+删一行即关）；② `agentia doctor` 加两条检查：未配 `sinks` ⇒ 警告；项目内 `AGENTS.md` 的
+版本标记与当前 CLI 版本不一致（或无标记）⇒ 警告；③ `create` 写 `AGENTS.md` 时插一行版本标记
+（`<!-- agentia-guide-version: x.y.z -->`），CLI 版本号读法抽成 `version.ts` **单源**（cli / create / doctor 三处共用）。
+另新增 `packages/cli/test/templates-typecheck.test.mjs`：用模板真建一个工程 → 真跑 `tsc --noEmit`。
+
+**为什么**：三条都是同一个形状 —— **「缝在那儿、没人接」时不报错**。① 不接 ⇒ 同步 `/run` 的 trace
+随响应回去了，而**异步 `/tasks` 的 trace 落进任务库里没有任何人导出**，「这个任务为什么慢」要查时
+它正好不在（框架的差异化卖点在用户拿到的第一份工程上是缺席的）；② 项目内 `AGENTS.md` 是
+`create` 时从 `docs/usage-guide.md` **拷**进去的快照，CLI **没有任何命令会更新它**，而它恰恰是
+「AI 辅助编码的权威入口」⇒ 升级后静默过期、AI 照着过期 API 写代码；③ 模板此前只有**文本级**
+守卫，没人证明「建出来的工程编译得过」⇒ 框架改了 API 形状而模板没跟上时，全绿，第一个发现的人是用户。
+
+**影响面**：`packages/cli/templates/{app.ts,gitignore,registry.ts,src/tools/read-file/index.ts}`、
+`packages/cli/src/{create,doctor,version,cli}.ts` + 新测试；模板 tsc 与 CLI 套件全绿。
+③ 的变异验证：往 `dist/templates/src/app.ts` 注入一个类型错误 ⇒ 用例红并精确报出
+`src/app.ts(106,30): error TS2322`。
+
+**边界**：① 落的是**完整 trace**（含 prompt 与工具出入参）⇒ 模板注释里写了「上线前按你的合规要求处置」；
+③ 依赖 `dist/`（CLI 与框架都要先 build），与 `dist-guard.mjs` 那条同族纪律已写进用例头注。
+
+### 2026-10-16 ④ ref-sink-exactly-once：同一落盘文件，一条 trace 恰好一行
+
+**决定**：`jsonlTraceSink({ path })` **进程内按解析后的绝对路径幂等** —— 同一路径调两次返回
+**同一个 sink 对象**；`AgentApp` 收 `sinks` 时用 `new Set` 对 sink **对象**去重（应用级
+`sinks` 与全局默认 sink 拼成一个数组那一处）。
+
+**为什么**：③ 落地后 CI 的 `e2e-dev` 立刻红了（真现场，不是推定）：脚手架的
+`createApp({ sinks })` 与 `agentia dev` 的 `registerDefaultTraceSink` **都**往
+`.agentia/traces.jsonl` 写 —— 两边各自都合理（一个管生产路径、一个管 dev 环），而不幂等的结果
+是同一个 traceId 落**两行**。这类错误的形状最坏：`report` / `diff` / `harvest` 的前提是
+「一行 = 一次 run」⇒ 一次 run 被**数两次**（成本翻倍、错误率减半），而**全程不报错** ——
+不落盘是「没数据」，重复落盘是「数据看着正常但错了」。
+
+**影响面**：`src/integrations/file-sink.ts`（`sinkByPath`）+ `src/toolkit/module.ts`
+（`new Set`）；`tests/integrations/file-sink.test.ts` 加一条幂等（含「不同路径仍是两个 sink」
+的反向钉）、新增 `tests/integrations/sink-exactly-once.test.ts` 两条（真跑一次 run ⇒ 恰好一行；
+不同文件各写各的）。`docs/usage-guide.md` 的 `jsonlTraceSink` 行补上这条语义。
+
+**边界**：幂等的粒度是**进程内**；跨进程写同一文件仍受该 sink 原有的「单进程写者」前提约束
+（多进程会交错，协调属部署层）。去重只认**对象同一性** ⇒ 两份不同实现的 sink 写同一文件
+（例如一个 `jsonlTraceSink` + 一个手写 `appendFileSync` sink）**不在**本条射程内。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

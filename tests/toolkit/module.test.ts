@@ -9,6 +9,19 @@ import { mockClient, toolUseMsg, endTurnMsg } from '../helpers.js';
 const OBJ = { type: 'object', properties: {} } as const;
 const sys = () => new SystemPrompt().add('role', 'r', true);
 
+/** 捕获 console.warn（与 session.test.ts / session-id-warning.test.ts 同款） */
+function captureWarn() {
+  const warnings: string[] = [];
+  const orig = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+  return {
+    warnings,
+    restore: () => {
+      console.warn = orig;
+    },
+  };
+}
+
 describe('createApp 装配期静态校验', () => {
   it('装配菜单：多 provider 合并收集', () => {
     class A {
@@ -156,6 +169,69 @@ describe('modules 能力包装配（R5）', () => {
       ['tool_app'],
     );
     assert.ok(app.container.resolve('x') instanceof FromApp);
+  });
+
+  describe('DI token 重名出声闸（2026-10-16 ref-di-dup-loud）', () => {
+    it('显式 providers 里同 token 重复 ⇒ 告警一次，且**后者生效**（覆盖语义不变）', () => {
+      // 真实形态：discover 扫出来的 `WORKDIR` 与 registry.ts / 应用级手写的那份撞在一起，
+      // 谁生效取决于拼接顺序，而此前**零信号**（表现是「改了值却没生效」）。
+      const cap = captureWarn();
+      let app: ReturnType<typeof createApp>;
+      try {
+        app = createApp({
+          providers: [
+            { provide: 'WORKDIR', useValue: '/from-discover' },
+            { provide: 'WORKDIR', useValue: '/from-app' },
+          ],
+          system: sys(),
+        });
+      } finally {
+        cap.restore();
+      }
+      assert.equal(app!.container.resolve('WORKDIR'), '/from-app', '覆盖语义不变：后者赢');
+      assert.equal(cap.warnings.length, 1, '每个 app 告警一次，不是每条 provider 一次');
+      assert.match(cap.warnings[0]!, /WORKDIR/, '要点名是哪个 token');
+      assert.match(cap.warnings[0]!, /后注册覆盖先注册/, '要说清生效规则');
+    });
+
+    it('模块级 → 应用级同 token 覆盖 ⇒ **不告警**（那是设计好的覆盖语义）', () => {
+      // 与上面那条是**成对**的：只吵「显式侧自己撞了」，不吵「应用覆盖模块缺省」。
+      // 若哪天把这条也告警了，模块这种用法会天天刷屏 ⇒ 本用例会红。
+      class M {
+        @Tool({ description: 'd', schema: OBJ })
+        tool_m(): string {
+          return 'm';
+        }
+      }
+      const mod = defineModule({ providers: [{ provide: 'x', useClass: M }] });
+      const cap = captureWarn();
+      try {
+        createApp({
+          modules: [mod],
+          providers: [{ provide: 'x', useValue: 'app-wins' }],
+          system: sys(),
+        });
+      } finally {
+        cap.restore();
+      }
+      assert.deepEqual(cap.warnings, [], '模块→应用那条覆盖是设计好的，不该吵');
+    });
+
+    it('无重复 ⇒ 零告警（出声闸不得误报）', () => {
+      const cap = captureWarn();
+      try {
+        createApp({
+          providers: [
+            { provide: 'a', useValue: 1 },
+            { provide: 'b', useValue: 2 },
+          ],
+          system: sys(),
+        });
+      } finally {
+        cap.restore();
+      }
+      assert.deepEqual(cap.warnings, []);
+    });
   });
 
   it('middleware 拼接顺序：模块级在前（更外层）', () => {

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CAPABILITY_DIRS, CAPABILITY_DIR_LIST, REGISTRY_PATH, isValidName } from './templates.js';
 import { legacyLayout, legacyMigrationHint } from './layout.js';
+import { GUIDE_VERSION_RE, readCliVersion } from './version.js';
 
 /** 能力入口候选（须与框架 src/toolkit/discover.ts 的 ENTRY_CANDIDATES 一致） */
 const ENTRY_CANDIDATES = ['index.ts', 'index.mts', 'index.js', 'index.mjs'];
@@ -181,6 +182,50 @@ export function doctor(opts: { json?: boolean } = {}): number {
       warnings.push(
         `${REGISTRY_PATH} 条目 { provide: '${e.token}' } 指向 ${source}，但该目录已不存在（悬空条目，请删除条目或恢复目录）`,
       );
+    }
+  }
+
+  // trace 出口未接 → 警告（2026-10-16 ref-scaffold-observability-gap）。
+  // 框架**刻意不内建**任何出口（spec §9.3，出口只有 `sinks` 这条缝），所以「缝在那儿、
+  // 没人接」不会有任何报错：同步 `/run` 的 trace 随响应回去了，而异步 `/tasks` 的 trace
+  // 落进任务库里**没人导出** —— 等你要查「这个任务为什么慢」时它正好不在。
+  // 判据只认**代码里的** `sinks:`：整行注释掉的不算（那种情况下出口确实没接上）。
+  const appPath = join(cwd, 'src', 'app.ts');
+  if (existsSync(appPath)) {
+    const code = readFileSync(appPath, 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    if (/sinks\s*:/.test(code)) {
+      oks.push('src/app.ts：已配 trace 出口（sinks）');
+    } else {
+      warnings.push(
+        'src/app.ts 未配 sinks ⇒ trace 没有任何出口（异步 /tasks 的 trace 只会躺在任务库里、没人导出）；' +
+          '接一行 jsonlTraceSink 即可，配方见框架 docs/observability.md',
+      );
+    }
+  }
+
+  // 项目内 AGENTS.md 的版本漂移（2026-10-16 ref-scaffold-observability-gap）：它是 `create` 时
+  // 拷进来的一份**快照**，之后没有任何命令更新它，而 AI 正是照它写代码 ⇒ 框架升级后
+  // 「权威入口」静默过期。有版本标记才对得出来；没标记（旧版脚手架 / 手写）也要说一声。
+  const agentsFile = join(cwd, 'AGENTS.md');
+  if (existsSync(agentsFile)) {
+    const agentsSrc = readFileSync(agentsFile, 'utf8');
+    const marker = agentsSrc.match(GUIDE_VERSION_RE);
+    const current = readCliVersion();
+    if (marker === null) {
+      warnings.push(
+        `AGENTS.md 没有版本标记（旧版脚手架生成或手写）⇒ 无法判断它与当前 CLI（v${current}）` +
+          '是否同一版；升级后它可能与框架 API 已经不一致',
+      );
+    } else if (marker[1] !== current) {
+      warnings.push(
+        `AGENTS.md 是 v${marker[1]} 写的，当前 CLI 是 v${current} ⇒ 说明可能已过期` +
+          '（AI 照它写代码）：重新 create 一份，或对照 docs/usage-guide.md 手工更新',
+      );
+    } else {
+      oks.push(`AGENTS.md：版本标记与 CLI 一致（v${current}）`);
     }
   }
 

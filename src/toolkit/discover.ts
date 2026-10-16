@@ -124,9 +124,36 @@ function isDirLike(
   }
 }
 
+/**
+ * 读能力类的 `static deps`（可选的依赖声明）。
+ *
+ * 只认「字符串数组」这一种形状：别的是用户自己的字段（或继承来的），静默当没有 ——
+ * 写错了（比如 `deps = 'WORKDIR'`）不报错、也不注入，那正是要避免的静默失效，
+ * 所以这里**响亮报错**（装配期比运行期便宜得多）。
+ */
+function staticDepsOf(cls: unknown): string[] | undefined {
+  const raw = (cls as { deps?: unknown } | undefined)?.deps;
+  if (raw === undefined) return undefined;
+  if (Array.isArray(raw) && raw.every((d) => typeof d === 'string')) return raw as string[];
+  throw new Error(
+    `能力类的 static deps 必须是字符串数组（如 static readonly deps = ['WORKDIR']），` +
+      `实际：${JSON.stringify(raw)}`,
+  );
+}
+
 function normalizeExport(name: string, exported: unknown, entry: string): Provider[] {
   if (typeof exported === 'function') {
-    return [{ provide: name, useClass: exported as new () => object }];
+    const cls = exported as new () => object;
+    // 能力类可以**自带依赖声明**（`static readonly deps = ['WORKDIR']`）。
+    //
+    // 为什么需要（2026-10-16 ref-di-dup-loud）：此前 discover 对「default export
+    // 是类」只产 `{ useClass }`（没有 deps），于是**需要注入的能力必须挪出 discover**、改到
+    // 显式 `providers` 里再注册一遍 —— 结果同一 token 出现两次（一次无 deps、一次有），
+    // 靠「后注册覆盖先注册」碰巧成立，顺序一变就静默失效。能力文件夹本来就该是
+    // 「能力 + 它的依赖」的完整单元，依赖声明写在类旁边，装配文件不必知道。
+    // 与 Folder 直接导出 Provider 对象那条路并列（本函数下面两行），多一个更轻的选择。
+    const deps = staticDepsOf(cls);
+    return deps ? [{ provide: name, useClass: cls, deps }] : [{ provide: name, useClass: cls }];
   }
   if (isProvider(exported)) {
     return [exported];

@@ -80,6 +80,42 @@ describe('jsonlTraceSink（CLI report/diff/harvest 的输入格式）', () => {
     }
   });
 
+  // 2026-10-16 ref-sink-exactly-once：脚手架的 `sinks` 与 `agentia dev` 的
+  // `registerDefaultTraceSink` **各自都合理**，但都往 `.agentia/traces.jsonl` 写 ⇒
+  // 不幂等就是「一条 trace 两行」，而 `report` 的前提是「一行 = 一次 run」。
+  it('同一路径注册两次 ⇒ 同一个 sink（进程内幂等，不是两个写者）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'trace.jsonl');
+      const a = jsonlTraceSink({ path: file });
+      const b = jsonlTraceSink({ path: file });
+      assert.equal(a, b, '同一路径必须复用同一个 sink —— 两个写者 = 一条 trace 落两行');
+
+      // 反例钉住「去重去过头」：不同路径仍是两个独立 sink（都写各自的）
+      const other = jsonlTraceSink({ path: join(dir, 'other.jsonl') });
+      assert.notEqual(a, other);
+      a.export(makeTrace('run-1'));
+      other.export(makeTrace('run-2'));
+      assert.deepEqual(
+        readFileSync(file, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l).traceId),
+        ['run-1'],
+        '幂等只发生在同一路径内，不同文件互不影响',
+      );
+      assert.deepEqual(
+        readFileSync(join(dir, 'other.jsonl'), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l).traceId),
+        ['run-2'],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('写失败抛给调用方（flushSinks 会吞 —— sink 自己不藏）', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
     try {

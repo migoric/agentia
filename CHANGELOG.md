@@ -5,6 +5,72 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+### 修复：会话（对话历史）读写失败零信号（2026-10-16 ① ref-session-failure-loud）
+
+- **病灶**：`loadSession` / `appendSession` 两个「辅助动作失败不得击穿 run」的 `catch` 是**裸吞**
+  —— 不抛、不 warn、不进 trace。而这一处失败的**形状最坏**：读失败 ⇒ 本次 run 表现成「这是第一轮」；
+  写失败 ⇒ 这一轮白聊；下一次 `append` 把坏的那份覆盖掉 ⇒ **整段对话历史无声消失**，
+  使用者只会觉得「它忘了」。`TraceSink` 也拿不到它，唯一可见性出口是 dev runner **启动期**的探测。
+- **修法**：吞之前落一条 `console.warn`（与 `flushSinks` / memory 回写 / metrics 导出同款纪律）。
+  **不抛、不改 run 结果** —— 变的只是有没有声音。
+- **边界**：只到 `console.warn`，**不进 trace**（要挂得先定「会话维 span」，本轮不做）。
+- **验证**：`tests/runtime/session.test.ts` +2 条（读 + 写各告警一次 / 正常路径零告警）；
+  两条 `catch` **各自**做过反向验证（摘掉告警 ⇒ 恰好那条红）。
+
+### 新增：能力类自带依赖声明（`static deps`）+ 显式侧 DI 重名出声（2026-10-16 ② ref-di-dup-loud）
+
+- **病灶**：`discover` 对「default export 是类」只产 `{ useClass }`（没有 deps）⇒ 需要注入的能力
+  只能**挪出 discover**、在装配文件里**再注册一遍** ⇒ 同一 token 出现两份（一份无 deps、一份有），
+  靠「后注册覆盖先注册」碰巧成立 —— 顺序一变就静默失效，且框架零信号。真实形态：脚手架里
+  `WORKDIR` 被 `discover` 与 `registry.ts` 各声明一遍、值还不同。
+- **修法①**：能力类写 `static readonly deps = ['WORKDIR']` ⇒ `discover` 带上 deps（形状不是
+  字符串数组则**响亮报错**，不当成「没有依赖」去无参构造）。
+- **修法②**：`AgentApp` 装配期对**显式 providers** 的同 token 重复注册给一条 `console.warn`
+  （覆盖语义不变）；模块级 → 应用级那条**刻意不告警**（那是设计好的覆盖，不该吵）。
+- **验证**：`tests/toolkit/discover.test.ts` +3（含「真的注入」端到端 + 坏形状报错 + 普通类行为不变）、
+  `tests/toolkit/module.test.ts` +3（重名告警 / 模块覆盖不告警 / 无重复零告警）；
+  两处各做过反向验证。
+
+### 脚手架：默认接 trace 出口 + `AGENTS.md` 版本标记 + 模板编译级对拍（2026-10-16 ③ ref-scaffold-observability-gap）
+
+三件都在**脚手架侧**（框架核心刻意不内建 trace 出口这件事没变，见 `docs/spec.md` §9.3）：
+
+- **① 模板默认接一条 `jsonlTraceSink`**（落 `.agentia/traces.jsonl`，已 gitignore，删一行即关）：
+  此前不接 ⇒ 同步 `/run` 的 trace 随响应回去了，而**异步 `/tasks` 的 trace 落进任务库里没有任何人导出**
+  ——「这个任务为什么慢」要查时它正好不在。接上后 `agentia report` / `diff` / `harvest` / `export` 开箱可读。
+  ⚠️ 落的是完整 trace（含 prompt 与工具出入参）⇒ 模板注释写明「上线前按你的合规要求处置」。
+- **② `agentia doctor` 两条新检查**：未配 `sinks` ⇒ 警告；项目内 `AGENTS.md` 无版本标记
+  （或标记与当前 CLI 不同版）⇒ 警告。`create` 写 `AGENTS.md` 时插一行
+  `<!-- agentia-guide-version: x.y.z -->`；CLI 版本号抽成 `packages/cli/src/version.ts` **单源**
+  （`cli` / `create` / `doctor` 三处共用）。→ 这份说明是 `docs/usage-guide.md` 的**快照**，
+  而 CLI 没有任何命令更新它，它恰恰是「AI 辅助编码的权威入口」⇒ 升级后不能再静默过期。
+- **③ 新增 `packages/cli/test/templates-typecheck.test.mjs`**：用模板真建一个工程 → 真跑
+  `tsc --noEmit`。此前模板只有**文本级**守卫，没人证明「建出来的工程编译得过」。
+- **顺带**：模板 `read-file` 改用 `static deps`、`app.ts` 删掉那条冗余注册、`registry.ts` 的
+  `WORKDIR` 改为按文件位置解析（与 `app.ts` **逐字同值**）；`docs/usage-guide.md`
+  （= 项目内 `AGENTS.md` 的单源）补形态说明。
+
+### 修复：同一落盘文件被两条 sink 对口 ⇒ 一条 trace 落两行（2026-10-16 ④ ref-sink-exactly-once）
+
+- **病灶（CI 真现场，不是推定）**：③ 给脚手架接上 `sinks` 之后，`e2e-dev` 立刻红 ——
+  脚手架的 `createApp({ sinks })` 与 `agentia dev` 的 `registerDefaultTraceSink` **都**往
+  `.agentia/traces.jsonl` 写（两边各自都合理），于是同一个 traceId 落**两行**。而
+  `report` / `diff` / `harvest` 的前提是「一行 = 一次 run」⇒ 一次 run 被**数两次**
+  （成本翻倍、错误率减半），**且全程不报错** —— 不落盘是「没数据」，重复落盘是
+  「数据看着正常但错了」。
+- **修法**：`jsonlTraceSink` 对同一路径**进程内幂等**（两次调用返回同一个 sink 对象），
+  `AgentApp` 收 `sinks` 时对 sink **对象**去重（`new Set`）—— 两处都要：只幂等不 set ⇒
+  数组里仍有两个条目、收尾还是调两次；只 set 不幂等 ⇒ 两个不同对象，set 去不掉。
+  「两处都接」从此退化成「恰好一次」。
+- **验证**：`tests/integrations/sink-exactly-once.test.ts`（真跑一次 run ⇒ 恰好一行 +
+  不同文件各写各的）+ `tests/integrations/file-sink.test.ts` 的幂等条（含「不同路径仍是
+  两个 sink」的反向钉）。**两条变异各自亲跑**：摘 `new Set` ⇒ 恰好端到端那条红；
+  摘工厂幂等 ⇒ 两条红。
+- **边界**：幂等是**进程内**按解析后的绝对路径；跨进程仍受「单进程写者」前提约束。
+  两份**不同实现**的 sink 写同一文件不在射程内（去重只认对象同一性）。
+
 ## [0.10.3] - 2026-10-14
 
 > 本版主题（窗口 `0.10.2 → 0.10.3`）：**把「可观测」从「能导出」推进到「跨进程接得上、agent 自己查得到」**，
@@ -3760,31 +3826,31 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/retrychx/agentia/compare/v0.10.3...HEAD
-[0.10.3]: https://github.com/retrychx/agentia/releases/tag/v0.10.3
-[0.10.2]: https://github.com/retrychx/agentia/releases/tag/v0.10.2
-[0.10.1]: https://github.com/retrychx/agentia/releases/tag/v0.10.1
-[0.10.0]: https://github.com/retrychx/agentia/releases/tag/v0.10.0
-[0.9.5]: https://github.com/retrychx/agentia/releases/tag/v0.9.5
-[0.9.4]: https://github.com/retrychx/agentia/releases/tag/v0.9.4
-[0.9.3]: https://github.com/retrychx/agentia/releases/tag/v0.9.3
-[0.9.2]: https://github.com/retrychx/agentia/releases/tag/v0.9.2
-[0.9.1]: https://github.com/retrychx/agentia/releases/tag/v0.9.1
-[0.9.0]: https://github.com/retrychx/agentia/releases/tag/v0.9.0
-[0.8.3]: https://github.com/retrychx/agentia/releases/tag/v0.8.3
-[0.8.2]: https://github.com/retrychx/agentia/releases/tag/v0.8.2
-[0.8.1]: https://github.com/retrychx/agentia/releases/tag/v0.8.1
-[0.8.0]: https://github.com/retrychx/agentia/releases/tag/v0.8.0
-[0.7.2]: https://github.com/retrychx/agentia/releases/tag/v0.7.2
-[0.7.1]: https://github.com/retrychx/agentia/releases/tag/v0.7.1
-[0.7.0]: https://github.com/retrychx/agentia/releases/tag/v0.7.0
-[0.6.3]: https://github.com/retrychx/agentia/releases/tag/v0.6.3
-[0.6.2]: https://github.com/retrychx/agentia/releases/tag/v0.6.2
-[0.6.1]: https://github.com/retrychx/agentia/releases/tag/v0.6.1
-[0.6.0]: https://github.com/retrychx/agentia/releases/tag/v0.6.0
-[0.5.0]: https://github.com/retrychx/agentia/releases/tag/v0.5.0
-[0.4.2]: https://github.com/retrychx/agentia/releases/tag/v0.4.2
-[0.4.1]: https://github.com/retrychx/agentia/releases/tag/v0.4.1
-[0.4.0]: https://github.com/retrychx/agentia/releases/tag/v0.4.0
-[0.3.0]: https://github.com/retrychx/agentia/releases/tag/v0.3.0
-[0.2.2]: https://github.com/retrychx/agentia/releases/tag/v0.2.2
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/migoric/agentia/releases/tag/v0.10.3
+[0.10.2]: https://github.com/migoric/agentia/releases/tag/v0.10.2
+[0.10.1]: https://github.com/migoric/agentia/releases/tag/v0.10.1
+[0.10.0]: https://github.com/migoric/agentia/releases/tag/v0.10.0
+[0.9.5]: https://github.com/migoric/agentia/releases/tag/v0.9.5
+[0.9.4]: https://github.com/migoric/agentia/releases/tag/v0.9.4
+[0.9.3]: https://github.com/migoric/agentia/releases/tag/v0.9.3
+[0.9.2]: https://github.com/migoric/agentia/releases/tag/v0.9.2
+[0.9.1]: https://github.com/migoric/agentia/releases/tag/v0.9.1
+[0.9.0]: https://github.com/migoric/agentia/releases/tag/v0.9.0
+[0.8.3]: https://github.com/migoric/agentia/releases/tag/v0.8.3
+[0.8.2]: https://github.com/migoric/agentia/releases/tag/v0.8.2
+[0.8.1]: https://github.com/migoric/agentia/releases/tag/v0.8.1
+[0.8.0]: https://github.com/migoric/agentia/releases/tag/v0.8.0
+[0.7.2]: https://github.com/migoric/agentia/releases/tag/v0.7.2
+[0.7.1]: https://github.com/migoric/agentia/releases/tag/v0.7.1
+[0.7.0]: https://github.com/migoric/agentia/releases/tag/v0.7.0
+[0.6.3]: https://github.com/migoric/agentia/releases/tag/v0.6.3
+[0.6.2]: https://github.com/migoric/agentia/releases/tag/v0.6.2
+[0.6.1]: https://github.com/migoric/agentia/releases/tag/v0.6.1
+[0.6.0]: https://github.com/migoric/agentia/releases/tag/v0.6.0
+[0.5.0]: https://github.com/migoric/agentia/releases/tag/v0.5.0
+[0.4.2]: https://github.com/migoric/agentia/releases/tag/v0.4.2
+[0.4.1]: https://github.com/migoric/agentia/releases/tag/v0.4.1
+[0.4.0]: https://github.com/migoric/agentia/releases/tag/v0.4.0
+[0.3.0]: https://github.com/migoric/agentia/releases/tag/v0.3.0
+[0.2.2]: https://github.com/migoric/agentia/releases/tag/v0.2.2

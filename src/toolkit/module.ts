@@ -308,21 +308,31 @@ export class AgentApp {
   constructor(opts: AppOptions) {
     this.name = opts.name ?? 'app';
     const modules = opts.modules ?? [];
+    const explicitProviders = opts.providers ?? [];
     // 同 token 去重（后注册覆盖先注册，与 Container.register 语义一致）——
     // 模块 providers 在前、应用级 providers 在后：应用级可覆盖模块级同 token；
     // providers 与 discover 混用/重复给出同一 token 时不会重复收集菜单。
+    //
+    // ⚠️ **但显式侧的重复要出声**（2026-10-16 ref-di-dup-loud）：「后注册覆盖先注册」
+    // 是容器语义，不是警告语义 —— 而真实工程里最易撞的是「同一份值被声明两次」：
+    // `discover` 扫出来的与 `registry.ts` / 应用级手写的各给一份 `WORKDIR`，谁生效取决于
+    // 拼接顺序，且此前**零信号**（表现是「面板上改了工作目录却没生效」）。
+    // 模块级 → 应用级那条覆盖是**设计好的**（应用覆盖模块缺省），故不告警 —— 只比对
+    // `providers` 这一条数组（它含 `createApp` 已并入的 discover 结果，见 `warnDuplicateTokens`）。
+    warnDuplicateTokens(explicitProviders);
     const providerList = [
       ...new Map(
-        [...modules.flatMap((m) => m.providers), ...(opts.providers ?? [])].map((p) => [
-          p.provide,
-          p,
-        ]),
+        [...modules.flatMap((m) => m.providers), ...explicitProviders].map((p) => [p.provide, p]),
       ).values(),
     ];
     this.di = new Container().register(...providerList);
     this.system = opts.system;
     // trace 出口：应用级 sinks 在前，全局默认 sink 在后（构造期快照，注册表后续变化不影响本应用）
-    this.sinks = [...(opts.sinks ?? []), ...defaultSinks];
+    // ⚠️ `new Set` 去重（2026-10-16 ref-sink-exactly-once）：同一个 sink **对象**被两条
+    // 路径收进来（脚手架的 `sinks` 与 `agentia dev` 的 `registerDefaultTraceSink` 都建了
+    // 落盘 sink，而 `jsonlTraceSink` 对同一路径是幂等的 ⇒ 两边拿到的是同一个对象）
+    // 时，不去重就会对同一条 trace 调两次 `export` ⇒ 同一个 traceId 落两行。
+    this.sinks = [...new Set([...(opts.sinks ?? []), ...defaultSinks])];
     // 增量记账出口的应用级缺省（构造期快照，同 sinks 语义）；与 per-run 叠加
     //（应用级在前，run() 里 composeTraceEvents 合成）—— 不是覆盖
     this.onTraceEvent = opts.onTraceEvent;
@@ -647,6 +657,32 @@ export class AgentApp {
       },
     });
   }
+}
+
+/**
+ * 同一 DI token 在**显式 providers** 里出现多次 ⇒ 出声（2026-10-16 ref-di-dup-loud）。
+ *
+ * 「后注册覆盖先注册」是 `Container.register` 的语义，但它**不是**告警语义：覆盖发生时
+ * 没有任何东西会响，于是「我在装配里配的值被另一份顶掉了」只能靠人读出来。真实工程里
+ * 最易撞的是同一个**值**被声明两次（`WORKDIR` 最典型）：`discover` 扫出来的那份与
+ * `registry.ts` / 应用级手写那份，谁生效取决于拼接顺序。
+ *
+ * 只管 `providers` 这一条数组 —— 它**含 discover 并入的那批**（`createApp` 把扫描结果拼在
+ * 显式声明之前一起传进构造函数，见本文件末尾）⇒ 「discover 扫出来一份、手写又一份」
+ * 也算重名，那正是要抓的一类。模块级 → 应用级那条覆盖是设计好的（应用覆盖模块缺省），
+ * 不在本数组的比对范围内，不告警。
+ */
+function warnDuplicateTokens(providers: Provider[]): void {
+  const counts = new Map<string, number>();
+  for (const p of providers) counts.set(p.provide, (counts.get(p.provide) ?? 0) + 1);
+  const dups = [...counts.entries()].filter(([, n]) => n > 1).map(([token]) => `"${token}"`);
+  if (dups.length === 0) return;
+  console.warn(
+    '[agentia] 同一 DI token 重复注册（后注册覆盖先注册，生效的是最后一份）：' +
+      dups.join('、') +
+      ' —— 常见于 discover 扫出来的能力与 registry.ts / 应用级手写 providers 各声明一份；' +
+      '要哪份生效就让它排在后头，或干脆只留一份。',
+  );
 }
 
 /**

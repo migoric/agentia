@@ -10,8 +10,13 @@ const LIST_LIMIT = 200;
  *
  * 它是脚手架自带的第二个能力，作用是把「工作目录」这条线**接通**：
  * `agentia dev` 的面板上有「工作目录」控件，而只有当**某个能力真的消费它**时，
- * 那个控件才有可观测的效果。做法就是这里 —— 根由 DI 注入（`WORKDIR`），
- * 不在代码里写死。见 app.ts 的 providers。
+ * 那个控件才有可观测的效果。做法就是这里 —— 根由 DI 注入（`WORKDIR`），不在代码里写死。
+ *
+ * ⚠️ **依赖声明就在本类上**（`static readonly deps = ['WORKDIR']`，见下）：`discover`
+ * 读到它就会把 deps 带上，所以**装配文件不需要知道这个能力要什么**。
+ * 此前（2026-10-16 前）discover 对「类」只产 `useClass`，需要注入的能力只能挪到
+ * `app.ts` 的显式 providers 里**再注册一遍** ⇒ 同一 token 出现两份（一份无 deps、
+ * 一份有），靠「后注册覆盖先注册」碰巧成立 —— 顺序一变就静默失效。现在没这个必要了。
  *
  * 为什么是一对而不是只有 read_file：换了目录之后，模型既不知道自己此刻在哪个目录、
  * 也不知道里面有什么（run 的 prompt 不会变）⇒ 只能瞎猜文件名，行为看起来「没变」。
@@ -22,14 +27,20 @@ const LIST_LIMIT = 200;
  * 值从构造器进来，方法里用 `this.root`。
  */
 export default class ReadFileTool {
+  /**
+   * 依赖声明（discover 会读它并带上 deps ⇒ `app.ts` 不必为这个能力再注册一遍）。
+   * ⚠️ 必须是**字符串数组**：写成 `deps = 'WORKDIR'` 时 discover 会响亮报错
+   * （不当成「没有依赖」去无参构造 —— 那正是要避免的静默失效）。
+   */
+  static readonly deps = ['WORKDIR'];
+
   constructor(private readonly root: string) {
-    // discover 自动注册的 provider **没有 deps** —— 如果哪天 app.ts 里那行显式 provider
-    // 被删掉，容器会无参构造这个类，root 变成 undefined，工具就会静默地按 cwd 解析。
-    // 与其静默，不如在这里响亮报错。
+    // 兜底：若哪天 deps 被摘掉（或能力被以无 deps 的方式注册），容器会无参构造这个类，
+    // root 变成 undefined，工具就会静默地按 cwd 解析。与其静默，不如在这里响亮报错。
     if (typeof root !== 'string' || root.length === 0) {
       throw new Error(
-        'ReadFileTool 需要注入工作目录：请在 src/app.ts 的 providers 里保留 ' +
-          "{ provide: 'read-file', useClass: ReadFileTool, deps: ['WORKDIR'] }",
+        "ReadFileTool 需要注入工作目录：请在能力类上保留 `static readonly deps = ['WORKDIR']`" +
+          "（discover 会带上它），或在显式 providers 里声明 { provide: 'read-file', deps: ['WORKDIR'] }",
       );
     }
     // ⚠️ **归一化**：调用方给的工作目录可能带尾斜杠（面板输入、dev.config 手写、

@@ -36,6 +36,19 @@ function capturingClient(script: Array<Record<string, unknown>>) {
   };
 }
 
+/** 捕获 console.warn（与 session-id-warning.test.ts / memory.test.ts 同款） */
+function captureWarn() {
+  const warnings: string[] = [];
+  const orig = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+  return {
+    warnings,
+    restore: () => {
+      console.warn = orig;
+    },
+  };
+}
+
 /** 记录每次 append 的 spy store（底层用 InMemorySessionStore） */
 function spyStore(inner = new InMemorySessionStore()) {
   const appends: Array<{ id: string; messages: MessageParam[] }> = [];
@@ -158,7 +171,11 @@ describe('会话持久化接进 executeRun（C4）', () => {
     assert.ok(String((appends[0].messages[1] as { content: string }).content).length > 0);
   });
 
-  it('历史读/写都挂了 → 照样跑完（辅助动作不击穿 run）', async () => {
+  it('历史读/写都挂了 → 照样跑完（辅助动作不击穿 run），但**两次都要出声**', async () => {
+    // ⚠️ 出声是 2026-10-16 ref-session-failure-loud 加的。此前这两处是 `catch {}` 裸吞，
+    // 形状最坏：读失败 ⇒ 本次 run 变成「第一轮」；写失败 ⇒ 这一轮白聊。两者都**没有报错**，
+    // 而下一次 append 会把坏的那份覆盖掉 ⇒ 整段对话历史无声消失。
+    // 本用例钉住「不击穿」与「不零信号」两件事同时成立 —— 只钉前者的话，把 warn 删掉它照样绿。
     const store: SessionStore = {
       load: () => {
         throw new Error('redis down');
@@ -168,14 +185,47 @@ describe('会话持久化接进 executeRun（C4）', () => {
       },
     };
     const { client, sent } = capturingClient([endTurnMsg('照样跑完')]);
-    const { run, result } = await executeRun({
-      messages: [user('q')],
-      client,
-      session: { store, id: 's1' },
-    });
-    assert.equal(run.status, 'succeeded');
-    assert.equal(result.finalText, '照样跑完');
+    const cap = captureWarn();
+    let run: { status: string };
+    let result: { finalText: string };
+    try {
+      ({ run, result } = await executeRun({
+        messages: [user('q')],
+        client,
+        session: { store, id: 's1' },
+      }));
+    } finally {
+      cap.restore();
+    }
+    assert.equal(run!.status, 'succeeded');
+    assert.equal(result!.finalText, '照样跑完');
     assert.deepEqual(sent[0], [user('q')], '读不到历史就当没有，消息照发');
+    // 读、写各一条；文案要能让 grep 的人一眼知道是哪一侧、以及后果
+    assert.equal(
+      cap.warnings.length,
+      2,
+      `读 + 写各告警一次，实际：${JSON.stringify(cap.warnings)}`,
+    );
+    assert.match(cap.warnings[0]!, /会话历史读取失败/);
+    assert.match(cap.warnings[0]!, /redis down/, '原因要带上（否则不知道后端怎么了）');
+    assert.match(cap.warnings[1]!, /会话历史回写失败/);
+  });
+
+  it('会话后端正常 ⇒ 零告警（出声闸不得误报）', async () => {
+    const { store } = spyStore();
+    const { client } = capturingClient([endTurnMsg('ok')]);
+    const cap = captureWarn();
+    try {
+      const { run } = await executeRun({
+        messages: [user('q')],
+        client,
+        session: { store, id: 's1' },
+      });
+      assert.equal(run.status, 'succeeded');
+    } finally {
+      cap.restore();
+    }
+    assert.deepEqual(cap.warnings, [], '正常路径不该踩出声闸');
   });
 
   it('不配 session → 逐字保持旧行为（只发传入的 messages）', async () => {

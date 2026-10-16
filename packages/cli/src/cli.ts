@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 /** agentia CLI 入口：手写参数解析 + 命令分发（零依赖） */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { createProject } from './create.js';
 import { generateCapability } from './generate.js';
 import { isCapabilityType, isValidName, CAPABILITY_TYPES } from './templates.js';
@@ -13,6 +11,7 @@ import { reportCommand, USAGE as REPORT_USAGE } from './report.js';
 import { harvestCommand, USAGE as HARVEST_USAGE } from './harvest.js';
 import { diffCommand, USAGE as DIFF_USAGE } from './diff.js';
 import { exportCommand, USAGE as EXPORT_USAGE } from './export.js';
+import { readCliVersion } from './version.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
@@ -64,22 +63,6 @@ function fail(message: string): number {
   console.error(`错误：${message}`);
   process.exitCode = 1;
   return 1;
-}
-
-/**
- * CLI 版本 = 本包 package.json 的 `version`（**单源**：`scripts/check-release.mjs` 已保证它
- * 与根包一致，所以这里不另存一份常量 —— 常量会漂，读到的文件不会）。
- * 源码直跑（`src/cli.ts`）与发布物（`dist/cli.js`）的 `../package.json` 都是包根那一份。
- */
-function readCliVersion(): string {
-  try {
-    const pkg = JSON.parse(
-      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
-    ) as { version?: string };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
 }
 
 function checkName(name: string | undefined): name is string {

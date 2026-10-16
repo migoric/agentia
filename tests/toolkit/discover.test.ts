@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { asset, discoverProviders, createApp, SystemPrompt, Tool } from '../../src/index.js';
+import type { ClassProvider } from '../../src/index.js';
 
 const fixtures = fileURLToPath(new URL('../fixtures', import.meta.url));
 
@@ -23,6 +24,70 @@ describe('discoverProviders（目录发现）', () => {
 
   it('目录不存在 → 明确报错', async () => {
     await assert.rejects(discoverProviders(`${fixtures}/nope`), /能力目录不存在/);
+  });
+
+  describe('能力类自带依赖声明（static deps，2026-10-16 ref-di-dup-loud）', () => {
+    it('static deps 会被带上，且**真的注入**（不必把能力挪到显式 providers 再注册一遍）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'agentia-static-deps-'));
+      try {
+        mkdirSync(join(root, 'needs-root'), { recursive: true });
+        writeFileSync(
+          join(root, 'needs-root', 'index.ts'),
+          'export default class NeedsRoot {\n' +
+            "  static readonly deps = ['WORKDIR'];\n" +
+            '  constructor(public readonly root: string) {}\n' +
+            '}\n',
+        );
+        const providers = await discoverProviders(root);
+        // Provider 是三态联合 ⇒ 先按 ClassProvider 收窄再取 deps（直接取联合上的字段编译不过）
+        const first = providers[0] as ClassProvider;
+        assert.deepEqual(first.deps, ['WORKDIR'], 'discover 产出的 provider 要带 deps');
+
+        // 端到端：注入真的发生（只钉 deps 字段的话，「记录了但没人用」照样绿）
+        const app = await createApp({
+          discover: root,
+          providers: [{ provide: 'WORKDIR', useValue: '/injected/root' }],
+          system: 'sys',
+        });
+        assert.equal(
+          (app.container.resolve('needs-root') as { root: string }).root,
+          '/injected/root',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('static deps 形状写错 ⇒ 响亮报错（不当成「没有依赖」去无参构造）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'agentia-bad-deps-'));
+      try {
+        mkdirSync(join(root, 'bad'), { recursive: true });
+        writeFileSync(
+          join(root, 'bad', 'index.ts'),
+          "export default class Bad {\n  static readonly deps = 'WORKDIR';\n}\n",
+        );
+        await assert.rejects(discoverProviders(root), /static deps 必须是字符串数组/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('没有 static deps 的普通能力类 ⇒ 行为逐字不变（不加 deps 键）', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'agentia-no-deps-'));
+      try {
+        mkdirSync(join(root, 'plain'), { recursive: true });
+        writeFileSync(join(root, 'plain', 'index.ts'), 'export default class Plain {}\n');
+        const providers = await discoverProviders(root);
+        const first = providers[0] as ClassProvider;
+        // 逐字不变：只有 provide + useClass 两个键（多一个 deps 键也算形状变了）
+        assert.deepEqual(Object.keys(first).sort(), ['provide', 'useClass']);
+        assert.equal(first.provide, 'plain');
+        assert.equal(typeof first.useClass, 'function');
+        assert.equal('deps' in providers[0]!, false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it('数组形态：目录间顺序 = 入参数组顺序（不跨目录重排）', async () => {

@@ -27,7 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const REPO = 'retrychx/agentia';
+export const REPO = 'migoric/agentia';
 
 export const SURFACES = [
   {
@@ -100,7 +100,7 @@ export const SURFACES = [
   {
     file: 'CHANGELOG.md',
     pattern:
-      /^\[Unreleased\]: https:\/\/github\.com\/retrychx\/agentia\/compare\/v(\d+\.\d+\.\d+)\.\.\.HEAD$/gm,
+      /^\[Unreleased\]: https:\/\/github\.com\/migoric\/agentia\/compare\/v(\d+\.\d+\.\d+)\.\.\.HEAD$/gm,
     count: 1,
     why: 'CHANGELOG 的 compare 基线（旧基线 = 链接里那个版本）',
   },

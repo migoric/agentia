@@ -7,5 +7,5 @@ contact_links:
     url: https://agentia-web.pages.dev/playground.html
     about: 不装任何东西，直接看一条 run 的调用树长什么样
   - name: 安全漏洞（请勿开公开 issue）
-    url: https://github.com/retrychx/agentia/security/advisories/new
+    url: https://github.com/migoric/agentia/security/advisories/new
     about: 走私有通道上报

@@ -94,7 +94,7 @@ npx agentia --version            # CLI 版本（= -v）
 > `npx @migor/cli create` —— npm 上另有一个别人的 `agentia` 包，短名会装错东西。
 > 想全局装上（到处都能敲 `agentia`）：`npm i -g @migor/cli`。
 
-四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
+四分类目录，一能力一文件夹：`src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/` —— **目录名就是类型**，不用记别名。每个文件夹的 `index.ts` 是入口，`default export` 支持三种形态：**类**（token = 文件夹名）、**Provider 对象**、**Provider 数组**。类形态要注入依赖时，在类上写 `static readonly deps = ['WORKDIR']` —— `discover` 会把它带上（**不必**把该能力挪到显式 `providers` 再注册一遍，那样同一 token 会有两份、靠「后注册覆盖先注册」碰巧成立）；`deps` 写成非字符串数组会**响亮报错**，不当成「没有依赖」。显式注册表在 `src/registry.ts`（`agentia g` 自动维护，也可手改）。
 
 ### 2.1 脚手架生成的文件（**装配与启动是分开的**）
 
@@ -830,7 +830,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
-| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` 的输入格式**，见 §6「调优报告」 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |

@@ -93,6 +93,22 @@ npm start       # 起 HTTP 服务（= node dist/main.js）
 （`@migor/agentia` 同样导出、同一套 API，代价是单写者前提）。`npm run dev` 与
 `npm run start:batch` 不碰它，它们的 Node 下限仍是 18。
 
+## trace 出口（默认开着）
+
+每次 run 的调用树默认落盘到 `.agentia/traces.jsonl`（已进 `.gitignore`）—— 接的是
+`src/app.ts` 里那一行 `sinks: [jsonlTraceSink({ path: TRACE_FILE })]`。dev 面板、同步
+`/run`、异步 `/tasks` 三条路都经 `app.run` ⇒ 一处接入、三条全覆盖：
+
+```bash
+agentia report .agentia/traces.jsonl   # 哪个能力慢 / 贵 / 爱失败
+agentia diff   a.jsonl b.jsonl         # 两次 run 的调用树 A/B
+```
+
+⚠️ 落的是**完整 trace**（含 prompt 与工具出入参）⇒ 上线前按你的合规要求处置。删掉 `sinks`
+那一行即关闭 —— **关掉之后异步 `/tasks` 的 trace 会落进任务库而没有任何人导出**（同步
+`/run` 的 trace 仍随响应回去，所以「好像也没什么区别」正是这个坑的形状）。
+不确定自己关没关：`agentia doctor` 会查 `src/app.ts` 里这一行。
+
 ## 一次性任务（Job 形态）
 
 cron / CI / 容器里「跑一次就退出」的那种，用 `batch.ts`：

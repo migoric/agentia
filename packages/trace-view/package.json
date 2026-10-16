@@ -16,6 +16,6 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.js"
   },
-  "repository": "retrychx/agentia",
+  "repository": "migoric/agentia",
   "license": "MIT"
 }

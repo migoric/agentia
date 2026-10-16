@@ -115,5 +115,5 @@ npm run dev                      # 本地面板：输 prompt / 选能力 / 看�
 
 ---
 
-*仓库：github.com/retrychx/agentia ｜ 文档：agentia-web.pages.dev（`/llms.txt` 与 `/llms-full.txt`
+*仓库：github.com/migoric/agentia ｜ 文档：agentia-web.pages.dev（`/llms.txt` 与 `/llms-full.txt`
 是给 AI 读的纯文本入口）。*

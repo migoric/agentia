@@ -39,7 +39,7 @@
 ## 上报与执行
 
 如遇滥用、骚扰或其他不可接受的行为，请通过
-[GitHub 私有渠道](https://github.com/retrychx/agentia/security/advisories/new) 联系维护者。
+[GitHub 私有渠道](https://github.com/migoric/agentia/security/advisories/new) 联系维护者。
 所有投诉都会被及时、公正地审阅与处理。维护者有义务尊重举报者的隐私与安全。
 
 ## 执行阶梯
