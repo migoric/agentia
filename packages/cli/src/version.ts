@@ -32,5 +32,5 @@ export function readCliVersion(): string {
 export const GUIDE_VERSION_MARKER = (version: string): string =>
   `<!-- agentia-guide-version: ${version} -->`;
 
-/** 匹配上面那个标记（ tolerant：允许标记前后有空行 / 大小写不变） */
+/** 匹配上面那个标记：允许标记内多余空白，**区分大小写**（标记本身是我们写死的，不必放宽） */
 export const GUIDE_VERSION_RE = /<!--\s*agentia-guide-version:\s*([^\s-]+)\s*-->/;

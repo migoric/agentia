@@ -6991,6 +6991,28 @@ git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` 
 **边界**：① 落的是**完整 trace**（含 prompt 与工具出入参）⇒ 模板注释里写了「上线前按你的合规要求处置」；
 ③ 依赖 `dist/`（CLI 与框架都要先 build），与 `dist-guard.mjs` 那条同族纪律已写进用例头注。
 
+### 2026-10-16 ④ ref-sink-exactly-once：同一落盘文件，一条 trace 恰好一行
+
+**决定**：`jsonlTraceSink({ path })` **进程内按解析后的绝对路径幂等** —— 同一路径调两次返回
+**同一个 sink 对象**；`AgentApp` 收 `sinks` 时用 `new Set` 对 sink **对象**去重（应用级
+`sinks` 与全局默认 sink 拼成一个数组那一处）。
+
+**为什么**：③ 落地后 CI 的 `e2e-dev` 立刻红了（真现场，不是推定）：脚手架的
+`createApp({ sinks })` 与 `agentia dev` 的 `registerDefaultTraceSink` **都**往
+`.agentia/traces.jsonl` 写 —— 两边各自都合理（一个管生产路径、一个管 dev 环），而不幂等的结果
+是同一个 traceId 落**两行**。这类错误的形状最坏：`report` / `diff` / `harvest` 的前提是
+「一行 = 一次 run」⇒ 一次 run 被**数两次**（成本翻倍、错误率减半），而**全程不报错** ——
+不落盘是「没数据」，重复落盘是「数据看着正常但错了」。
+
+**影响面**：`src/integrations/file-sink.ts`（`sinkByPath`）+ `src/toolkit/module.ts`
+（`new Set`）；`tests/integrations/file-sink.test.ts` 加一条幂等（含「不同路径仍是两个 sink」
+的反向钉）、新增 `tests/integrations/sink-exactly-once.test.ts` 两条（真跑一次 run ⇒ 恰好一行；
+不同文件各写各的）。`docs/usage-guide.md` 的 `jsonlTraceSink` 行补上这条语义。
+
+**边界**：幂等的粒度是**进程内**；跨进程写同一文件仍受该 sink 原有的「单进程写者」前提约束
+（多进程会交错，协调属部署层）。去重只认**对象同一性** ⇒ 两份不同实现的 sink 写同一文件
+（例如一个 `jsonlTraceSink` + 一个手写 `appendFileSync` sink）**不在**本条射程内。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

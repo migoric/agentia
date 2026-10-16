@@ -52,6 +52,25 @@
   `WORKDIR` 改为按文件位置解析（与 `app.ts` **逐字同值**）；`docs/usage-guide.md`
   （= 项目内 `AGENTS.md` 的单源）补形态说明。
 
+### 修复：同一落盘文件被两条 sink 对口 ⇒ 一条 trace 落两行（2026-10-16 ④ ref-sink-exactly-once）
+
+- **病灶（CI 真现场，不是推定）**：③ 给脚手架接上 `sinks` 之后，`e2e-dev` 立刻红 ——
+  脚手架的 `createApp({ sinks })` 与 `agentia dev` 的 `registerDefaultTraceSink` **都**往
+  `.agentia/traces.jsonl` 写（两边各自都合理），于是同一个 traceId 落**两行**。而
+  `report` / `diff` / `harvest` 的前提是「一行 = 一次 run」⇒ 一次 run 被**数两次**
+  （成本翻倍、错误率减半），**且全程不报错** —— 不落盘是「没数据」，重复落盘是
+  「数据看着正常但错了」。
+- **修法**：`jsonlTraceSink` 对同一路径**进程内幂等**（两次调用返回同一个 sink 对象），
+  `AgentApp` 收 `sinks` 时对 sink **对象**去重（`new Set`）—— 两处都要：只幂等不 set ⇒
+  数组里仍有两个条目、收尾还是调两次；只 set 不幂等 ⇒ 两个不同对象，set 去不掉。
+  「两处都接」从此退化成「恰好一次」。
+- **验证**：`tests/integrations/sink-exactly-once.test.ts`（真跑一次 run ⇒ 恰好一行 +
+  不同文件各写各的）+ `tests/integrations/file-sink.test.ts` 的幂等条（含「不同路径仍是
+  两个 sink」的反向钉）。**两条变异各自亲跑**：摘 `new Set` ⇒ 恰好端到端那条红；
+  摘工厂幂等 ⇒ 两条红。
+- **边界**：幂等是**进程内**按解析后的绝对路径；跨进程仍受「单进程写者」前提约束。
+  两份**不同实现**的 sink 写同一文件不在射程内（去重只认对象同一性）。
+
 ## [0.10.3] - 2026-10-14
 
 > 本版主题（窗口 `0.10.2 → 0.10.3`）：**把「可观测」从「能导出」推进到「跨进程接得上、agent 自己查得到」**，

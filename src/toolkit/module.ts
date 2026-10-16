@@ -328,7 +328,11 @@ export class AgentApp {
     this.di = new Container().register(...providerList);
     this.system = opts.system;
     // trace 出口：应用级 sinks 在前，全局默认 sink 在后（构造期快照，注册表后续变化不影响本应用）
-    this.sinks = [...(opts.sinks ?? []), ...defaultSinks];
+    // ⚠️ `new Set` 去重（2026-10-16 ref-sink-exactly-once）：同一个 sink **对象**被两条
+    // 路径收进来（脚手架的 `sinks` 与 `agentia dev` 的 `registerDefaultTraceSink` 都建了
+    // 落盘 sink，而 `jsonlTraceSink` 对同一路径是幂等的 ⇒ 两边拿到的是同一个对象）
+    // 时，不去重就会对同一条 trace 调两次 `export` ⇒ 同一个 traceId 落两行。
+    this.sinks = [...new Set([...(opts.sinks ?? []), ...defaultSinks])];
     // 增量记账出口的应用级缺省（构造期快照，同 sinks 语义）；与 per-run 叠加
     //（应用级在前，run() 里 composeTraceEvents 合成）—— 不是覆盖
     this.onTraceEvent = opts.onTraceEvent;

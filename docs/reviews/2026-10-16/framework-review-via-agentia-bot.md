@@ -178,6 +178,27 @@ README「两者二选一或混用」没点破「默认是哪条、混用代价�
 
 ---
 
+## 处置（2026-10-16 当日跟进，同一条分支）
+
+| 编号 | 处置 | 落在哪 |
+|---|---|---|
+| P0-1 | **已修**：脚手架 `createApp` 默认挂 `jsonlTraceSink`（落 `.agentia/traces.jsonl`，已 gitignore）；`agentia doctor` 查这一行，代码里没有 ⇒ 告警并点名「异步 `/tasks` 的 trace 没人导出」 | `packages/cli/templates/src/app.ts` + `doctor.ts` |
+| P0-2 | **已修**：`loadSession` / `appendSession` 各落一条 `console.warn`（吞但不静默，与 `flushSinks` 同款）；run 结果不变 | `src/runtime/run.ts` |
+| P1-3 | **已修**：显式 `providers` 同 token 重复 ⇒ 装配期一条 warn（模块→应用那条**刻意不告警**） | `src/toolkit/module.ts` |
+| P1-4 | **不修（有据）**：`docs/spec.md` §10（2026-09-13「可观测口径对齐」那条）已把这个形状**定为组合缝** —— 「HTTP 宿主不持有 model client」，原文明写 `src/` 零改动。真要消样板，落点在**消费者工程**（那份 `Pick<AgentApp,…>` 抄两处 ⇒ 抽一个类型），不在框架。改它等于把已决的设计决定当缺陷改 | —— |
+| P1-5 | **已修**：`AGENTS.md` 头部写版本标记（`<!-- agentia-guide-version: x.y.z -->`），`doctor` 比对 CLI 版本 ⇒ 缺标记 / 版本不符都告警并给出当前版本 | `packages/cli/src/{version,create,doctor}.ts` |
+| P2-6 | **已修（同一处收敛）**：模板 `WORKDIR` 改为按文件位置解析，与 `app.ts` 的 `PROJECT_ROOT` **逐字同值** ⇒ 两本账合成一本 | `packages/cli/templates/src/registry.ts` |
+| P2-7 | **已修**：`discover` 认能力类的 `static readonly deps`（形状非字符串数组 ⇒ 响亮报错），模板的重复注册随之消失 | `src/toolkit/discover.ts` + 模板 `read-file` |
+| P2-8 | **已修**：新增 `templates-typecheck.test.mjs` —— 真建工程、真跑 `tsc --noEmit`（不 npm install，2.3s） | `packages/cli/test/` |
+| P2-9 | **不修**：已如实标注，属可接受 | —— |
+
+**修 P0-1 时撞出的第四处（原评审没写到）**：脚手架接上 `sinks` 之后 CI 的 `e2e-dev` **立刻红** ——
+脚手架的 `createApp({ sinks })` 与 `agentia dev` 的 `registerDefaultTraceSink` 都往
+`.agentia/traces.jsonl` 写，同一个 traceId 落**两行**，而 `report` / `diff` 按「一行 = 一次 run」计数
+⇒ 一次 run 被数两次且**不报错**。修法：`jsonlTraceSink` 同路径进程内幂等 + `AgentApp` 对 sink 对象去重
+（`new Set`），两处都要。已补进 `docs/spec.md` §10（④ ref-sink-exactly-once）与 `docs/guards.md` §1.2。
+⇒ 这件事本身也是 P0-1 那条判断的**坐实**：默认路径此前连「落盘」都没有，自然也撞不到这个坑。
+
 ## 验证边界（如实）
 
 **实测过的**：框架源码逐条定位（每条 `文件:行号`）；消费者工程全量阅读（843 行）；
