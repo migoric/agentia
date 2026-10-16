@@ -671,7 +671,7 @@ const handler = createHttpHandler(callable, { runner });
 
 异步侧更直接：`AsyncRunner` 的构造选项就有 `client`。完整可跑写法见仓库 `examples/complete/`
 （**不随 npm 包发布** —— 包里只有 `dist/`、README、LICENSE 与本说明）：
-<https://github.com/retrychx/agentia/tree/main/examples/complete>
+<https://github.com/migoric/agentia/tree/main/examples/complete>
 
 #### `createHttpHandler(app, opts?: HttpHandlerOptions)`
 
