@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### 元数据：包描述英文化 + keywords 补全（2026-10-17 ⑦ ref-discovery-metadata）
+
+- **病灶**：两个发布包的 `description` 是纯中文 —— npm 搜索按英文 token 匹配，该字段对英文
+  查询的贡献为 **0**。实测五个查询（`agent framework` / `typescript agent` / `ai agent typescript` /
+  `llm agent node` / `mcp framework`），`@migor/agentia` **全部在前 15 名之外**；唯一命中的是
+  搜 `agentia` 排第 **9**，而前 5 里 4 个是另一家公司的 `@copado/agentia-*`。
+  `keywords` 只有 7 个，缺 `typescript` / `nodejs` / `ai-agent` / `agent-framework` /
+  `model-context-protocol` 这批高频检索词。
+- **改了什么**：`@migor/agentia` 的 description 改英文（中文原文**移进 `README.md` 首屏**，
+  一个字没丢），keywords 7 → 20；`@migor/cli` 同样处理（description 英文化，keywords 4 → 12）。
+  `README.md` 首屏在中文段前加一句英文定位句 —— npm 包页首屏就是它。
+- **刻意不做**：keywords 里**不放 `nestjs`**。本包没有 NestJS 集成，放进去是蹭词，
+  会让人以为存在官方适配。「NestJS 场景」靠文档与落地页命中，不靠元数据误导。
+- **生效时机**：npm 元数据**要等下一次发版**才进搜索索引（本地改 `package.json` 不改变线上排名）；
+  GitHub 的 `about` 是即时生效的字段，但当前令牌无 Administration 权限，本轮未改。
+- **边界**：这是消除明显错误，不是增长手段 —— keywords 影响「能命中哪些长尾查询」，
+  不改变「在泛词里排第几」（那由下载量与 star 决定）。「改完排名上升」**未验证**。
+
 ### 文档：补「本地怎么调」—— 四条路径 + 可直接复制的 curl（2026-10-16）
 
 - **为什么**：`docs/usage-guide.md` 的 HTTP 端点契约表是完整的，但**一个可直接复制的命令都没有**
@@ -152,20 +170,6 @@
   `examples-table` 守卫绿（表格集合 ↔ 目录集合一致）。
 - **边界**：**不进** `e2e-examples`（要真 API key 才有意义），保证是编译级；
   `InMemoryTaskStore`（重启即丢），README 写明换持久 store 的路径。
-
-### 文档：取舍页加「分工」表，README 补路线 C（2026-10-17 ⑦ ref-tradeoffs-versus）
-
-- **为什么**：README 首屏只有「从零建」（脚手架 / 手写装配），**已有服务的用户看不到增量改造
-  这条路** —— `examples/agent-endpoint` 加了却没人点进来；而「为什么不选 Mastra / LangGraph」
-  是选型会上必被问的问题，官网上只有零散的一句「那边是谁的主场」。
-- **加了什么**：README 中英各补**路线 C：已有服务**（不放代码块 —— `code-fences` 会真编译
-  围栏块，伪代码过不了闸）；`/tradeoffs` 加一节 **`id="versus"`「与相邻方案的分工」**，
-  四种处境 → 更合适的选择 → 为什么，中英 id 同名。
-- **刻意不做**：**不新开 `/vs/mastra` 页面** —— 那要同时动 sitemap / llms.txt / 中英页面集合，
-  三处守卫交叉核对，成本高而信息量只有一张表；取舍页本来就是讲这个的。
-- **内容约束**：表里不比「性能更强 / 生态更大」，生态劣势写在同页「代价清单」，
-  不在分工表里找补；也不承诺竞品的任何具体能力（那些会过时，这页没有守卫盯竞品事实）。
-- **验证**：`website-i18n` + `website-css` 19 用例全绿；八步全绿。
 
 ## [0.10.3] - 2026-10-14
 

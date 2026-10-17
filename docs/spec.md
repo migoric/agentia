@@ -7148,31 +7148,31 @@ W1 的断言逻辑**一字未改**（仍是 `lines > budget` 即红）。
 （`typecheck:tests`）。存储用 `InMemoryTaskStore`（重启即丢），README 里写明了换
 `SqliteTaskStore` / `RedisTaskStore` 的路径。
 
-### 2026-10-17 ⑦ ref-tradeoffs-versus：取舍页加「分工」表；README 补路线 C
+### 2026-10-17 ⑦ ref-discovery-metadata：包元数据英文化 + keywords 补全
 
-**决定**：**不**新开 `/vs/mastra` 页面，而是在现有 `/tradeoffs` 页加一节「与相邻方案的分工」
-（中英同步）；README 的「快速开始」补**路线 C：已有服务**。
+**决定**：`@migor/agentia` 与 `@migor/cli` 的 `description` 改为英文，`keywords` 分别补到 20 / 12；
+`README.md` 首屏在中文段前加英文定位句。中文描述完整保留在 README 首屏。
 
-**为什么（不开新页）**：新增页面要同时动 `sitemap.xml.ts` / `llms.txt.ts` / 中英页面集合
-—— 三处都有守卫交叉核对（`website-i18n` 要求页面集合与 fragment id 集合逐页相等，
-`check-website-agent-readiness` 要求 sitemap 的 `<loc>` 集合等于 dist 里实际页面）。
-成本高，而信息量只有一张表。取舍页本来就讲「什么场景该选别人」，分工表是它的自然延伸。
+**为什么**：npm 搜索按英文 token 匹配 name / description / keywords。两个包的 description 此前
+是纯中文 ⇒ **对英文查询的贡献为 0**。这不是「优化」，是「字段用错了语言」。
+实测（2026-10-17，`registry.npmjs.org/-/v1/search`）：`agent framework`、`typescript agent`、
+`ai agent typescript`、`llm agent node`、`mcp framework` 五个查询，本包**全部在前 15 名外**；
+唯一命中是查 `agentia` 排第 9 —— 而前 5 里 4 个是 `@copado/agentia-*`（另一家公司的同名产品线），
+且无 scope 的 `agentia` 由第三方以 `0.0.0` 占位（2024-11 后无更新）。**品牌词这条路基本关闭**，
+只能靠场景词与长尾查询绕开。
 
-**为什么（README 路线 C）**：首屏此前只有「从零建」（脚手架 / 手写装配），
-目标用户（已有服务）看不到「增量改造」这条路 —— `examples/agent-endpoint` 加了却没人点进来。
+**刻意不做**：keywords 不放 `nestjs`。本包没有 NestJS 集成，放进去会让人以为存在官方适配；
+「NestJS 场景」应由文档、示例与落地页命中（那是有正文支撑的真实信息），不由元数据蹭词。
 
-**内容约束**：表里**刻意不比**「性能更强 / 生态更大」—— 生态上本框架远不如那几家，
-这条事实写在同页的「代价清单」，不在分工表里找补。README 的路线 C **不放代码块**：
-`tests/docs/code-fences.test.ts` 会真编译文档里的 TS 围栏块，伪代码过不了闸。
+**影响面**：`package.json`、`packages/cli/package.json`、`README.md` 首屏、
+`docs/plans/2026-10-17-discovery-metadata.md`。
 
-**影响面**：`README.md` / `README.en.md`、`packages/website/src/fragments/tradeoffs.html`
-与 `fragments/en/tradeoffs.html`（新增 `id="versus"` 节，中英 id 同名）。
-
-**验证**：`website-i18n` + `website-css` 19 用例全绿（id 集合相等、英文面剥代码块后零 CJK、
-三列表格版式不变量）；八步全绿。
-
-**边界**：不写「谁更强」—— 只写「什么形状的活该用哪个」；不承诺竞品的任何具体能力
-（那些会过时，而这一页没有守卫盯着竞品事实）。
+**边界（如实标注）**：
+① npm 搜索索引读的是**已发布**的包文档 ⇒ 本次改动**要等下一次发版**才生效，本地改不改变线上排名；
+② keywords 改变的是**匹配面**（能命中哪些长尾查询），**不改变排名权重** —— 泛词位次由下载量决定
+（本包 ~150/天），`typescript agent framework` 这类词在 GitHub 上前 10 的门槛是 **4412 star**；
+③ 「改完排名会上升」**没有验证**，需要发版后观察 1~2 周；
+④ GitHub 仓库的 `about` 是即时生效字段，但当前令牌无 Administration 权限，本轮未改。
 
 ## 11. 开放项
 
