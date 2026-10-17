@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### 文档：框架兼容性实测结论落库（新增 docs/frameworks.md + README / 边界表同步）（2026-10-17 ⑨ ref-frameworks-compat）
+
+- **病灶**：README 与 `usage-guide.md` §7 都写着「未对 Deno / edge 做验证」—— 今天它已是**假话**：
+  Bun 1.4.3 / Deno 2.9.6 / NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10 四宿主都跑过「导入 → 装配 →
+  HTTP → 副作用」四步判定（Node 22.13.1 下），而结论只活在会话里，仓库零记录。
+- **落库**：新增 [`docs/frameworks.md`](docs/frameworks.md) —— 判定标准（四步，缺一步不算「可用」）、
+  实测环境、运行时轴 / Web 框架轴两张结论表、各宿主最小接入代码、**Egg 的三个坑**
+  （CSRF 拦 POST 回 403；bodyParser 提前消费请求流 ⇒ POST 挂死而 GET 仍 200；cluster 下每 worker
+  各持一份内存 store ⇒ 同一 taskId 轮询 `404 200` 完美交替 ⇒ 必须换共享 store）。
+- **同步**：README 中英两版的「运行时」bullet、稳定性边界表「运行环境」行、集成节补宿主表；
+  `usage-guide.md` §7「运行时是 Node」行改为「Node 承诺，Bun / Deno 实测」
+  （`boundary-table.test.ts` 登记表 key 同步改，双向比对绿）。
+- **如实标注**：Bun / Deno 是**实测**不是**承诺** —— 不在 `engines` 内、不在 CI 上；
+  Express / Fastify / Koa 作为独立宿主未逐一实测；Node 18 / 20 未跑（「`require(ESM)` 在 22.12
+  前不可用」是按发布时间线的推断，按 `await import()` 写可避开）；edge 仍未验证。
+- **验证**：`docs/frameworks.md` 的三个 ts 块按 `code-fences` 守卫同手法（`paths` → `src/index.ts`，
+  不依赖 build）真编译通过 —— 其中 CJS 片段第一稿写了顶层 `await`，探针当场报
+  `TS1309`（CommonJS 里不合法），已改成包一层；这正是实测时踩过的同一个坑，
+  也是把 `docs/frameworks.md` 纳入 `code-fences` 取样面的理由（该页承诺「照抄可跑」）。
+  `boundary-table` / `stability` / `code-fences` / `scoreboard` 等文档守卫全绿，
+  `bash scripts/verify-all.sh` 八步通过。
+
 ### 文档：README 精简（中文 451 → 314 行，英文同步）（2026-10-17 ⑧ ref-readme-slim）
 
 - **病灶**：中文 README 是英文版的**两倍**（451 vs 229 行），差额几乎全在三节：

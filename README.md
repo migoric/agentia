@@ -37,8 +37,10 @@ npm run dev                          # = agentia dev：本地 inspector 面板
 - 可选：`ANTHROPIC_BASE_URL`（兼容端点）、`AGENTIA_MODEL`（缺省 `claude-opus-5`）。
 - 框架**不自动**读 `.env`：脚手架 `src/app.ts` 的 `loadEnvFile()` 负责把它读进 `process.env`
   （放在装配模块而非入口，因为 `agentia dev` 只 import app.ts、从不执行入口）。
-- **运行时**：Node ≥ 18（`engines` 唯一要求），CI 覆盖 18 / 20 / 24。按 Node 设计并测试，
-  **未对 Deno / edge 验证**。`SqliteTaskStore` 需 Node ≥ 22.5 的 `node:sqlite`，未提供时构造期给可读报错。
+- **运行时**：Node ≥ 18（`engines` 唯一要求），CI 覆盖 18 / 20 / 24。按 Node 设计并测试；
+  **Bun 1.4 / Deno 2.9 已实测可跑**（导入 → 装配 → HTTP → 副作用四步判定 + 各宿主最小代码，
+  见 [`docs/frameworks.md`](docs/frameworks.md)）；**edge 仍未验证**。
+  `SqliteTaskStore` 需 Node ≥ 22.5 的 `node:sqlite`，未提供时构造期给可读报错。
 - 工程内命令：`npx agentia g tool fetch-weather` / `npx agentia doctor` / `npx agentia --version`；
   想全局装：`npm i -g @migor/cli`。
 
@@ -190,6 +192,18 @@ import { createHttpHandler } from '@migor/agentia';
 createServer(createHttpHandler(app, { runner })).listen(8080);
 ```
 
+**Web 框架宿主** —— `createHttpHandler` 返回的就是 `(req, res) => void`，任何能挂原始 node handler 的地方都能挂，不需要适配层：
+
+| 宿主 | 最小接入 | 必须配的 |
+|---|---|---|
+| `node:http` | `createServer(createHttpHandler(app, { runner }))` | 无 |
+| NestJS 12（CJS / ESM） | `nestApp.use('/agent', handler)` 三行 | CJS 模式需 Node ≥ 22.12（或 `await import()`） |
+| Egg 4 | 中间件 + `ctx.respond = false` | CSRF / bodyParser 两条 ignore（字符串写法会让 worker 启动即崩） |
+| Bun / Deno | 与 `node:http` 相同，零改动 | Deno 的 `--allow-net/read/write/run` |
+
+cluster / 多实例下 task store **必须共享** —— 每 worker 一份内存 store，同一个 taskId 轮询会 `404 200` 交替。
+结论表、最小代码与 Egg 的三个坑见 [`docs/frameworks.md`](docs/frameworks.md)。
+
 **MCP** —— 连接器（stdio / StreamableHTTP）随框架发布，只用标准库，不新增第三方依赖：
 
 ```ts
@@ -264,7 +278,7 @@ grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # 列出所有「要你�
 |---|---|---|
 | 公共 API | `@migor/agentia` 的**具名导出**（真源 `src/index.ts`）+ `@migor/cli` 的命令行面 | 深路径导入（`dist/**`）、`src/**` 内部模块、`packages/*`、`examples/*` —— 由 `package.json` 的 `exports` 封着 |
 | 行为 | 该版本条目里写明的**迁移动作** | 没写进迁移说明的任何行为变化 |
-| 运行环境 | `engines.node` 声明的区间；CI 在区间内每个版本跑完整条链 | Deno / Bun / edge（**未验证**）；已 EOL 的 Node |
+| 运行环境 | `engines.node` 声明的区间；CI 在区间内每个版本跑完整条链 | edge（**未验证**）；已 EOL 的 Node。Bun / Deno 已实测但**不在 `engines` 承诺内**（[`docs/frameworks.md`](docs/frameworks.md)） |
 | 依赖 | **运行时零第三方依赖**（`no-runtime-deps.test.ts` 守着，非口头承诺） | `devDependencies` 与 `examples/*` 的依赖面 |
 
 **1.0 的门槛**（三条都可核验）：
@@ -310,5 +324,6 @@ npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑
 - 设计规格：[`docs/spec.md`](docs/spec.md)
 - 生产可观测配方：[`docs/observability.md`](docs/observability.md)
 - 上线清单（store 选型 / 鉴权边界 / 优雅停机 / 预算 / 回滚）：[`docs/deployment.md`](docs/deployment.md)
+- 框架兼容性实测（NestJS / Egg / Bun / Deno 结论表 + 最小代码 + Egg 三坑）：[`docs/frameworks.md`](docs/frameworks.md)
 - 完整示例：[`examples/complete/`](examples/complete/) · 最小部署：[`examples/deploy/`](examples/deploy/) · 存量改造：[`examples/agent-endpoint/`](examples/agent-endpoint/)
 - 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[Playground](https://agentia-web.pages.dev/playground) · [文档](https://agentia-web.pages.dev/docs) · [取舍对照](https://agentia-web.pages.dev/tradeoffs)）

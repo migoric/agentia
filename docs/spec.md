@@ -7200,6 +7200,39 @@ W1 的断言逻辑**一字未改**（仍是 `lines > budget` 即红）。
 ② 英文版未同步 —— 它本来就是精简形态，这次是中文版向它靠拢。
 ③ 未删任何承诺与边界；删的是叙述与重复示例。
 
+### 2026-10-17 ⑨ ref-frameworks-compat：框架兼容性实测落库，替换「未验证 Deno」的假话
+
+**决定**：新增 `docs/frameworks.md` 记录四宿主实测结论；README 中英两版与 `usage-guide.md` §7 的
+「未对 Deno / edge 做验证」改为「Node 承诺，Bun / Deno 实测，edge 未验证」；
+`code-fences` 守卫取样面纳入 `docs/frameworks.md`。
+
+**为什么**：那些话当天已变成**假话** —— 2026-10-17 按「导入 → 装配 → HTTP → 副作用」四步判定
+实测了 Node 22.13.1 / Bun 1.4.3 / Deno 2.9.6 与 NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10，
+结论却只活在会话里。本仓纪律：承诺**可以收窄，不能留假话** —— `stability` 守卫钉的正是这个性质，
+而「未验证」三个字在没有守卫的地方静默腐烂成了反话。
+
+**结论要点**：
+- Bun / Deno 与 `node:http` 基线是**同一份代码**，零宿主相关代码；Deno 要四个权限 flag
+  （`--allow-net/read/write/run`，少一个是运行时炸、不是编译期）。
+- CJS 宿主用 `await import()` 跨版本可靠：`require(ESM)` 要 Node ≥ 22.12，且 CJS 里没有顶层
+  `await`（写成裸顶层 await 的片段**照抄即错**，编译探针当场报 `TS1309`）。
+- Egg 三个坑：① CSRF 默认拦 POST 回 403；② bodyParser 提前消费请求流 ⇒ POST 挂死而
+  GET 仍 200（最阴的一个）；③ cluster 每 worker 各持一份内存 store ⇒ 同一 taskId 轮询
+  `404 200` 完美交替 ⇒ 必须换共享 store。
+- 两套 DI 各管各的：NestJS 挂载走 `nestApp.use()`，不碰 Nest 的 provider 图。
+
+**影响面**：`docs/frameworks.md`（新页）· `README.md` · `README.en.md` · `docs/usage-guide.md` §7 ·
+`docs/promotion.md` · `tests/docs/code-fences.test.ts`（取样面）· `tests/docs/boundary-table.test.ts`
+（登记 key）· `docs/guards.md`（射程描述）。
+
+**边界（如实标注）**：
+① Bun / Deno 是**实测**不是**承诺** —— 不在 `engines` 内、不在 CI 上，页面开头就写明这条分界；
+② Express / Fastify / Koa 作为独立宿主的最小片段未逐一实测（`examples/agent-endpoint/` 是
+`node:http` + 一条分支的形态）；
+③ Node 18 / 20 未跑 ——「`require(ESM)` 在 22.12 前不可用」是按 Node 发布时间线的**推断**，
+按 `await import()` 写可避开，推断本身已标注；
+④ edge 运行时仍未验证，且明确警告别按「Web 标准所以一定能跑」推断（框架碰 `node:http` 原语）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

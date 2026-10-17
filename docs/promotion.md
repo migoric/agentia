@@ -125,6 +125,7 @@ createServer(createHttpHandler(app, { runner })).listen(8080);  // POST /run · 
 - **中间件**：能力调用前后的洋葱链，鉴权 / 限流 / 审计短路在 `next()` 之前；
 - **结构化结果**：传 `resultSchema` 直接拿校验过的 `result.typed`，不用从文本里猜 JSON；
 - **上线清单**：`docs/deployment.md` 写的是「哪些事框架**不替你**做」（比如 `/metrics` 不鉴权，生产要由反代限制可达性）。
+- **宿主不挑**：`createHttpHandler` 返回的就是 `(req, res) => void` —— 实测同一个 handler 能挂进 `node:http` / NestJS / Egg，Bun / Deno 下**同一份代码零改动**（结论表 + 最小代码 + Egg 的三个坑见 `docs/frameworks.md`）。
 
 #### 5. 安装面积：`npm i` 只放**一个**包，运行时**零**第三方依赖
 
@@ -134,7 +135,7 @@ MCP stdio 连接器是**内置**的 —— 因为它只用 Node 标准库（spaw
 #### 6. 我劝退你的部分
 
 - 要**可视化编排 / 低代码**：它是库，编排写在代码里，没有编辑器，也没有这个计划；
-- 要**Python**：TypeScript only，Deno / Bun / edge **未验证**（不在 `engines` 承诺内，也不在 CI 上）；
+- 要**Python**：TypeScript only；edge 运行时**未验证**（Bun / Deno 已实测可跑，但不在 `engines` 承诺内、也不在 CI 上，见 `docs/frameworks.md`）；
 - 要**托管平台 / 开箱即用的向量检索 / 评估平台**：它交付你自己能上线的服务，不是替你跑的平台；
 - 要**前端流式 UI 绑定**（`useChat` 那类）：没有客户端 SDK，服务端是它唯一的形态；
 - 要 **1.0 级别的稳定性**：现在是 `0.x`，**minor 可以包含破坏性变更** —— 规矩是「必须留痕」（CHANGELOG 带迁移小节），不是「不会发生」。

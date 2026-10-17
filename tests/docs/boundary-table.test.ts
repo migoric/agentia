@@ -284,7 +284,7 @@ const REGISTRY: ReadonlyArray<Entry> = [
   },
   { key: '鉴权只是缝', choice: '策略是宿主 / 反代的事：框架只承诺「拦在入口、读 body 之前」' },
   {
-    key: '运行时是 Node',
+    key: '运行时：Node 承诺，Bun / Deno 实测',
     pin: { file: 'scripts/check-import-floor.mjs', marker: '需要 Node ≥ 22' },
   },
   {
