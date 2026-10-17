@@ -127,6 +127,20 @@ createServer(createHttpHandler(app, { runner })).listen(8080);  // POST /run · 
 - **上线清单**：`docs/deployment.md` 写的是「哪些事框架**不替你**做」（比如 `/metrics` 不鉴权，生产要由反代限制可达性）。
 - **宿主不挑**：`createHttpHandler` 返回的就是 `(req, res) => void` —— 实测同一个 handler 能挂进 `node:http` / NestJS / Egg，Bun / Deno 下**同一份代码零改动**（结论表 + 最小代码 + Egg 的三个坑见 `docs/frameworks.md`）。
 
+**主打的一条：增量、不侵入。** 加一个 agent 端点，业务代码一行不改 —— `examples/agent-endpoint/` 里那个 49 行的订单文件，**全 git 史只有一个 commit**（就是创建示例那一个），111 行的 `main.ts` 承载全部胶水。这不是 demo 技巧，是结构使然：handler 是纯 `(req, res) => void`（不接管你的服务），能力装饰在**你自己的类**上（包装已有函数而非重写），鉴权是缝不是策略（复用你已有的函数），store 可插拔，`drain()` 是函数不是信号订阅。别人交付「造 agent 的零件」，这里交付「一个能挂进现有服务的端点」。
+
+边界说在前：`node:http` 基线上是「一个文件」；成熟框架宿主加几行挂载 + 两条 ignore 配置（Egg 的 CSRF / bodyParser，实测坑）；cluster 下 task store 必须共享。细节见 `docs/frameworks.md`。
+
+**支持的宿主**（2026-10-17 实测；版本与最小代码以 `docs/frameworks.md` 的表为准，稿里不写版本号 —— 会腐烂）：
+
+| 类 | 支持面 |
+|---|---|
+| 运行时 | Node ≥ 18（`engines` 承诺区间）· Bun · Deno（后两者**实测**，不在承诺内） |
+| Web 框架 | `node:http` · NestJS · Egg —— 同一个 `(req, res)` handler 直接挂 |
+| 模型 | Anthropic（默认）· 任何 OpenAI 兼容端点（DeepSeek / Ollama / 网关） |
+| MCP | stdio · StreamableHTTP（连接器内置，只用标准库） |
+| 任务存储 | 内存 · JSONL · SQLite · Redis |
+
 #### 5. 安装面积：`npm i` 只放**一个**包，运行时**零**第三方依赖
 
 不装任何厂商 SDK（这条由 `tests/architecture/no-runtime-deps.test.ts` 守着，不是口头承诺）。
@@ -173,6 +187,7 @@ Agentia：一个零运行时依赖的 TypeScript Agent 框架，`npm i` 只往 `
 - 4 个装饰器就是全部 API：`@Tool` / `@Skill` / `@SubAgent` / `@Prompt`（划分的是「谁控制流程」，不是「能做什么」）
 - 一次 run == 一条 trace（`traceId === runId`），每步记 token 和成本，成本可硬管控
 - 交付的是能上线的服务：HTTP 宿主、异步任务 + 落盘续跑、中间件鉴权、结构化结果
+- **增量不侵入**：给现存服务加 agent 端点只动一个文件 —— 示例里 49 行业务文件全 git 史一个 commit；框架不接管你的服务
 - 劝退条件写在官网 `/tradeoffs`：要低代码 / Python / 托管平台 / React hook / 1.0 稳定性的，别选
 
 最奇怪的一条经验：「测试永远绿」是 bug。每条不变量登记一条守卫，改坏代码确认它真的变红，抓到过 3 个假守卫 —— 代码对、绿也对，守的是另一件事。
@@ -212,6 +227,9 @@ It ships as a service, not a demo:
 - async tasks on file / sqlite / redis stores, with resume-after-crash
 - middleware for auth, rate limit, audit
 - typed results (`resultSchema`), no JSON-guessing
+
+Additive, not invasive: in the example, the 49-line business file next to the agent code has
+exactly **one** commit in its git history — the one that created the example.
 
 **5/**
 We keep 90+ registered invariants in `docs/guards.md`.
@@ -256,6 +274,7 @@ What's different:
 - **Zero runtime dependencies** — `npm i @migor/agentia` puts exactly one package in `node_modules`. No vendor SDKs, ever (enforced by a test, not a promise).
 - **Traces are first-class** — one run == one trace (`traceId === runId`), built in from turn 0. Per-step tokens and cost, a single export seam, and hard budget enforcement.
 - **Ships as a service** — HTTP host in one line, async tasks on file/sqlite/redis stores with resume-after-crash, middleware for auth and rate limiting, typed results via `resultSchema`.
+- **Additive, not invasive** — adding an agent endpoint to an existing service touches one file; the example's 49-line business file has exactly one commit in its git history (the one that created it). The handler is a plain `(req, res) => void` — the framework never takes over your service.
 - **Honest about the edges** — we publish a full page of disqualifiers: low-code editors, Python, hosted platforms, React hooks, 1.0-grade stability. `/tradeoffs`
 - **Guard-driven development** — 90+ invariants, each registered and mutation-batteried. We treat "tests that always pass" as bugs.
 
@@ -268,6 +287,7 @@ What's different:
 - 4 个装饰器 = 全部 API 面；划分依据是「谁控制流程」（你的代码还是模型）
 - 一次 run == 一条 trace，每步记 token/成本，出口只有一条缝 `TraceSink`
 - 交付可直接上线的服务：HTTP 宿主、异步任务落盘续跑、中间件、结构化结果
+- **增量不侵入**：给现存服务加 agent 端点只动一个文件 —— 示例里 49 行业务文件全 git 史一个 commit；handler 是纯 `(req, res) => void`，框架不接管你的服务
 - 劝退条件单独写了一页：低代码 / Python / 托管平台 / React hook / 1.0 稳定性，别选
 - 90+ 条守卫登记在 `docs/guards.md`，每条都要过变异验证
 
@@ -290,6 +310,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Declare cap
 - **Zero runtime dependencies** — `npm i` puts exactly one package in `node_modules`; no vendor SDKs (guarded by a test, not a promise)
 - **Traces are first-class** — one run == one trace (`traceId === runId`) from turn 0; per-step tokens/cost, single `TraceSink` export seam, hard budget enforcement
 - **Ships as a service** — HTTP host, async tasks on file/sqlite/redis stores with resume-after-crash, middleware, typed results
+- **Additive, not invasive** — drops into an existing service as a side road, not a new foundation: the handler is a plain `(req, res) => void`, capabilities decorate your own classes, and the example's business file has exactly one commit in its git history
 - **Honest disqualifiers** — publishes a page of "when not to choose this" (low-code, Python, hosted platforms, client SDKs, 1.0 stability)
 - **Guard-driven development** — 90+ invariants registered and mutation-batteried; "tests that always pass" are treated as bugs
 
@@ -314,6 +335,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Declare cap
 [0:14] Type a prompt. Run.
 [0:20] Watch every tool call and every trace event, in real time.
 [0:24] Four decorators — that's the entire API surface.
+[0:26] Adding it to an existing service touches one file.
 [0:27] Per-step tokens and cost, built in from turn zero.
 [0:29] Zero deps. Try it: `npx @migor/cli create my-app`
 
@@ -326,6 +348,7 @@ A zero-runtime-dependency declarative agent framework in TypeScript. Declare cap
 [0:14] 输入一句话，运行。
 [0:20] 实时看到每一次工具调用、每一条 trace 事件。
 [0:24] 四个装饰器，就是全部 API。
+[0:26] 加进现存服务，只动一个文件。
 [0:27] 每一步的 token 和成本，从第一轮就开始记。
 [0:29] 零依赖。现在就试：`npx @migor/cli create my-app`
 
@@ -340,7 +363,9 @@ OpenAI 兼容的（DeepSeek、本地 Ollama 等）走 `createOpenAIClient({ base
 
 **Q：跟 LangGraph / Mastra / Vercel AI SDK 比呢？**
 A：别比优劣，比形态。要可视化编排选 LangGraph 的图；要「框架 + 托管平台」选 Mastra；
-要前端 `useChat` 绑定选 Vercel AI SDK。Agentia 只在两层里：**运行时 + 可观测**，交付你自己上线的服务。
+要前端 `useChat` 绑定选 Vercel AI SDK。Agentia 的形态差别就一条：**增量、不侵入** ——
+agent 是旁路不是基底，给现存服务加端点只动一个文件（示例里 49 行业务文件全 git 史一个
+commit），框架不接管你的服务。Agentia 只在两层里：**运行时 + 可观测**，交付你自己上线的服务。
 完整对照在官网 `/tradeoffs`。
 
 **Q：0.x 敢用吗？**

@@ -19,6 +19,12 @@
 - **同步**：README 中英两版的「运行时」bullet、稳定性边界表「运行环境」行、集成节补宿主表；
   `usage-guide.md` §7「运行时是 Node」行改为「Node 承诺，Bun / Deno 实测」
   （`boundary-table.test.ts` 登记表 key 同步改，双向比对绿）。
+- **宣传面**：`docs/promotion.md` 劝退节「Deno / Bun / edge 未验证」改如实表述；中文主稿补
+  **「增量、不侵入」主打条**（五条同向的设计决定 + git 证据：示例 49 行业务文件全 git 史
+  只有一个 commit）与**「支持的宿主」列表**（刻意不写版本号 —— 防腐烂，指回
+  `docs/frameworks.md`）；短版 / X 线程 / Product Hunt 中英 / awesome / 30 秒视频旁白 /
+  评论区竞品应答同步。另有两篇对外宣传文章（不在本仓库）结尾同步精确化：punchline 之外补
+  「结构性原因」与「边界」——「一个文件」是 `node:http` 基线的下限，不是普适上限。
 - **如实标注**：Bun / Deno 是**实测**不是**承诺** —— 不在 `engines` 内、不在 CI 上；
   Express / Fastify / Koa 作为独立宿主未逐一实测；Node 18 / 20 未跑（「`require(ESM)` 在 22.12
   前不可用」是按发布时间线的推断，按 `await import()` 写可避开）；edge 仍未验证。
