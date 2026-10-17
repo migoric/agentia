@@ -1,0 +1,21 @@
+{
+  "name": "agentia-agent-endpoint-example",
+  "private": true,
+  "type": "module",
+  "description": "在**已有**的 REST 服务上增量加一个 /run + /tasks 端点（复用同一份鉴权与业务能力，零新增依赖）",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/main.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}
