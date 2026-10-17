@@ -714,23 +714,28 @@ describe('中止在飞请求（零 key、零外网：本地假端点）', () => 
       const client = createAnthropicClient({
         apiKey: 'sk-test',
         baseURL: `http://127.0.0.1:${port}`,
-        timeout: 30,
+        // 300ms 而不是 30ms（plan 2026-10-17 §2.2）：并发跑时 30ms 短于**连接建立本身**
+        // ⇒ 超时发生在请求出门口之前、hits 停在 0，而本文要验的是「请求到了、然后超时」。
+        timeout: 300,
       });
       const t0 = Date.now();
-      const err = await client.messages
+      const pending = client.messages
         .stream(BASE_PARAMS)
         .finalMessage()
         .then(
           () => null,
           (e: unknown) => e,
         );
+      // 「30ms 内必然到达」换成「到达是等出来的」—— 与下方「abort 后请求必须断开」那条同款。
+      await waitFor(() => hits >= 1, '假端点应收到在飞请求', 5_000);
+      const err = await pending;
       const dt = Date.now() - t0;
       assert.ok(err instanceof Error, `应抛错，实际：${String(err)}`);
       assert.equal(err.name, 'TimeoutError', '超时必须以 TimeoutError 语义收场（不是 AbortError）');
-      // 下界不贴边（20 < 30）：证明真等到了计时器到点，而不是别的理由立刻失败；
+      // 下界不贴边（200 < 300）：证明真等到了计时器到点，而不是别的理由立刻失败；
       // 上界证明它没有挂死。abort 后走「signal.aborted ⇒ 原样向上」，不得再重试。
-      assert.ok(dt >= 20, `应真等到超时（30ms），${dt}ms 就收场 = 计时器没走`);
-      assert.ok(dt < 3_000, `到点后必须收场，实际等了 ${dt}ms`);
+      assert.ok(dt >= 200, `应真等到超时（300ms），${dt}ms 就收场 = 计时器没走`);
+      assert.ok(dt < 5_000, `到点后必须收场，实际等了 ${dt}ms`);
       assert.equal(hits, 1, '超时中止不得再触发重试');
       const span = classifyError(err);
       assert.equal(span.type, 'timeout', 'TimeoutError 由引擎归 timeout 一类账');

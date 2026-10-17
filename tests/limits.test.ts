@@ -40,7 +40,7 @@ import { TaskEventStreams } from '../src/transport/task-events.js';
 import { createHttpHandler } from '../src/transport/http.js';
 import { sseWriter } from '../src/transport/sse.js';
 import type { ServerResponse } from 'node:http';
-import { endTurnMsg, mockClient, toolUseMsg } from './helpers.js';
+import { endTurnMsg, mockClient, toolUseMsg, waitFor } from './helpers.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -410,7 +410,21 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
 
     // 证据（不是「我知道」）：用一个只记派发次数的 runner 真跑一段。
     // 任务停在 running ⇒ 缺省 1 会在首次派发后把闸门占满，而 Infinity = 关闸门、每 tick 都派发。
-    const dispatch = async (maxInFlight?: number): Promise<number> => {
+    /**
+     * 真跑一段并等「派发次数」达到预期 —— 等的是**事件**，不是墙钟。
+     *
+     * ⚠️ 原写法是 `await sleep(40)` 后断言次数（plan 2026-10-17 §2.1）：5ms 的 tick 间隔下
+     * 40ms 只有 8 个 tick 的窗口，满载 runner 上事件循环一次饿住，就能把「Infinity 每 tick
+     * 都派发」判成只派发 1 次（实测：完整套件连跑 7 次里 1 次红在这条）。
+     *
+     * `holdMs` 只给**否定断言**用（「不得再派发」没有事件可等，只能等「足够久」）——
+     * 那种窗口要按 tick 间隔的**倍数**给（200ms = 40 个 tick），不是拍一个数。
+     */
+    const dispatch = async (
+      maxInFlight: number | undefined,
+      atLeast: number,
+      holdMs = 0,
+    ): Promise<number> => {
       const calls: number[] = [];
       const stub = {
         submit: () => ({ taskId: `t${calls.push(calls.length)}`, status: 'running' as const }),
@@ -418,14 +432,15 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
       };
       const s = new Scheduler(stub as never);
       const h = s.every(5, 'x', maxInFlight === undefined ? {} : { maxInFlight });
-      await sleep(40);
+      await waitFor(() => calls.length >= atLeast, `调度器应至少派发 ${atLeast} 次`, 5_000);
+      if (holdMs > 0) await sleep(holdMs);
       h.cancel();
       s.stop();
       return calls.length;
     };
-    assert.equal(await dispatch(), 1, '缺省 1：首个任务占满闸门后不再派发');
+    assert.equal(await dispatch(undefined, 1, 200), 1, '缺省 1：首个任务占满闸门后不再派发');
     assert.ok(
-      (await dispatch(Number.POSITIVE_INFINITY)) > 1,
+      (await dispatch(Number.POSITIVE_INFINITY, 2)) > 1,
       'Infinity = 关闸门（合法）：每个 tick 都派发 —— 阳性对照，防「一律抛错」蒙过这条',
     );
     return 'invalid';

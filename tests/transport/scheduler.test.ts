@@ -159,7 +159,11 @@ describe('Scheduler', () => {
     const scheduler = new Scheduler(runner);
     try {
       scheduler.every(10, 'tick');
-      await sleep(120); // 十来个 tick
+      // 先等「首次派发真发生」，再给一个「若会多派发就该发生」的窗口 —— 等事件而不是等墙钟
+      // （plan 2026-10-17 §3 #6）：原写法 `await sleep(120)` 在满载 runner 上可能一次 tick
+      // 都没推进，于是下面那条「恰好 1 次」的断言会红在 `calls === 0`。
+      await waitFor(() => calls === 1, '调度器应派发首个 tick');
+      await sleep(200); // 否定断言的窗口：按 tick 间隔的倍数给（10ms × 20），不是拍一个数
       assert.equal(calls, 1, '上一片还在跑：后续 tick 全部跳过');
       assert.equal(listOf(runner).length, 1);
 

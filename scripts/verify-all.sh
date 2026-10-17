@@ -14,6 +14,9 @@ cd "$(dirname "$0")/.."
 #
 #   bash scripts/verify-all.sh            # 缺省 = 全链（与 CI **逐字同一条链**）
 #   bash scripts/verify-all.sh rapid      # 只跑静态三步：类型 / lint / 两处类型检查
+#                                         # ⚠️ 后两步的被测文件从 `dist/index.js` 导入
+#                                         #    ⇒ **需要先 build 过一次**（缺产物时本脚本响亮失败，
+#                                         #    不会让 30 条 TS2307 级联飞出去 —— 见下方前置检查）
 #
 # 为什么要分片：**不给人一个官方子集，他就会自己手敲其中两条命令** —— 而那些手敲的命令
 # 与链上那条迟早分叉（本仓踩过：lint 只活在 CI 的独立 job 里，于是「本地全绿、CI 挂 Biome」
@@ -23,7 +26,12 @@ cd "$(dirname "$0")/.."
 # ⚠️ 三条边界，改本脚本前先读：
 #   ① **CI 永远跑缺省（全链）**。分片只服务本地（`.githooks/pre-push`）与「改一处想快点验」；
 #   ② 分片**不改** CI job 名里那个数字 —— 那个数字是步骤总数，不是被选中的步数；
-#   ③ 分片**不是门禁**：跑 `rapid` 全绿**不等于**可以推 PR，它只覆盖静态检查那三步。
+#   ③ 分片**不是门禁**：跑 `rapid` 全绿**不等于**可以推 PR，它只覆盖静态检查那三步；
+#   ④ **`rapid` 有前置**：它选的 `types` / `tests-types` 两步，被测文件（`tests/types/*.ts`、
+#      `scripts/e2e-cli.ts`）从 `../../dist/index.js` 导入 ⇒ 缺产物时它们报的是**一整片
+#      TS2307 级联 + `Unused '@ts-expect-error'`**，没有一条是真缺陷（2026-10-17 实测：
+#      干净克隆跑 rapid ⇒ 1/3；`npm run build` 之后 ⇒ 3/3）。所以本脚本在缺产物时**响亮失败**
+#      并给出下一步（见下方前置检查）—— 30 条假错误会让人以为自己改坏了东西。
 shard="${1:-all}"
 case "$shard" in
   all | rapid) ;;
@@ -115,6 +123,15 @@ else
     echo "✖ 分片 '$shard' 一个步骤都没选到 —— 它会跑完什么都不做然后报绿，故此处判失败"
     exit 2
   fi
+fi
+
+# ⚠️ `rapid` 的前置条件（2026-10-17，见顶部边界 ④）：缺 dist 时在这里停下，而不是让两步
+# 类型检查各吐一片 TS2307 级联 —— 那 30 条里没有一条是真缺陷（干净克隆实测 1/3；build 后 3/3）。
+# 分片只服务本地；CI 走缺省全链（build 先于这两步），不存在这个前置。
+if [ "$shard" = rapid ] && [ ! -f dist/index.js ]; then
+  echo "✖ rapid 分片需要构建产物 dist/index.js —— 它选的 types / tests-types 两步从 dist 导入。"
+  echo "  先跑：npm run build          # 或直接跑全链：bash scripts/verify-all.sh"
+  exit 2
 fi
 
 fail=0
