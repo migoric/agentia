@@ -111,6 +111,17 @@ const app = await createApp({
 });
 ```
 
+### 路线 C：已有服务
+
+不新建项目，也不重写现有服务。把已有函数包成 `@Tool`，在 `createServer` 里加**一条分支** ——
+业务路由优先（行为不变），其余交给 `createHttpHandler`；鉴权复用同一个函数，`drain()` 接进已有的 SIGTERM。
+
+六步、约 30 行胶水。可跑示例：[`examples/agent-endpoint/`](examples/agent-endpoint/) ——
+一个已在跑的订单服务（`src/orders.ts` 一行未改），旁边加了 `/run` + `/tasks`。
+
+> 三个刻意的决定：**一条鉴权路径**（框架给缝，不给策略）；**RAG 是你的工具**（用 `@Tool` 包自己的
+> 检索，框架不内置）；**不设预算旋钮 = 没有保险丝**。
+
 ## 四类能力
 
 主 agent 按 `description` 从同一张「能力菜单」自选；装饰器只决定**谁控制流程**：
