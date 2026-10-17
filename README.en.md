@@ -18,8 +18,11 @@ observable call tree (trace, cost, metrics).
 
 ## Requirements
 
-Node.js **≥ 18** (the only `engines` requirement); CI covers **18 / 20 / 24**. Deno / Bun / edge
-runtimes are **not** validated. `SqliteTaskStore` needs Node ≥ 22.5 (`node:sqlite`) and fails with a
+Node.js **≥ 18** (the only `engines` requirement); CI covers **18 / 20 / 24**. Designed and tested on
+Node; **Bun 1.4 and Deno 2.9 are verified runnable** (four-step check — import → assemble → HTTP →
+side effects — plus minimal mounting code per host, in
+[`docs/frameworks.md`](./docs/frameworks.md)); **edge runtimes remain unverified**.
+`SqliteTaskStore` needs Node ≥ 22.5 (`node:sqlite`) and fails with a
 readable error at construction — importing the package still works.
 
 ## Install
@@ -141,6 +144,19 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 - **Models** — `createAnthropicClient()` (default) and `createOpenAIClient()` for any OpenAI-compatible
   endpoint (DeepSeek, **Ollama**, gateways). You never need to touch a vendor SDK: pass
   `createAnthropicClient({ baseURL })` / `createOpenAIClient({ baseURL })`.
+- **Web framework hosts** — `createHttpHandler` returns a plain `(req, res) => void`, so anything that
+  can mount a raw node handler can mount it, with no adapter layer:
+
+  | Host | Minimal mounting | Required config |
+  |---|---|---|
+  | `node:http` | `createServer(createHttpHandler(app, { runner }))` | none |
+  | NestJS 12 (CJS / ESM) | `nestApp.use('/agent', handler)` — 3 lines | CJS mode needs Node ≥ 22.12 (or `await import()`) |
+  | Egg 4 | middleware + `ctx.respond = false` | two `ignore` entries (CSRF / bodyParser) — the string form crashes the worker at startup |
+  | Bun / Deno | identical to `node:http`, zero changes | Deno's `--allow-net/read/write/run` |
+
+  Under cluster / multi-instance the task store **must** be shared — one in-memory store per worker
+  makes polling the same taskId alternate `404 200`. Conclusion table, minimal code and Egg's three
+  pitfalls: [`docs/frameworks.md`](./docs/frameworks.md).
 - **MCP** — `createStdioMcpConnector()` / `createStreamableHttpMcpConnector()` ship with the framework
   (stdlib only: `node:child_process` + global `fetch`); `mcpTools()` bridges the server's tools into the
   menu. The framework never imports the MCP SDK, and the `McpClientLike` seam stays open
@@ -178,6 +194,7 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 |---|---|
 | Usage guide (authoritative, zh) | [`docs/usage-guide.md`](./docs/usage-guide.md) |
 | Production observability recipes | [`docs/observability.md`](./docs/observability.md) |
+| Framework compatibility (measured: NestJS / Egg / Bun / Deno) | [`docs/frameworks.md`](./docs/frameworks.md) |
 | Examples (complete app / minimal deploy / observability) | [`examples/`](./examples/) |
 | Design spec & roadmap | [`docs/spec.md`](./docs/spec.md) · [`docs/roadmap.md`](./docs/roadmap.md) |
 | Website · Playground | [agentia-web.pages.dev/en](https://agentia-web.pages.dev/en) · [playground](https://agentia-web.pages.dev/en/playground) |
@@ -200,8 +217,9 @@ grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # every "you must act" s
 the source of truth) and the `@migor/cli` command surface, plus the Node range in `engines.node` (CI
 runs the full chain on every version in it). **Not covered:** deep imports (`dist/**`) — sealed by the
 `exports` field in `package.json`, guarded by `package-exports.test.ts` — internal module paths,
-`packages/*`, `examples/*`, Deno / Bun / edge, and anything a release doesn't spell out in its
-migration note. Runtime third-party dependencies are **zero**, enforced by
+`packages/*`, `examples/*`, edge runtimes, and anything a release doesn't spell out in its
+migration note. Bun / Deno are **verified runnable but outside the `engines` promise**
+([`docs/frameworks.md`](./docs/frameworks.md)). Runtime third-party dependencies are **zero**, enforced by
 `no-runtime-deps.test.ts`, not by promise.
 
 **What 1.0 waits for** (all three are checkable): every open item in `docs/spec.md` §11 is either

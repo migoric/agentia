@@ -1828,7 +1828,7 @@ const callable = {
 | 观测失败被吞 | sink 抛错不影响 run（观测是辅助动作）；但吞之前落一条 `console.warn`（含「trace sink」字样）—— sink 天天挂不再零信号。同理记忆水合/回写失败也不击穿 run |
 | 框架不自动读 .env | 除 `AGENTIA_MODEL`（缺省模型覆盖）与 `OPENAI_API_KEY`（OpenAI 适配器）外，框架自己不去翻环境变量，也不读 `.env`；要读就在启动代码里调 `loadEnvFile()`（脚手架已内置那行），**真实环境变量优先**于文件 |
 | 鉴权只是缝 | 框架**不实现** token / JWT / 签名策略，也不碰凭据 env —— `authenticate` 只承诺「拦在入口、读 body 之前」；策略是宿主或反代的事 |
-| 运行时是 Node | 按 Node ≥ 18 设计与测试（`engines` 写明；CI 覆盖 18 / 20 / 24 —— `import-floor` 矩阵跑下限、其余 job 跟当前 LTS）；**未对 Deno / edge 做验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |
+| 运行时：Node 承诺，Bun / Deno 实测 | 按 Node ≥ 18 设计与测试（`engines` 写明；CI 覆盖 18 / 20 / 24 —— `import-floor` 矩阵跑下限、其余 job 跟当前 LTS）；Bun 1.4 / Deno 2.9 已实测可跑（四步判定 + 各宿主最小代码见 `docs/frameworks.md`），但**不在 `engines` 承诺内**；**edge 未验证**。`SqliteTaskStore` 需 Node ≥ 22.5（`node:sqlite`），未提供时构造期抛可读报错 |
 | 停机不由框架触发 | 框架给 `drain()` 但**不订阅** `SIGTERM`/`SIGINT`（不做进程级决策）；信号处理是宿主的 |
 | 停机可能切断 SSE | `drain()` 收口时会强制关闭仍开着的 SSE 流，`/run` 的流被收口时其 run 以 `stopReason='aborted'` 收尾（客户端应把断流当作可重试）。**没有 `timeoutMs` 时也收口**（否则等待没有终点，见上）；只关旁观者长连（`/tasks/:id/stream`）**不损失工作**，那种收口不影响 `drain()` 的返回值 |
 | 多进程共库：续跑认领靠**租约**，不靠时间（2026-09-28） | `resumePending({ staleAfterMs })` 的 `staleAfterMs` **不是**租约而是**兜底启发式**。`> 0` 时按两档判他进程的记录：① `ownerId` 里的主机名是本机 ⇒ **问那个 pid 还在不在**（`process.kill(pid, 0)`）——**在的绝不抢**（不管记录多老）、**不在的立刻可抢**（崩溃孤儿不等保鲜期）；② **判不了**（异主机 / 升级前写下的旧格式 `ownerId` / 自定义串）⇒ 才用 `staleAfterMs`（「记录看起来还新」）。缺省 `0` = 不问他进程，与升级前逐字一致 |
