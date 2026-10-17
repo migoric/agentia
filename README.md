@@ -4,6 +4,10 @@
 
 [![CI](https://github.com/migoric/agentia/actions/workflows/ci.yml/badge.svg)](https://github.com/migoric/agentia/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/@migor/agentia)](https://www.npmjs.com/package/@migor/agentia) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**A declarative framework for building production agent services in TypeScript.** Declare four kinds of
+capability with decorators + DI; a main agent orchestrates them; every run yields structured output and an
+observable call tree (trace, cost, metrics).
+
 面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。
 
 **1 个包 · ≈2 MB · 0 运行时依赖 · 90+ 条守卫** —— 这一组数是选型第一个问题（安装面有多大）的答案：
@@ -54,7 +58,7 @@ npm run dev                          # = agentia dev：本地 inspector 面板�
 
 ## 快速开始
 
-三条路线，按需选一即可（也可混用）。
+两条路线，按需选一即可（也可混用）。
 
 ### 路线 A：CLI 脚手架
 
@@ -124,19 +128,6 @@ const app = await createApp({
   system,
 });
 ```
-
-### 路线 C：已有服务？加一个端点
-
-不想从零建工程、也不想重写现有服务 —— 把已有函数包成 `@Tool`，在现有 `createServer` 里加
-**一条分支**：业务路由先判先走（老代码一行不动），其余交给 `createHttpHandler`（`/run`、
-`/tasks`、`/healthz`）。鉴权**复用同一份**函数，`drain()` 接进已有的 SIGTERM 流程。
-
-改造清单 6 步、约 30 行胶水，完整可跑示例：
-[`examples/agent-endpoint/`](./examples/agent-endpoint/) —— 一个已在跑的订单服务加上 agent 端点，
-`src/orders.ts` 一行未改。
-
-> 三个刻意的取舍：**鉴权只有一份**（框架只给缝，策略是你的）；**RAG 不是框架的事**
-> （`@Tool` 包你自己的 `pg.query` / 向量库即可）；**预算没设 = 没有保险丝**（四个旋钮示例里都写了）。
 
 ## 四类能力
 

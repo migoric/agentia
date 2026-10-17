@@ -1,7 +1,7 @@
 {
   "name": "@migor/cli",
   "version": "0.10.3",
-  "description": "Agentia 框架命令行工具：create 脚手架 + g 能力生成 + dev 本地可观测面板（trace inspector）",
+  "description": "CLI for the Agentia framework: scaffold a project, generate a capability, and open a local trace inspector for runs.",
   "type": "module",
   "bin": {
     "agentia": "./dist/cli.js"
@@ -22,8 +22,16 @@
   "keywords": [
     "agentia",
     "agent",
+    "ai-agent",
+    "ai-agent-framework",
     "cli",
-    "scaffold"
+    "cli-tool",
+    "scaffold",
+    "generator",
+    "trace-viewer",
+    "observability",
+    "devtools",
+    "typescript"
   ],
   "engines": {
     "node": ">=18"

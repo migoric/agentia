@@ -1,7 +1,7 @@
 {
   "name": "@migor/agentia",
   "version": "0.10.3",
-  "description": "面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。",
+  "description": "Declarative agent service framework for TypeScript: decorators + DI declare four capability kinds, durable runs, and per-run traces, cost and metrics. Zero runtime dependencies.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,12 +24,25 @@
   "license": "MIT",
   "keywords": [
     "agent",
+    "ai-agent",
+    "agent-framework",
+    "agent-orchestration",
     "llm",
+    "typescript",
+    "nodejs",
     "anthropic",
     "claude",
+    "openai",
+    "mcp",
+    "model-context-protocol",
     "framework",
-    "di",
-    "decorators"
+    "dependency-injection",
+    "decorators",
+    "observability",
+    "tracing",
+    "opentelemetry",
+    "self-hosted",
+    "service-framework"
   ],
   "engines": {
     "node": ">=18"
