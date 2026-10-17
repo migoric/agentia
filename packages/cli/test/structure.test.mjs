@@ -25,10 +25,16 @@ const DIST_URL = new URL('../dist/', import.meta.url);
 const BROWSER_MODULES = ['panel-logic', 'markdown'];
 
 describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码只 import type）', () => {
-  // ---------- W1：规模棘轮（只许降不许升）----------
-  // 基线 = 2026-09-23 治理启动时的实测（`wc -l packages/cli/src/*`）。
-  // 纪律：存量条目只能**往下**调（拆分真做完了才调）；新增文件**必须**在这里登记
-  // （不登记 = 「每个文件都在表里」那条断言会红）。棘轮在拆分期间持续偏红是有意的摩擦。
+  // ---------- W1：规模棘轮（只许降不许升；2026-10-17 起每文件留 5% 缓冲）----------
+  // **基线口径（2026-10-17 一次性调整，论证见 docs/plans/2026-10-17-cli-ratchet-headroom.md）**：
+  //   基线 = `ceil(实测 × 1.05)`；缓冲合计 489 行（TOTAL 10049 vs 实测 9560）。
+  //   为什么调整：此前基线 = 实测、余量 0 ⇒ 任何增行当场红，每次改代码都要顺手改基线。
+  //   而「真腾余量」已被实证走不通：190 个导出里零死代码、201 个顶层函数里只有 1 组逐字
+  //   重复（抽出来净减 5 行）、249 行 CSS 零死样式 ⇒ 可榨取空间本身约为零。
+  // **纪律**：① 加功能先吃缓冲，不必立刻改基线；② 某文件缓冲吃满后只有两条路 —— 降回去
+  //   （拆/删），或显式提基线并在 PR 里写理由；③ 缓冲**不许**再整体上调（下次调整须重新论证）。
+  // 存量条目仍只能**往下**调（拆分真做完了才调）；新增文件**必须**在这里登记
+  // （不登记 = 「每个文件都在表里」那条断言会红）。
   const LINE_BUDGET = {
     // 2026-10-05（dev 调试工作台档 B —— **新功能**）：1241 → 1452（+211）= 双栏 DOM +
     // 差异摘要区 + CSS + 渲染函数 + ⌘/Ctrl 点击交互。设计稿
@@ -51,7 +57,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-05（**A/B 闭环补最后一跳**）：1477 → 1493（+16）= 收尾帧 `onmessage` 里
     //   `autoPairTarget` 判定 + 自动进双栏 + 列表高亮跟着左栏走 + 一条说明用处的 notice。
     //   判定本身在 panel-logic（可单测），本文件只留接线。
-    'inspector-page.html': 1493,
+    'inspector-page.html': 1568,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -59,12 +65,12 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   执行器读写机器状态，留在 dev.ts 接线层）
     // 2026-09-27 复核尾巴：776 → 779（+3，纯注释 —— pickFolder 的 pick-folder
     //   「纯标记效果」谜面注，见下方总量补账）
-    'dev.ts': 779,
+    'dev.ts': 818,
     // 2026-09-23（inspector 路由表拆分）：818 → 413。切走的 431 行去了
     // inspector-routes.ts；本文件只剩「服务」——监听 / 三道鉴权闸 / 应答原语 /
     // 公开类型（`DevHooks` 等）/ `HttpError`。那两个导出（`HttpError` / `startInspector`）
     // 是 `dev.ts` 与 `inspector.test.mjs` 的 dist 出口，不能动。
-    'inspector.ts': 413,
+    'inspector.ts': 434,
     // 2026-09-23 新增（同上，**纯搬移**）：路由表（14 条路由各抽成命名函数）
     // + `RouteCtx` / `InspectorState` + `handleRoutes` 分发器 + 只被路由用到的件。
     // 2026-09-23 追加（面板卸载收口）：545 → 578（+33）= **15 条**路由 ——
@@ -75,7 +81,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // `src/engine/trace-diff.ts` 的**逐字同形移植副本** ⇒ 根治必须框架侧一起改
     // （`?? {}` / `?? []`），那属`src/` 语义变更、要走 spec §10。本次取「消费侧归一化」
     // 的零核心改动解 —— 如实记债，不假装它是必要开销。
-    'inspector-routes.ts': 688,
+    'inspector-routes.ts': 723,
     // 2026-10-05（档 B，**新功能**）：578 → 671（+93= 96 −3，biome 把 `comparability`
     // 的签名收成单行）= `toggleCompare` / `COMPARE_MAX` / `capsKey` / `comparability`
     // + 各自的口径注。**这一档的实质全在这里**（纯判定、可单测）。
@@ -89,19 +95,19 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   在 **picking 态**时自动补第二条，把「改 prompt → 重跑 → 对照」从三步收成两步）
     //   + 它的判据注（为什么空选择/已选两条/同一 id 都**不**配对：前两者是替用户决定、
     //   挤掉刚选的那条）。**+28 里 22 行是注** —— 判据只有 3 行。
-    'panel-logic.ts': 763,
+    'panel-logic.ts': 802,
     // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
-    'dev-runner.ts': 599,
-    'diff.ts': 443,
+    'dev-runner.ts': 629,
+    'diff.ts': 466,
     // 2026-10-13（D2 守卫射程 —— **缺陷修复前置**：CLI 两份 tsconfig 开
     //   exactOptionalPropertyTypes，见 spec §10 2026-10-13 ref-reject-static-methods）：389 → 390（+1 =
     //   harvestEvalCase 调用点的条件展开（公共入参纪律：签名不动）替换直传 `messages`）。
-    'harvest.ts': 390,
+    'harvest.ts': 410,
     // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
-    'dev-protocol.ts': 337,
-    'markdown.ts': 296,
+    'dev-protocol.ts': 354,
+    'markdown.ts': 311,
     // 2026-10-09（脚手架服务入口 start:server）：259 → 271（+12 = serverTs accessor +
     //   它的口径注「无条件生成 / 不许旁路 createApp」）
     // 2026-10-09 同日（脚手架默认入口翻成服务 —— **默认值翻转**，不是新功能）：271 → 280（+9）。
@@ -109,21 +115,21 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   projectPackageJson 多一条「start / start:prod 同物」的注。
     //   ⚠️ serverTs **收敛成了** mainTs（同一个函数名换了模板），不是删了一个 accessor ——
     //   所以本表条目数不变。见 docs/plans/2026-10-09-scaffold-default-service.md。
-    'templates.ts': 280,
+    'templates.ts': 294,
     // 2026-10-16（脚手架可观测缺口，**新检查**，见 spec §10 2026-10-16
     //   ref-scaffold-observability-gap）：213 → 258（+45）。两笔：① `src/app.ts` 未配
     //   `sinks` ⇒ 警告（+18，含「注释掉的不算接上」那条判据注）；② 项目内 `AGENTS.md`
     //   的版本标记比对（+27，无标记 / 不同版 / 同版三条分支 + 各自的「为什么必须说」注）。
     //   ⚠️ 两笔都是**纯体检**（不改任何文件），行为断言在 `add-doctor.test.mjs` 各 3 条
     //   （含「注释掉的 sinks 仍算未接」这一条反向），做过变异验证。
-    'doctor.ts': 258,
+    'doctor.ts': 271,
     // 2026-09-27（R8-P3b `agentia export` 命令注册）：206 → 219（+13 = import/帮助表/
     //   USAGE 表/分发分支，全是接线；新命令的本体在 export.ts）
     // 2026-10-16（CLI 版本读法**抽成单源**）：219 → 202（−17）。`readCliVersion` 搬到
     //   `version.ts`（create 写版本标记、doctor 要比对，三处各读一次就会漂）⇒ 本文件
     //   −18 行（函数体 + 它的「为什么不存常量」注）+ 1 行 import。**净减，不抬价。**
-    'cli.ts': 202,
-    'native-pick.ts': 198,
+    'cli.ts': 213,
+    'native-pick.ts': 208,
     // 2026-10-12（**G6 会话 / 任务维度 —— 新功能**，设计稿
     //   `docs/plans/2026-10-12-observability-g6-g7-g8.md` §2）：194 → 339（+145）。
     //   实测构成（`git diff -U0` 数出来的，不是估的）：新增 150 行、改写掉 5 行 ⇒ 净 +145；
@@ -139,7 +145,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   339 → 366（+27）。构成：文件头注 +4（为什么去重）、去重块本体 +21（注释 10 行 —
     //   「为什么取最后一行 / 为什么是 traceId 不是 taskId」删不得，见 spec §10 当日 ⑧）、
     //   ReportJson.runs 注 +1、解析处注改写 +1。决策与依据见 docs/spec.md §10 2026-10-12 ref-report-dedupe-traceid。
-    'report.ts': 366,
+    'report.ts': 385,
     // 2026-10-09（脚手架服务入口 start:server）：140 → 146（+6 = import + write 一行 +
     //   后续步骤文案两行 + serverTs 的接线注 —— `serverTs` 同批改名成 `mainTs`，见上一条）
     // 2026-10-09 同日（默认入口翻成服务）：146 → 148（+2 = 写出那两行的注释改写 +
@@ -149,19 +155,19 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-16（写 `AGENTS.md` 时插一行版本标记 —— **新行为**，同一条决策）：148 → 155（+7
     //   = 1 行 `write` 改写 + 6 行「为什么必须带标记」的注：这份是快照、CLI 没有任何命令
     //   会更新它，而 AI 正是照它写代码）。本体（标记格式与匹配正则）在 `version.ts`。
-    'create.ts': 155,
-    'dev-logic.ts': 58, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
+    'create.ts': 163,
+    'dev-logic.ts': 61, // 2026-09-23 A 阶段新增（server 侧纯判定，单源化后注释只留一份）
     // 2026-09-23 B 阶段新增（显式状态机：类型 + update 纯函数；零副作用零 node:* import）
     // 2026-09-27 复核尾巴：703 → 708（+5，纯注释 —— abort-grace-expired 的相位弱化边界注）
-    'dev-machine.ts': 708,
+    'dev-machine.ts': 744,
     // 2026-09-23 C 阶段新增（自 dev.ts 纯搬移；dev.ts 保留 re-export 守住 dist/dev.js 出口）
-    'dev-watch.ts': 224,
+    'dev-watch.ts': 236,
     // 2026-09-26：82 → 112（+30）—— `killPlanFor` + `KillPlan` 判别联合 + 「为什么必须抽」的注释，
     // 见下方总量补账。
-    'dev-child.ts': 112,
-    'registry.ts': 93,
-    'generate.ts': 82,
-    'inspector-sink.ts': 75,
+    'dev-child.ts': 118,
+    'registry.ts': 98,
+    'generate.ts': 87,
+    'inspector-sink.ts': 79,
     // 2026-09-27 R8-P3b 新增：`agentia export`（trace → 训练数据 JSONL）。
     // 框架侧生成器（src/eval/export.ts）的去类型移植副本 + CLI 薄壳（过滤/落盘），
     // 逐字对拍守护在 test/export.test.mjs（同 harvest/diff 模式）
@@ -169,16 +175,16 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   与框架侧 src/eval/export.ts 的 +31 同源：那条是**生成器本体**、这条是它的移植副本，
     //   两侧必须逐字对拍，所以不能只在一侧抽件（抽了就散了）。净增 = 两条收尾判据
     //   （正文缺席合取 / no-final-assistant）+ stdout 汇总 + 「为什么这么判」的注释。
-    'export.ts': 330,
-    'add.ts': 72,
-    'npm-bin.ts': 59,
-    'layout.ts': 51,
+    'export.ts': 347,
+    'add.ts': 76,
+    'npm-bin.ts': 62,
+    'layout.ts': 54,
     // 2026-10-16 新增（同批决策 ref-scaffold-observability-gap）：**36 行 = 版本读法单源**。
     //   三处共用（`--version` / `create` 写标记 / `doctor` 比对标记），抽出来就是为了让
     //   「当前 CLI 是哪一版」只有一种读法 —— 三处各读一次就会漂，而漂移的表现是
     //   doctor **永远说「版本一致」**（假绿）。净增里 22 行是注（为什么读文件不存常量、
     //   为什么需要版本标记），本体 14 行。
-    'version.ts': 36,
+    'version.ts': 38,
   };
   // 2026-09-23 实测总行数（`wc -l packages/cli/src/*`，wc 的计数 = 换行数）。
   // A 阶段后实测仍恰好 7410：dev.ts 1148→1133、新增 dev-logic 58，差额由同期
@@ -303,7 +309,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   // ⚠️ 本笔的性质：**不是纯搬移也不是纯注释**，是真新增体检行为；但它换掉的是一类
   //   「缝在那儿、没人接 ⇒ 无报错」的静默失效（trace 没出口 / AI 说明过期），
   //   且每条都有用例 + 变异验证（`add-doctor.test.mjs` 共 6 条）。
-  const TOTAL_BUDGET = 9560;
+  const TOTAL_BUDGET = 10049;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
