@@ -132,6 +132,23 @@
         </ol>
       </section>
 
+      <section id="versus">
+        <h2>How it splits work with neighbors</h2>
+        <p>Not “who is better” — only “which shape of job belongs where”. Every row is a question you will actually get in a selection meeting.</p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>Your situation</th><th>Better fit</th><th>Why</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>A streaming chat box inside Next.js</td><td><strong>Vercel AI SDK</strong></td><td>Its <code>useChat</code> and streaming UI are the best in class; this framework does not touch the frontend and ships no UI primitives</td></tr>
+            <tr><td>You need the flow <strong>drawn as a graph</strong>: conditional edges, loops, parallel fan-out</td><td><strong>LangGraph</strong></td><td>Explicit graphs plus checkpointing are its home turf. Orchestration here is <strong>implicit</strong> (the main agent loops on its own) — if “who calls what, when” must be decided by your code, pick that instead</td></tr>
+            <tr><td>You want <strong>visual orchestration</strong>, or hosted runs / hosted memory / hosted evals</td><td><strong>A “framework + platform” like Mastra</strong></td><td>This framework provides no service at all — the deliverable is <strong>a service you can ship yourself</strong>, not a platform that runs it for you</td></tr>
+            <tr><td>You already run a Node service and want an agent endpoint <strong>without new third-party deps</strong></td><td><strong>This framework</strong></td><td>Zero runtime dependencies, and decorators / DI match how your backend is already shaped; <code>examples/agent-endpoint</code> is the complete version of that cell (existing code untouched)</td></tr>
+          </tbody>
+        </table></div>
+        <p>⚠️ This table <strong>deliberately skips</strong> “faster / bigger ecosystem” style dimensions — on ecosystem this framework is far behind the options above. That is a fact, and it is listed under “Cost” rather than papered over here.</p>
+      </section>
+
       <section id="verify">
         <h2>How to verify it yourself</h2>
         <p>

@@ -7148,6 +7148,32 @@ W1 的断言逻辑**一字未改**（仍是 `lines > budget` 即红）。
 （`typecheck:tests`）。存储用 `InMemoryTaskStore`（重启即丢），README 里写明了换
 `SqliteTaskStore` / `RedisTaskStore` 的路径。
 
+### 2026-10-17 ⑦ ref-tradeoffs-versus：取舍页加「分工」表；README 补路线 C
+
+**决定**：**不**新开 `/vs/mastra` 页面，而是在现有 `/tradeoffs` 页加一节「与相邻方案的分工」
+（中英同步）；README 的「快速开始」补**路线 C：已有服务**。
+
+**为什么（不开新页）**：新增页面要同时动 `sitemap.xml.ts` / `llms.txt.ts` / 中英页面集合
+—— 三处都有守卫交叉核对（`website-i18n` 要求页面集合与 fragment id 集合逐页相等，
+`check-website-agent-readiness` 要求 sitemap 的 `<loc>` 集合等于 dist 里实际页面）。
+成本高，而信息量只有一张表。取舍页本来就讲「什么场景该选别人」，分工表是它的自然延伸。
+
+**为什么（README 路线 C）**：首屏此前只有「从零建」（脚手架 / 手写装配），
+目标用户（已有服务）看不到「增量改造」这条路 —— `examples/agent-endpoint` 加了却没人点进来。
+
+**内容约束**：表里**刻意不比**「性能更强 / 生态更大」—— 生态上本框架远不如那几家，
+这条事实写在同页的「代价清单」，不在分工表里找补。README 的路线 C **不放代码块**：
+`tests/docs/code-fences.test.ts` 会真编译文档里的 TS 围栏块，伪代码过不了闸。
+
+**影响面**：`README.md` / `README.en.md`、`packages/website/src/fragments/tradeoffs.html`
+与 `fragments/en/tradeoffs.html`（新增 `id="versus"` 节，中英 id 同名）。
+
+**验证**：`website-i18n` + `website-css` 19 用例全绿（id 集合相等、英文面剥代码块后零 CJK、
+三列表格版式不变量）；八步全绿。
+
+**边界**：不写「谁更强」—— 只写「什么形状的活该用哪个」；不承诺竞品的任何具体能力
+（那些会过时，而这一页没有守卫盯着竞品事实）。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：

@@ -54,7 +54,7 @@ npm run dev                          # = agentia dev：本地 inspector 面板�
 
 ## 快速开始
 
-两条路线，按需选一即可（也可混用）。
+三条路线，按需选一即可（也可混用）。
 
 ### 路线 A：CLI 脚手架
 
@@ -124,6 +124,19 @@ const app = await createApp({
   system,
 });
 ```
+
+### 路线 C：已有服务？加一个端点
+
+不想从零建工程、也不想重写现有服务 —— 把已有函数包成 `@Tool`，在现有 `createServer` 里加
+**一条分支**：业务路由先判先走（老代码一行不动），其余交给 `createHttpHandler`（`/run`、
+`/tasks`、`/healthz`）。鉴权**复用同一份**函数，`drain()` 接进已有的 SIGTERM 流程。
+
+改造清单 6 步、约 30 行胶水，完整可跑示例：
+[`examples/agent-endpoint/`](./examples/agent-endpoint/) —— 一个已在跑的订单服务加上 agent 端点，
+`src/orders.ts` 一行未改。
+
+> 三个刻意的取舍：**鉴权只有一份**（框架只给缝，策略是你的）；**RAG 不是框架的事**
+> （`@Tool` 包你自己的 `pg.query` / 向量库即可）；**预算没设 = 没有保险丝**（四个旋钮示例里都写了）。
 
 ## 四类能力
 

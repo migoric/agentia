@@ -91,6 +91,21 @@ console.log(result.trace);     // call tree + per-step tokens/cost (traceId === 
 Or point `createApp` at the directories instead of passing providers:
 `createApp({ discover: ['src/tools', 'src/skills', 'src/prompts', 'src/subagents'], system })`.
 
+### C. Existing service? Add one endpoint
+
+Don't scaffold a new project, and don't rewrite the one you have. Wrap an existing function as a
+`@Tool`, then add **one branch** in your existing `createServer`: business routes first (your code
+stays untouched), everything else goes to `createHttpHandler` (`/run`, `/tasks`, `/healthz`).
+Auth is **the same function** for both, and `drain()` hooks into the SIGTERM flow you already have.
+
+Six steps, roughly 30 lines of glue. Runnable example:
+[`examples/agent-endpoint/`](./examples/agent-endpoint/) — an order service that already ships
+`GET /api/orders/:id`, with the agent endpoint added alongside; `src/orders.ts` is unchanged.
+
+> Three deliberate calls: **one auth path** (the framework gives you the seam, not the policy);
+> **RAG is your tool** (wrap your own `pg.query` / vector client in a `@Tool` — the framework won't
+> ship one); **no budget knobs = no fuse** (the example sets all three).
+
 ## The four capability kinds
 
 The model picks from one shared "menu" by `description`; the decorator decides **who controls the flow**:
