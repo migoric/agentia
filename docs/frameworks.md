@@ -16,6 +16,11 @@
 | ③ HTTP | 发真请求：`POST /run` 同步、`GET /tasks/:id` 轮询行为正确 | 只验「端口起来了」发现不了路由/前缀问题 |
 | ④ 副作用 | 一次真 run 落下该落的：trace 落盘、task 记录、工具的文件副作用 | 导入期副作用被 tree-shaking / 惰性加载吞掉的病，只有这一步能发现 |
 
+⚠️ **这条标准的射程（2026-10-17 更正）**：四步全过是对**运行时**（Node / Bun / Deno）的要求。
+Web 框架宿主（NestJS / Egg）**实测只到第三步 HTTP** —— 那两个宿主用的是 `scriptedClient`，
+一次真 run 落下的 trace / task 记录**没有验**。判定标准**不打折**：没验到的那一格就写「未验」，
+不写 ✅ —— 下面 Web 框架轴那张表因此多一列「副作用」。
+
 ## 实测环境
 
 | 运行时 / 框架 | 版本 |
@@ -55,12 +60,14 @@ list / missing → undefined）与 Node 一致。
 
 ### Web 框架轴
 
-| 宿主 | 结论 | 最小接入 | 必须配的 |
-|---|---|---|---|
-| `node:http`（基线） | ✅ | `createServer(createHttpHandler(app, { runner }))` | 无 |
-| NestJS 12 · ESM | ✅ | `nestApp.use('/agent', handler)` 三行 | 无 |
-| NestJS 12 · CJS | ✅ | 同上 | Node ≥ 22.12，或 `await import()` |
-| Egg 4 | ✅ | 中间件 + `ctx.respond = false` | **2 条 config**（CSRF / bodyParser ignore），见「Egg 的三个坑」 |
+| 宿主 | 导入 · 装配 · HTTP | 副作用 | 最小接入 | 必须配的 |
+|---|---|---|---|---|
+| `node:http`（基线） | ✅ | ✅ | `createServer(createHttpHandler(app, { runner }))` | 无 |
+| NestJS 12 · ESM | ✅ | **未验**（`scriptedClient`，未跑真 run） | `nestApp.use('/agent', handler)` 三行 | 无 |
+| NestJS 12 · CJS | ✅ | **未验**（同上） | 同上 | Node ≥ 22.12，或 `await import()` |
+| Egg 4 | ✅ | **未验**（同上；cluster 那次真请求拿到的是 Anthropic 403，run 未成功） | 中间件 + `ctx.respond = false` | **2 条 config**（CSRF / bodyParser ignore），见「Egg 的三个坑」 |
+
+（「副作用」列的 ✅ / 未验 与上方四步判定一一对应：Web 框架轴**只验到第三步**。）
 
 **未验证（如实标注）**：Express / Fastify / Koa 作为**独立宿主**的最小片段未逐一实测
 （`examples/agent-endpoint/` 是 `node:http` + 一条分支的形态）；Node 18 / 20 未跑 ——
@@ -154,6 +161,10 @@ Egg 的 bodyParser 在中间件之前就把 `req` 读空了，handler 再读 bod
 | 共享卷多进程 | `SqliteTaskStore`（`node:sqlite`，需 Node ≥ 22.5） |
 | 单机落盘续跑 | `FileTaskStore`（**不跨进程**） |
 
+⚠️ **单宿主写者**的前提在上面四档里都成立（引自 `docs/deployment.md`）：`save` 不是原子的，
+Redis 是两次 SET、未走事务 ⇒ **多副本同时写**要在部署层解决（分片 / 单写者选举），不是换个 store
+就能绕过。选 `RedisTaskStore` 之前先读那一节。
+
 store 选型与优雅停机的完整清单见 [`docs/deployment.md`](./deployment.md)。
 
 ## `ctx.respond = false` 的代价
@@ -167,4 +178,5 @@ store 选型与优雅停机的完整清单见 [`docs/deployment.md`](./deploymen
   `node:http` 原语，edge 的兼容层是另一个问题。
 - **想走宿主自己的 DI / Controller 生命周期**：agent handler 是**旁挂**的，不参与 Nest 的
   provider 图、不继承 Egg 的中间件约定（`ctx.respond = false` 就是明证）。要的是「在现有服务里
-  加一个端点」，这个形态正好；要的是「agent 成为框架的一等公民」，那是另一种设计。
+  加一个端点」，这个形态正好；要的是「agent 走宿主自己的 DI / Controller 生命周期」，那是另一种设计
+  （⚠️ 别把这里的「一等公民」读成 trace 那句「一等公民」—— 那是说 trace 在 **run 之内**内建，与宿主 DI 无关）。

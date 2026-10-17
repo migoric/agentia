@@ -22,7 +22,7 @@
           <span class="api-chip"><b>0</b> 运行时依赖</span>
           <span class="api-chip"><b>2</b> 层（运行时 + 可观测）</span>
           <span class="api-chip"><b>0.x</b> minor 可含破坏性变更</span>
-          <span class="api-chip"><b>Node only</b> Deno / Bun / edge 未验证</span>
+          <span class="api-chip"><b>Node only</b> edge 未验证；Bun / Deno 实测（不在承诺内）</span>
         </div>
       </header>
 
@@ -59,7 +59,7 @@
           </thead>
           <tbody>
             <tr><td>要<strong>可视化编排 / 低代码</strong>：拖拽式流程图、在线改编排</td><td>本框架是<strong>库</strong>，编排写在代码里（装饰器 + DI）。没有任何可视化编辑器，也没有这个计划</td><td>LangGraph 的图与状态机、Mastra 的工作流与平台界面</td></tr>
-            <tr><td>要<strong>Python</strong></td><td>TypeScript only。Deno / Bun / edge runtime <strong>未验证</strong>（不在 <code>engines</code> 承诺内，也不在 CI 上）</td><td>LangGraph（Python 原生）、各家 Python SDK</td></tr>
+            <tr><td>要<strong>Python</strong></td><td>TypeScript only。edge runtime <strong>未验证</strong>；Bun / Deno 已实测可跑，但不在 <code>engines</code> 承诺内、也不在 CI 上（见 <code>docs/frameworks.md</code>）</td><td>LangGraph（Python 原生）、各家 Python SDK</td></tr>
             <tr><td>要<strong>托管平台</strong>（托管运行、托管记忆、托管评估）</td><td>本框架不提供任何服务。它交付的是「<strong>你自己能上线的服务</strong>」，不是替你跑的那个平台</td><td>Mastra 那类「框架 + 平台」一体的产品</td></tr>
             <tr><td>要<strong>开箱即用的向量检索 / 评估平台</strong></td><td>0 运行时依赖 ⇒ 不装厂商 SDK。<code>src/</code> 里 <code>grep -rniE "embedding|vector|retriev"</code> <strong>0 命中是刻意的</strong></td><td>需要检索服务的一方自行接入（见下节「RAG」）</td></tr>
             <tr><td>需要<strong>前端流式 UI 绑定</strong>（<code>useChat</code> 那类 React/Vue hook）</td><td>没有客户端 SDK，也没有 React 绑定。服务端是它唯一的形态</td><td>Vercel AI SDK 的 UI 层</td></tr>

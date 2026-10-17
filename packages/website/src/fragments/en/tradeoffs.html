@@ -23,7 +23,7 @@
           <span class="api-chip"><b>0</b> runtime dependencies</span>
           <span class="api-chip"><b>2</b> layers (runtime + observability)</span>
           <span class="api-chip"><b>0.x</b> minors may contain breaking changes</span>
-          <span class="api-chip"><b>Node only</b> Deno / Bun / edge unverified</span>
+          <span class="api-chip"><b>Node only</b> edge unverified; Bun / Deno measured (outside the promise)</span>
         </div>
       </header>
 
@@ -66,7 +66,7 @@
           </thead>
           <tbody>
             <tr><td>You want <strong>visual orchestration / low code</strong>: drag-and-drop flowcharts, editing the flow online</td><td>This framework is a <strong>library</strong>; orchestration lives in code (decorators + DI). There is no visual editor, and none is planned</td><td>LangGraph's graphs and state machines; Mastra's workflows and platform UI</td></tr>
-            <tr><td>You want <strong>Python</strong></td><td>TypeScript only. Deno / Bun / edge runtime are <strong>unverified</strong> (outside the <code>engines</code> promise and outside CI)</td><td>LangGraph (Python-native), the various Python SDKs</td></tr>
+            <tr><td>You want <strong>Python</strong></td><td>TypeScript only. edge runtime <strong>unverified</strong>; Bun / Deno are verified runnable but outside the <code>engines</code> promise and outside CI (see <code>docs/frameworks.md</code>)</td><td>LangGraph (Python-native), the various Python SDKs</td></tr>
             <tr><td>You want a <strong>hosted platform</strong> (managed runs, managed memory, managed evals)</td><td>This framework ships no service. What it hands you is "<strong>a service you can deploy yourself</strong>", not the platform that runs it for you</td><td>Products that are "framework + platform" in one, such as Mastra</td></tr>
             <tr><td>You want <strong>batteries-included vector retrieval / an eval platform</strong></td><td>Zero runtime dependencies ⇒ no vendor SDKs installed. In <code>src/</code>, <code>grep -rniE "embedding|vector|retriev"</code> returning <strong>zero hits is deliberate</strong></td><td>Whoever needs retrieval brings their own service (see "RAG" in the next section)</td></tr>
             <tr><td>You need <strong>client-side streaming UI bindings</strong> (React/Vue hooks like <code>useChat</code>)</td><td>There is no client SDK and no React binding. A server is the only shape it takes</td><td>The UI layer of the Vercel AI SDK</td></tr>

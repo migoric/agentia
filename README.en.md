@@ -19,9 +19,10 @@ observable call tree (trace, cost, metrics).
 ## Requirements
 
 Node.js **≥ 18** (the only `engines` requirement); CI covers **18 / 20 / 24**. Designed and tested on
-Node; **Bun 1.4 and Deno 2.9 are verified runnable** (four-step check — import → assemble → HTTP →
-side effects — plus minimal mounting code per host, in
-[`docs/frameworks.md`](./docs/frameworks.md)); **edge runtimes remain unverified**.
+Node; **Bun and Deno are verified runnable** (four-step check — import → assemble → HTTP → side
+effects — plus minimal mounting code per host and the measured versions, in
+[`docs/frameworks.md`](./docs/frameworks.md); the front page deliberately carries no version numbers —
+they rot); **edge runtimes remain unverified**.
 `SqliteTaskStore` needs Node ≥ 22.5 (`node:sqlite`) and fails with a
 readable error at construction — importing the package still works.
 

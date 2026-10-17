@@ -234,6 +234,14 @@ const COMMON_ANCHORS: Array<{ label: string; re: RegExp }> = [
   { label: '公共 API 的真源', re: /src\/index\.ts/ },
   { label: '运行环境声明', re: /engines\.node/ },
   { label: '零运行时依赖的守卫', re: /no-runtime-deps\.test\.ts/ },
+  /**
+   * 2026-10-17 补（⑨ ref-frameworks-compat 合并后 review 的**真发现**）：
+   * 上面五条钉的都是「承诺了什么」，**「不承诺什么」（排除面）一条都没钉** ⇒
+   * 实测把两个 README 的「Deno / Bun / edge 未验证」改成「edge 未验证；Bun / Deno 已实测」
+   * 之后，官网 6 处仍写着旧版 —— **三面公开矛盾而守卫全绿**。
+   * 排除面与承诺面同样是「读者据此判断能不能用」的内容，所以它进入同一组镜像锚点。
+   */
+  { label: 'Bun / Deno 的实测状态（排除面也要三面一致）', re: /Bun \/ Deno|Bun and Deno/ },
 ];
 
 /** 1.0 的三条门槛（中英各一份措辞 —— 英文 README 是摘要，用词天然不同） */
