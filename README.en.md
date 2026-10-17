@@ -8,25 +8,19 @@
 with decorators + DI and a main agent orchestrates them; every run yields structured output and an
 observable call tree (trace, cost, metrics).
 
-**1 package · ≈2 MB · 0 runtime dependencies · 90+ guards** — the answer to the first question when
-choosing a library (how big is the install?): `npm i @migor/agentia` puts exactly **one** package into
-`node_modules` and pulls in no vendor SDK. These numbers are recomputed by
-`tests/docs/scoreboard.test.ts` on every run; hand-written figures rot.
+**1 package · ≈2 MB · 0 runtime dependencies · 90+ guards** — recomputed by
+`tests/docs/scoreboard.test.ts` on every run.
 
-> This is a **summary**. The [website](https://agentia-web.pages.dev/en) is **bilingual** — the English
-> pages mirror the Chinese ones section by section — but the authoritative and always-current
-> **long-form** documentation is Chinese:
-> [`docs/usage-guide.md`](./docs/usage-guide.md) (API reference, type wiring, known limits; the same
-> text is served verbatim at `/llms-full.txt`). We keep this file short on purpose — a hand-maintained
-> full translation drifts.
+> This is a **summary**, kept short on purpose (a hand-maintained full translation drifts). The
+> [website](https://agentia-web.pages.dev/en) is bilingual, but the authoritative long-form
+> documentation is Chinese: [`docs/usage-guide.md`](./docs/usage-guide.md) (also served verbatim at
+> `/llms-full.txt`).
 
 ## Requirements
 
-Node.js **≥ 18** (the only `engines` requirement). CI covers **18 / 20 / 24** — the `import-floor`
-matrix pins the floor declared in `engines`, every other job follows the current LTS. Deno and edge
-runtimes are **not** validated. The only store touching a Node builtin is `SqliteTaskStore` (needs
-Node ≥ 22.5 for `node:sqlite`) — it fails with a readable error at construction time, and never breaks
-importing the package.
+Node.js **≥ 18** (the only `engines` requirement); CI covers **18 / 20 / 24**. Deno / Bun / edge
+runtimes are **not** validated. `SqliteTaskStore` needs Node ≥ 22.5 (`node:sqlite`) and fails with a
+readable error at construction — importing the package still works.
 
 ## Install
 
@@ -39,9 +33,8 @@ $EDITOR my-app/.env           # put ANTHROPIC_API_KEY here (export works too —
 # optional: ANTHROPIC_BASE_URL (compatible gateways), AGENTIA_MODEL (default claude-opus-5)
 ```
 
-> The framework does **not** read `.env` on its own: the scaffolded `src/main.ts` calls
-> `loadEnvFile()` on its first line. Real environment variables always win over the file
-> (CI / docker / command line), unless you pass `loadEnvFile({ override: true })`.
+> The framework does **not** read `.env` on its own: the scaffolded `src/app.ts` calls `loadEnvFile()`.
+> Real environment variables win over the file unless you pass `{ override: true }`.
 
 ## Quick start
 
@@ -157,6 +150,28 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 - **Platforms** — send traces to Langfuse / Phoenix / etc. via OTLP or a tiny custom `TraceSink`
   (see [`docs/observability.md`](./docs/observability.md) §2.6)
 
+## API at a glance
+
+| Export | Purpose |
+|---|---|
+| `createApp` / `discoverProviders` | assemble an app / scan capability directories |
+| `defineModule` | capability package (providers + middleware, distributable) |
+| `Tool` / `Skill` / `SubAgent` / `Prompt` | the four capability decorators |
+| `CapabilityMiddleware` (the `middleware` option) | interceptor chain around capability calls |
+| `asset` | read a text asset inside a capability folder |
+| `SystemPrompt` | compose the system prompt (adds the cache breakpoint) |
+| `RunContext.current()` | blackboard / runId for the current run |
+| `AsyncRunner` / `Scheduler` / `runSync` / `createHttpHandler` | async / scheduled / sync / HTTP triggering |
+| `FileTaskStore` / `SqliteTaskStore` / `RedisTaskStore` / `InMemoryTaskStore` | task record stores |
+| `createBudgetPolicy` | long-context budget guard |
+| `createAnthropicClient` | default ModelClient (Anthropic) |
+| `createOpenAIClient` | any OpenAI-compatible endpoint |
+| `InMemoryMemoryStore` (the `memory` option) | cross-run memory hydration / write-back |
+| `createOtlpExporter` | export traces over OTLP |
+| `traceToMessages` | replay a finished trace as model messages |
+| `fromZod` | zod schema adapter (optional peer) |
+| `runAgent` / `executeRun` | bare engine entry (no assembly) |
+
 ## Documentation
 
 | | |
@@ -178,19 +193,16 @@ stating what **you** have to change.
 grep -nE '^#{3,4} .*(迁移|破坏性)' CHANGELOG.md    # every "you must act" section
 ```
 
-> Honest caveat: this discipline was **tightened over time** — early versions (`0.7.1`, a type-level
-> change) put the action in the entry's leading blockquote instead of its own section. The command
-> above is a **lower bound**, not the whole set. And this README deliberately prints **no**
-> "N releases / M migrations" count: hand-written counts rot, so we ship the command instead.
+> The command above is a **lower bound**, not the whole set — early versions didn't follow this format.
+> Counts ("N releases / M migrations") are deliberately not printed: they rot.
 
-**What is covered by the compatibility promise:** the **named exports** of `@migor/agentia`
-(`src/index.ts` is the source of truth) and the `@migor/cli` command surface, plus the Node range in
-`engines.node` — CI runs the full chain on every version in that range. **Not covered:** deep imports
-(`dist/**`) — **sealed by the `exports` field** in `package.json` (guarded by
-`tests/architecture/package-exports.test.ts`; before `exports` existed they really did resolve) —
-internal module paths, `packages/*`, `examples/*`, Deno / Bun / edge runtimes (unvalidated),
-and anything a release does not spell out in its migration note. Runtime third-party dependencies are
-**zero** — enforced by `tests/architecture/no-runtime-deps.test.ts`, not by promise.
+**Covered by the compatibility promise:** the **named exports** of `@migor/agentia` (`src/index.ts` is
+the source of truth) and the `@migor/cli` command surface, plus the Node range in `engines.node` (CI
+runs the full chain on every version in it). **Not covered:** deep imports (`dist/**`) — sealed by the
+`exports` field in `package.json`, guarded by `package-exports.test.ts` — internal module paths,
+`packages/*`, `examples/*`, Deno / Bun / edge, and anything a release doesn't spell out in its
+migration note. Runtime third-party dependencies are **zero**, enforced by
+`no-runtime-deps.test.ts`, not by promise.
 
 **What 1.0 waits for** (all three are checkable): every open item in `docs/spec.md` §11 is either
 shipped or explicitly struck out; `docs/guards.md` §2 ("awaiting a guard") is empty; and the public
@@ -214,9 +226,8 @@ cost you pay under which condition, and what a different implementation could re
 > load; copying them as an SLA will be wrong. What is actually constant is the **shape** (how many
 > times larger, how many round trips, what scales with what).
 >
-> The five benchmarks are **deliberately not in CI** (timing benchmarks only add noise on CI machines;
-> `docs/plans/2026-09-22-dev-debug-loop.md` settled on "run them when you want to look") ⇒ nothing
-> guards the numbers below — re-run the command in the last column.
+> The five benchmarks are **deliberately not in CI** (timing benchmarks only add noise) ⇒ nothing
+> guards these numbers; re-run the command in the last column.
 
 ## Contributing
 
