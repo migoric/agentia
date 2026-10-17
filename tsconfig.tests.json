@@ -17,6 +17,7 @@
     "examples/observability/src",
     "examples/observability-mcp/src",
     "examples/complete/src",
+    "examples/agent-endpoint/src",
     "examples/deploy/src",
     "examples/code-review/src",
     "examples/grpc-host/src",

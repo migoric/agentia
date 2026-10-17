@@ -7125,6 +7125,29 @@ W1 的断言逻辑**一字未改**（仍是 `lines > budget` 即红）。
 单体文件的**绝对**膨胀仍无闸（`inspector-page.html` 还可再长 75 行），不假装它是防增长。
 框架侧的 `source-size`（680/750）与 `method-size`（218/240）余量健康，**不动**。
 
+### 2026-10-17 ⑥ ref-agent-endpoint-example：示例补「存量改造」一格；**明确不做** RAG 适配器
+
+**决定**：新增 `examples/agent-endpoint/`——在一个**已经在跑**的 REST 服务上加 `/run` + `/tasks`，
+老代码一行不动。**同时明确：不做 RAG / 向量库适配器。**
+
+**为什么（示例）**：现有 9 个示例全是「从零建」（`create` / `complete` / `deploy` / `patrol` …），
+而目标用户（已经在写 Node 后端、要把 agent 塞进现有服务的团队）的真实场景是**增量改造**。
+这一格此前空着 —— 而它恰恰是「为什么不选 Mastra」这类选型问题的答案现场：
+改造清单只有 6 步、全部改动集中在一个文件、约 30 行胶水。
+
+**为什么（不做 RAG）**：`@Tool` 已经能包**任何**检索（用户自己的 `pg.query` / 向量库客户端），
+框架的职责是「把调用接到模型、把账记进 trace」。内置 RAG 会同时撞上两条硬约定：
+① 零运行时依赖（embedding/向量库都是第三方）；② 「只给缝不给策略」（spec §9.3 已锁定）。
+示例里 `lookup-order` 用内存订单表就是为了说清这一点：**RAG 是你的工具，不是框架的能力**。
+
+**影响面**：`examples/agent-endpoint/`（5 个文件）、`examples/README.md` 的表格、
+`tsconfig.tests.json` 的 include。
+
+**边界（如实标注）**：该示例**不进** `e2e-examples`（它要真 API key 才有意义，而
+`deploy` / `complete` 已覆盖「服务能起来、三种触发能跑通」）—— 它的保证是**编译级**
+（`typecheck:tests`）。存储用 `InMemoryTaskStore`（重启即丢），README 里写明了换
+`SqliteTaskStore` / `RedisTaskStore` 的路径。
+
 ## 11. 开放项
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
