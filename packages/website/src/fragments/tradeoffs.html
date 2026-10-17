@@ -118,6 +118,23 @@
         </ol>
       </section>
 
+      <section id="versus">
+        <h2>与相邻方案的分工</h2>
+        <p>不比「谁更好」，只比「什么形状的活该用哪个」—— 下面每一条都是选型会上真会被问到的。</p>
+        <div class="table-wrap"><table class="doc-table">
+          <thead>
+            <tr><th>你的处境</th><th>更合适的选择</th><th>为什么</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>在 Next.js 里嵌一个流式聊天框</td><td><strong>Vercel AI SDK</strong></td><td>它的 <code>useChat</code> 与流式 UI 是同类里最好的；本框架不碰前端，也不做 UI 原语</td></tr>
+            <tr><td>要把流程<strong>画成图</strong>：条件分支、循环、并行扇出</td><td><strong>LangGraph</strong></td><td>显式图 + checkpoint 是它的主场。本框架的编排是<strong>隐式</strong>的（主 agent 自主循环）—— 要「谁在何时调什么」由代码决定，就该选它</td></tr>
+            <tr><td>要<strong>可视化编排</strong>，或要托管运行 / 托管记忆 / 托管评估</td><td><strong>Mastra 那类「框架 + 平台」</strong></td><td>本框架不提供任何服务 —— 交付物是「<strong>你自己能上线的服务</strong>」，不是替你跑的那个平台</td></tr>
+            <tr><td>已有 Node 服务，要加一个 agent 端点，且<strong>不想引第三方依赖</strong></td><td><strong>本框架</strong></td><td>零运行时依赖 + 装饰器 / DI 与既有后端同构；<code>examples/agent-endpoint</code> 就是这一格的完整写法（老代码一行未改）</td></tr>
+          </tbody>
+        </table></div>
+        <p>⚠️ 这张表<strong>刻意不比</strong>「性能更强 / 生态更大」这类维度 —— 生态上本框架远不如上面几家，这是事实，写在上面「代价清单」里，不在这里找补。</p>
+      </section>
+
       <section id="verify">
         <h2>怎么自己核实</h2>
         <p>
