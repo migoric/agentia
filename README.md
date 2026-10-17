@@ -38,8 +38,8 @@ npm run dev                          # = agentia dev：本地 inspector 面板
 - 框架**不自动**读 `.env`：脚手架 `src/app.ts` 的 `loadEnvFile()` 负责把它读进 `process.env`
   （放在装配模块而非入口，因为 `agentia dev` 只 import app.ts、从不执行入口）。
 - **运行时**：Node ≥ 18（`engines` 唯一要求），CI 覆盖 18 / 20 / 24。按 Node 设计并测试；
-  **Bun 1.4 / Deno 2.9 已实测可跑**（导入 → 装配 → HTTP → 副作用四步判定 + 各宿主最小代码，
-  见 [`docs/frameworks.md`](docs/frameworks.md)）；**edge 仍未验证**。
+  **Bun / Deno 已实测可跑**（四步判定 + 各宿主最小代码 + 实测版本见 [`docs/frameworks.md`](docs/frameworks.md)，
+  门面上不写版本号 —— 会腐烂）；**edge 仍未验证**。
   `SqliteTaskStore` 需 Node ≥ 22.5 的 `node:sqlite`，未提供时构造期给可读报错。
 - 工程内命令：`npx agentia g tool fetch-weather` / `npx agentia doctor` / `npx agentia --version`；
   想全局装：`npm i -g @migor/cli`。

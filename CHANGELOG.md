@@ -10,8 +10,10 @@
 ### 文档：框架兼容性实测结论落库（新增 docs/frameworks.md + README / 边界表同步）（2026-10-17 ⑨ ref-frameworks-compat）
 
 - **病灶**：README 与 `usage-guide.md` §7 都写着「未对 Deno / edge 做验证」—— 今天它已是**假话**：
-  Bun 1.4.3 / Deno 2.9.6 / NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10 四宿主都跑过「导入 → 装配 →
-  HTTP → 副作用」四步判定（Node 22.13.1 下），而结论只活在会话里，仓库零记录。
+  Node 22.13.1 / Bun 1.4.3 / Deno 2.9.6 三运行时跑过「导入 → 装配 → HTTP → 副作用」**四步**判定；
+  NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10 两个 Web 框架宿主**只验到第三步**（导入 / 装配 / HTTP），
+  **副作用未验** —— 那两个宿主用 `scriptedClient`，且 cluster 那次真请求拿到的是 Anthropic 403、
+  run 未成功。而结论只活在会话里，仓库零记录。
 - **落库**：新增 [`docs/frameworks.md`](docs/frameworks.md) —— 判定标准（四步，缺一步不算「可用」）、
   实测环境、运行时轴 / Web 框架轴两张结论表、各宿主最小接入代码、**Egg 的三个坑**
   （CSRF 拦 POST 回 403；bodyParser 提前消费请求流 ⇒ POST 挂死而 GET 仍 200；cluster 下每 worker
@@ -28,6 +30,15 @@
 - **如实标注**：Bun / Deno 是**实测**不是**承诺** —— 不在 `engines` 内、不在 CI 上；
   Express / Fastify / Koa 作为独立宿主未逐一实测；Node 18 / 20 未跑（「`require(ESM)` 在 22.12
   前不可用」是按发布时间线的推断，按 `await import()` 写可避开）；edge 仍未验证。
+- **更正（同日，⑨ 合并后 review 发现）**：⑨ 初稿写的是「四宿主都跑过四步判定」—— **过度承诺**，
+  NestJS / Egg 只到第三步。已修：`docs/frameworks.md` 的 Web 框架轴表加「副作用」列（那两行标
+  **未验**），判定标准那节补射程说明（四步全过是对**运行时**的要求）；`docs/spec.md` §10 ⑨ 同款
+  措辞就地更正（**追加**不改写 —— 决策日志只增不改）。同批还修了两处：官网 6 处「Deno / Bun /
+  edge 未验证」与两个 README 的新表述**公开矛盾**（中英各 3 处，已同步）；
+  `docs/frameworks.md` 里「一等公民」与 trace 那句「一等公民」同词不同指（已消歧义），
+  cluster store 表补上 `deployment.md` 的「单宿主写者」前提。另给 `stability.test.ts` 补了一条
+  镜像锚点 —— 它此前只钉 5 条承诺锚点，**钉不住「排除面」**，所以三面各说各话也能全绿
+  （变异验证：摘掉官网那句的 Bun ⇒ 守卫红；还原 ⇒ 绿）。
 - **验证**：`docs/frameworks.md` 的三个 ts 块按 `code-fences` 守卫同手法（`paths` → `src/index.ts`，
   不依赖 build）真编译通过 —— 其中 CJS 片段第一稿写了顶层 `await`，探针当场报
   `TS1309`（CommonJS 里不合法），已改成包一层；这正是实测时踩过的同一个坑，

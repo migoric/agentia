@@ -651,7 +651,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
           <tbody>
             <tr><td>公共 API</td><td><code>@migor/agentia</code> 的<strong>具名导出</strong>（真源 <code>src/index.ts</code>，官网 API 页有反向全覆盖守卫）+ <code>@migor/cli</code> 的命令行面</td><td>深路径导入（<code>dist/**</code>）、内部模块路径、<code>packages/*</code>、<code>examples/*</code> —— 这条边界由 <code>package.json</code> 的 <code>exports</code> 字段<strong>封着</strong>（<code>tests/architecture/package-exports.test.ts</code> 守）</td></tr>
             <tr><td>行为</td><td>该版本条目里写明的<strong>迁移动作</strong></td><td>没写进迁移说明的任何行为变化</td></tr>
-            <tr><td>运行环境</td><td><code>engines.node</code> 声明的区间；CI 在该区间内<strong>每个版本</strong>上跑完整条链</td><td>Deno / Bun / edge runtime（<strong>未验证</strong>）；已 EOL 的 Node（会随 minor 去掉）</td></tr>
+            <tr><td>运行环境</td><td><code>engines.node</code> 声明的区间；CI 在该区间内<strong>每个版本</strong>上跑完整条链</td><td>edge runtime（<strong>未验证</strong>）；已 EOL 的 Node（会随 minor 去掉）。Bun / Deno 已实测可跑，但<strong>不在 <code>engines</code> 承诺内</strong>（结论表与最小代码见 <code>docs/frameworks.md</code>）</td></tr>
             <tr><td>依赖</td><td><strong>运行时零第三方依赖</strong>（<code>tests/architecture/no-runtime-deps.test.ts</code> 守着，非口头承诺）</td><td><code>devDependencies</code> 与 <code>examples/*</code> 的依赖面</td></tr>
           </tbody>
         </table></div>
