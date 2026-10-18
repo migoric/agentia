@@ -82,14 +82,14 @@
     "bench:otlp": "tsx scripts/bench-otlp-snapshot.ts"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.132.0",
+    "@anthropic-ai/sdk": "^0.134.0",
     "@biomejs/biome": "^2.5.14",
-    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/grpc-js": "^1.14.6",
     "@grpc/proto-loader": "^0.8.1",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.5",
     "c8": "^12.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.2",
-    "zod": "^4.6.1"
+    "zod": "^4.6.7"
   }
 }
