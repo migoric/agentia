@@ -106,6 +106,36 @@
   模板 `README.md` 新增「本地怎么调」。文档字数闸对 `usage-guide` **刻意不设上限**
   （参考手册按需查，见 `doc-budget.test.ts`），故无需调数。
 
+### 新增：`agentia view <trace.jsonl>` —— 落盘 trace 的可视化出口（2026-10-16 ⑤ ref-view-single-file-html）
+
+- **缺什么**：`agentia dev` 的面板是**在飞**的（run 列表是内存 ring，重启即空）；落盘 / 生产的
+  trace 此前只有文本侧（`report` 排行 / `diff` 差异 / `harvest` / `export`）—— **没有任何一处
+  能把它画出来**。「数据没丢但看不见」，且**不能转发**。
+- **形态**：单文件自包含 HTML（CSS 与渲染器 bundle **全部内联**、零外链、离线可开、可转发）。
+  业界 2026 已收敛到这一形态（agentskit / telltrace / claude-tap / AgentCanvas 四家不约而同，
+  且都默认 redact）⇒ 这不是「多一个选项」，是「别再自己发明」。方案对比见
+  `docs/plans/2026-10-16-trace-view-local-file.md`（取它而非「起服务」的关键理由：一次性看文件
+  不该再付一遍 inspector 的 D0 鉴权税）。
+- **flag**：`-o <out.html>` / `--open` / `--raw` / `--limit N`（默认 50，超了明说）/
+  `--trace-id <id>` / `--redact-key <字段名>`。
+- **默认脱敏**（`--raw` 关闭，且 stderr 出声 + 产物打水印）：`src/core/trace.ts:79` 划的是
+  「脱敏在 sink 缝外 = **宿主职责**」，**CLI 正是宿主** ⇒ 这条是执行既定缝，`src/` 零改动。
+  实现是 `examples/observability` 那份 `redactSink` 的去类型移植（正文逐行同形，源码级对拍守着）。
+  ⚠️ **best-effort**：6 类预设覆盖值内凭证形态（bearer / jwt / aws-access-key / llm-api-key /
+  email / phone-cn），**`password=` 这类不在内**（实测确认）；`--redact-key` 是**按字段名**整字段
+  抹平，与前一种是两种机制 ⇒ 产物 banner 把两档各自能干什么都写出来，不暗示「加了 key 就都解决了」。
+- **安全**：trace 内联进 `<script>` 前把 `<` 转义成 `\u003c` —— trace 含**模型输出 = 不可信输入**，
+  一个 `</script>` 就能提前闭合脚本块、注入任意脚本，而产物的默认命运正是被转发。
+- **配置**：`@migor/trace-view` 多一个产物 `dist/trace-view.bundle.js`，由
+  `scripts/bundle.mjs` 从 `src/` **自动派生**（依赖拓扑 + 导出名都现场解析；撞名 / 环 / 引用
+  不存在的模块 ⇒ 构建期响亮报错）。它是**运行形态**不是第二份实现：面板与官网仍用分文件，
+  同源由 `test/bundle.test.js` 钉住。
+- **验证**：`packages/cli/test/view.test.mjs` 15 条 + `packages/trace-view/test/bundle.test.js`
+  7 条；**变异 9 条**各自咬住预期那条（摘 `<` 转义 / 摘 export 剥离 / 摘默认脱敏 / 改截断措辞 /
+  摘去重 / 摘撞名检测 / 摘环检测 / 只拼一个模块 / 少导出一个符号）。
+  ⚠️ 其中一条变异起初**不红**：同源那条断言读的是 `dist/`（构建产物），改 `bundle.mjs` 不会重建
+  dist ⇒ 拿着旧产物一路变绿。已改为 import `buildBundle()` 的当次产出。
+
 ### 修复：会话（对话历史）读写失败零信号（2026-10-16 ① ref-session-failure-loud）
 
 - **病灶**：`loadSession` / `appendSession` 两个「辅助动作失败不得击穿 run」的 `catch` 是**裸吞**
