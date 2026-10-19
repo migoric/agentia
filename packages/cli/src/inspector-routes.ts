@@ -181,6 +181,13 @@ const STATIC = new Map<string, string>([
   ['fromTrace.js', join(ASSETS, 'fromTrace.js')],
   ['summary.js', join(ASSETS, 'summary.js')],
   ['trace-view.css', join(ASSETS, 'trace-view.css')],
+  /* 单文件 bundle（`agentia view` 内联进自包含 HTML 用）。⚠️ **页面不 import 它** ——
+   * 面板仍走上面的分文件；它是 CLI 自己 readFile 后内联的（`src/view.ts`）。
+   * 之所以还列进白名单：copy-assets 是**整树**拷 trace-view 的 dist ⇒ 它必然出现在
+   * dist/inspector/，而 `structure.test.mjs` 的 W5 要求「dist/inspector 的每个文件都在
+   * 白名单里」（防 trace-view 拆模块后浏览器 404 白屏）。与其放宽那条守卫的安全语义，
+   * 不如显式批一个本来就公开的前端渲染器文件。 */
+  ['trace-view.bundle.js', join(ASSETS, 'trace-view.bundle.js')],
   ['panel-logic.js', join(HERE, 'panel-logic.js')],
   // 面板的 Markdown 解析器（零依赖、按构造不产生 HTML —— 见 src/markdown.ts 的头注）。
   // 与 panel-logic.js 同处 dist 根：两个都是 CLI 自己编译出来的模块，单测直接 import 它们。

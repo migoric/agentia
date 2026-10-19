@@ -11,6 +11,7 @@ import { reportCommand, USAGE as REPORT_USAGE } from './report.js';
 import { harvestCommand, USAGE as HARVEST_USAGE } from './harvest.js';
 import { diffCommand, USAGE as DIFF_USAGE } from './diff.js';
 import { exportCommand, USAGE as EXPORT_USAGE } from './export.js';
+import { viewCommand, USAGE as VIEW_USAGE } from './view.js';
 import { readCliVersion } from './version.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
@@ -29,6 +30,9 @@ const USAGE = `agentia —— Agentia 框架命令行工具
   agentia diff <a.jsonl> <b.jsonl> [--json] 两条 trace 的调用树 A/B 比对（有差异时退出码 1）
   agentia export <trace.jsonl>             trace 落盘文件 → 训练数据集（JSONL，一行一份 messages）
                                            （[--out <file>] [--ok-only] [--min-score n]）
+  agentia view <trace.jsonl>               落盘 trace → 单文件自包含 HTML（无外链、离线可开、
+                                           可转发）—— 事后看一棵调用树（dev 面板只管在飞的）
+                                           （[-o <out.html>] [--open] [--raw] [--limit N] [--trace-id <id>]）
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
   agentia --version                        显示版本（等价 -v）
@@ -56,6 +60,7 @@ const SUB_USAGE: Record<string, string | undefined> = {
   harvest: HARVEST_USAGE,
   diff: DIFF_USAGE,
   export: EXPORT_USAGE,
+  view: VIEW_USAGE,
   add: ADD_USAGE,
 };
 
@@ -175,6 +180,15 @@ function main(argv: string[]): number {
   if (command === 'export') {
     // 异步命令（读文件/写文件）：同 report 的受理模式
     void exportCommand(rest).catch((e: unknown) => {
+      console.error(`错误：${(e as Error).message}`);
+      process.exitCode = 1;
+    });
+    return 0;
+  }
+
+  if (command === 'view') {
+    // 异步命令（读文件/读构建期资源/写文件）：同 report 的受理模式
+    void viewCommand(rest).catch((e: unknown) => {
       console.error(`错误：${(e as Error).message}`);
       process.exitCode = 1;
     });

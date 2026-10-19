@@ -7013,6 +7013,46 @@ git 跟踪文件口径），已作为**待守缺口**登记进 `docs/guards.md` 
 （多进程会交错，协调属部署层）。去重只认**对象同一性** ⇒ 两份不同实现的 sink 写同一文件
 （例如一个 `jsonlTraceSink` + 一个手写 `appendFileSync` sink）**不在**本条射程内。
 
+### 2026-10-16 ⑤ ref-view-single-file-html：落盘 trace 的查看口 = `agentia view`，产物是单文件自包含 HTML
+
+**决定**：新增 `agentia view <trace.jsonl> [-o out.html] [--open] [--raw] [--limit N]
+[--trace-id <id>] [--redact-key <字段名>]` —— 把落盘 trace 渲成**单文件自包含 HTML**
+（CSS 与渲染器 bundle **内联**、零外链、离线可开、可转发）。三处配套：
+① `packages/trace-view/scripts/bundle.mjs` 从 `src/` **自动生成**单文件 bundle（按依赖拓扑序
+去掉模块边界语法；导出名与依赖顺序都现场解析；撞名 / 循环依赖 / 引用不存在的模块 ⇒ 构建期
+**响亮报错**）；② `packages/cli/src/redact.ts` = `examples/observability` 那份 `redactSink`
+的**纯函数版**（去类型移植，正文逐行同形，由源码级对拍守着）；③ **默认脱敏**，`--raw` 关闭时
+stderr 出声 + 产物打水印；产物里**可见地**标明「已脱敏 · best-effort · 覆盖 N 类」并列出类名。
+
+**为什么**：④ 之后「数据没丢」了，但**落盘 / 生产的 trace 仍没有任何可视化入口** ——
+`agentia dev` 的面板是**在飞**的（run 列表是内存 ring，重启即空），而 `report` / `diff` /
+`harvest` / `export` **全是文本侧**。业界 2026 已收敛到同一形态（agentskit / telltrace /
+claude-tap / AgentCanvas 全是「文件 → 单文件 HTML」，且**默认 redact**；LangSmith 在分享页
+正文第一句就警告敏感信息）⇒ 这不是「多一个选项」，是「别再自己发明」。方案对比（O1 起服务 /
+O2 单文件 / O3 转 OTLP 交给现成查看器）在
+`docs/plans/2026-10-16-trace-view-local-file.md`：取 O2 的关键理由是**一次性看文件不该再付一遍
+inspector 的 D0 鉴权税**（Origin + token 是「有 server」的代价），且「可转发」是 `report` 给不了的。
+
+**与 §9.3 那条缝的关系（本条的硬决策）**：`src/core/trace.ts:79` 明写「脱敏**不在框架内** ——
+sink 缝外的事」，`docs/observability.md` §2.4 还补了「顶部『不内建』表里它仍标 ❌，别当待办搬回
+框架」。**这不矛盾，因为 CLI 不是框架**：§2.4 自己的措辞是「宿主职责」，而 CLI 正是宿主 ⇒
+「CLI 出 HTML 时默认脱敏」是**执行**那条既定缝，`src/` **零改动**。
+
+**影响面**：新增 `packages/trace-view/scripts/bundle.mjs`（dist 多一个 `trace-view.bundle.js`）、
+`packages/cli/src/{view,redact}.ts`、`packages/cli/test/view.test.mjs`（15 条）、
+`packages/trace-view/test/bundle.test.js`（7 条）；`cli.ts` 接线、`inspector-routes.ts` 白名单
+加一项（仅因 copy-assets 整树拷贝 + W5 双向相等，**页面不 import bundle**）。
+变异验证 9 条：摘 `<` 转义 / 摘 export 剥离 / 摘默认脱敏 / 改截断措辞 / 摘去重 / 摘撞名检测 /
+摘环检测 / 只拼一个模块 / 少导出一个符号 —— 各自咬住预期的那条。
+
+**边界**：① 脱敏是 **best-effort**：6 类预设只覆盖值内凭证形态（bearer / jwt / aws-access-key /
+llm-api-key / email / phone-cn），**`password=` 这类不在内**（实测确认），`--redact-key` 是
+**按字段名**整字段抹平、与前者是两种机制 ⇒ 产物 banner 把两档各自能干什么都写出来，不暗示
+「加了 key 就都解决了」；② 内联有 **32 MiB 兜底**，超限按条截断并**明说**（不许静默少给）；
+③ bundle 只是**运行形态**，真源仍是 `packages/trace-view/src/` —— 面板与官网仍用分文件
+（`copy-assets` 整树拷），三者同源由 `bundle.test.js` 的「导出面一致 + 每模块都进了 bundle
++ 构建确定性」钉住。
+
 ### 2026-10-17 ① ref-flaky-timer-tests：与墙钟赛跑的测试族换成「等真实事件」
 
 **决定**：把 5 处「用固定墙钟断言必然性」的测试判据换掉 —— 能等的换成 `waitFor`

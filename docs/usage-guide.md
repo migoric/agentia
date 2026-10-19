@@ -206,15 +206,33 @@ token 的作用是挡住**本机其它进程**，别把它当网络边界：这�
 
 ```bash
 agentia report .agentia/traces.jsonl      # 哪个能力慢 / 贵 / 爱失败
+agentia view   .agentia/traces.jsonl --open   # 把落盘的 trace 画成一棵树（单文件 HTML，见下）
 agentia diff  .agentia/traces.jsonl  ...  # 改 prompt 前后逐 span 比对（有差异时退出码 1）
 agentia harvest .agentia/traces.jsonl --failed   # 失败的 run → eval 用例骨架
 agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 ```
 
+**`agentia view` —— 事后看一棵树**（面板只管「在飞」的，这个管「盘上」的）：
+
+```bash
+agentia view .agentia/traces.jsonl --open          # 渲完直接用默认浏览器打开
+agentia view .agentia/traces.jsonl -o r.html       # 指定产物名（缺省 = 输入名去扩展名 .html）
+agentia view .agentia/traces.jsonl --trace-id <id> # 只看一条
+agentia view .agentia/traces.jsonl --limit 20      # 默认最多 50 条（超了会明说，不静默截断）
+```
+
+产物是**单文件自包含 HTML**：CSS 与渲染器**全部内联**，零外链、离线可开、可以直接贴进 PR 或
+发给同事（业界同类工具在 2026 已收敛到这个形态）。⚠️ 三件事要知道：
+① **默认脱敏**（`--raw` 关闭，且此时 stderr 会警告）—— 产物的默认命运是「被转发」，而 trace
+含完整 prompt 与工具出入参；② 脱敏是 **best-effort**，覆盖 6 类值内凭证形态
+（bearer / jwt / aws-access-key / llm-api-key / email / phone-cn），**`password=` 这类不在内**，
+业务自有字段用 `--redact-key <字段名>`（按字段名整字段抹平，与前者是两种机制）；
+③ 多条 trace 时顶部下拉切换，`#N` 锚点可直达。
+
 落盘**不替代**右栏的实时树：那是两条缝（落盘管「事后能查」，`onTraceEvent` 管「此刻看到」）。
 三条如实标注：① 文件**只增不减**（要清是你自己 `rm`）；② 落盘是**同步写**，单条 trace 以百 KB
 计、且 `traceLimits.maxEvents` 本来兜上限；③ 面板的 run 列表是**内存** ring（50 条），
-重启就空了 —— 落盘让数据**没丢**，但面板不会替你回看历史。
+重启就空了 —— 落盘让数据**没丢**，但面板不会替你回看历史，**回看历史走 `agentia view`**。
 
 **并排 A/B（比两条 run差在哪）**：run 列表里 **⌘/Ctrl + 单击**选两条（再点一次取消、
 选第三条挤掉最早那条），右栏切**双栏**并排两棵调用树，顶部一条差异摘要
