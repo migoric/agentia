@@ -7,6 +7,43 @@
 
 ## [Unreleased]
 
+### 修复：`view` 取最近 N 条、`harvest` 接 opt-in 文本、bundle 加构建期语法闸（2026-10-21 ① ref-view-limit-harvest-text）
+
+对最近 45 个提交复评后的一批修复（评审记录 `docs/reviews/2026-10-21/recent-code-review.md`）。
+四条都是「两边各自自洽、中间那条缝没人负责」的同族失效：
+
+- **`agentia view --limit` 缺省取「最近」N 条（P1，主场景失效）**：`.agentia/traces.jsonl` 只增不减
+  （`dev-runner.ts` 明写不轮转），最新在文件末尾，而原实现 `slice(0, cap)` 取**最早** N 条 ——
+  长跑 dev 环里「想复盘刚才那次」拿到的是今早第一批。实测：4 行文件 `--limit 2` 出
+  `t1-old` / `t2`，最新的 `t3` 不在页里；注释还自称「与 dev 面板 ring 50 对齐」（ring 保留最新，
+  方向正好相反）。同一条纪律下沉到去重：位置跟着**最后一行**（`Map` 原地 `set` 不移动位置）。
+  新增 `--head` 保留「从头看」，截断文案按方向说（`只含最近 N 条` / `只含最早 N 条`）。
+- **`harvest` 读 `output.text`（P2，与 2026-10-16 ① 同族）**：框架早有 `traceContent: 'full'`
+  这条 opt-in 缝（`turn.ts` 写 `output.text`，`export.ts` 已接），`harvest` 仍硬编码占位
+  `'[harvest] assistant 文本未入 trace'` ⇒ 用户付了体积与脱敏的代价，产出的回归用例仍跑不起来。
+  现在有文本就用真值；**纯 tool_use 回合不补占位**（占位 = 一条「模型说过这句话」的假事实），
+  只有「既没文本又没工具」的终端回合才占位；骨架头注按这一次的实际情况二选一（开没开开关、
+  几个回合没文本）。框架与 CLI 两份移植同步（七组夹具逐字对拍，新增含 `output.text` 一组）。
+- **bundle 构建期按 classic script 编译一次（P2，静默白屏）**：`view` 把 bundle 内联进普通
+  `<script>`，而 `bundle.test.js` 用 **ESM import** 验产物 —— 后者的语法集更宽 ⇒
+  `export default` / `export *` / 残留副作用 `import './x.js'` 三种形态**构建绿、测试绿、页面白屏**，
+  而 CLI 已经打印了「已生成」（2026-10-21 用真实 `dist/` + 真实 CLI 逐一实测）。
+  现在 `buildBundle` 末尾用 `vm.Script` 编译整段 body（按 script 而非 function body 解析），
+  报错还能定位回具体 `src/` 模块；`view` 侧 `stripExports` 同时补查残留 `import`。
+- **产物落点 / 覆盖 / `--open`**：缺省产物避开点目录（输入在 `.agentia/` 时上跳到最近的可见目录，
+  否则 Finder 里看不见、也容易被 `.gitignore` 吞掉）；产物路径等于输入文件本身直接报错；
+  覆盖同名文件在 stdout 出声（**不引入** `--force` —— HTML 是派生物、重跑是常态，与 harvest
+  「产物里有你改过的断言」不是同一种风险）；`--open` 在 Windows 改走 `cmd /c start "" <file>`
+  （`start` 是 cmd 内建命令，直接 spawn 必 ENOENT）。
+- **空 `spans` 的 trace 残留上一条树（P3）**：`playTrace` 原先直接 `return`，切换 trace 后页面
+  还留着**上一条的树**（下拉里选中的是这一条）。现在空树也 `reset`，并用它自己的 traceId 作标题。
+- **文档**：`usage-guide` 的「CLI 四件套」改五件套（含 `jsonlTraceSink` 的输入方列表）；
+  harvest 的「trace 不记 assistant 文本」改成条件式表述；`view` 节补 `--limit` 方向与产物落点。
+
+**棘轮**：CLI 实测 10060 → 10135（+75），基线之和 10574 → 10653（+79，5% 缓冲口径）；
+`packages/trace-view` 的 `fromTrace.js` 173 → 181（空树 reset）。两处都写了「为什么」。
+决策登记：`docs/spec.md` §10 2026-10-21 ref-view-limit-harvest-text。
+
 ### 文档：框架兼容性实测结论落库（新增 docs/frameworks.md + README / 边界表同步）（2026-10-17 ⑨ ref-frameworks-compat）
 
 - **病灶**：README 与 `usage-guide.md` §7 都写着「未对 Deno / edge 做验证」—— 今天它已是**假话**：

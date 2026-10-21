@@ -107,7 +107,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-13（D2 守卫射程 —— **缺陷修复前置**：CLI 两份 tsconfig 开
     //   exactOptionalPropertyTypes，见 spec §10 2026-10-13 ref-reject-static-methods）：389 → 390（+1 =
     //   harvestEvalCase 调用点的条件展开（公共入参纪律：签名不动）替换直传 `messages`）。
-    'harvest.ts': 410,
+    // 2026-10-21（review 修复：接 opt-in 的 assistant 文本）：实测 390 → 416（+26）。
+    //   `harvest` 原先把「trace 不记 assistant 文本」当既定事实写死占位，而框架早有
+    //   `traceContent: 'full'` 这条缝（R8-P3a，turn.ts 写 `output.text`，export.ts 已接）
+    //   ⇒ 开了开关的用户付了体积与脱敏代价，产出的用例仍然跑不起来（+26 = 读 `output.text`
+    //   的取用函数 + 纯 tool_use 回合不补占位的判据 + 两档头注的条件文案 + `attributes`
+    //   类型字段）。基线 = ceil(416 × 1.05) = 437。
+    'harvest.ts': 437,
     // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
     'dev-protocol.ts': 354,
@@ -212,7 +218,19 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   `inspector-page.html` 同款：HTML 归 HTML、TS 归 TS），而不是继续往模板串里堆。
     //   基线 = ceil(337 × 1.05) = 354（口径见 §10 2026-10-17 ref-ratchet-headroom）。
     //   ⚠️ 337 是 `biome check --write` 折行长行之后的数（登记时 332）—— 折行也算行，如实记。
-    'view.ts': 354,
+    //  2026-10-21（review 修复，**零新能力**）：实测 337 → 386（+49）。四笔都是修既有行为：
+    //   · +20  `--limit` 改取**最近** N 条（落盘只增不减，最新在末尾）+ 新增 `--head`：
+    //          判据/文案方向（`rangeWord`）/字节兜底也按同一端保留，外加「取哪一端由落盘形态
+    //          决定」那段口径注 —— 原来取最早 N 条，长跑 dev 环里「想复盘刚才那次」拿到的是
+    //          今早第一批（P1，实测 4 行文件 --limit 2 出 t1-old/t2，最新 t3 不在页里）。
+    //   · +12  产物落点避开点目录（`.agentia/traces.jsonl` → 上跳到可见目录）+ 禁止把产物写回
+    //          输入文件 + 覆盖既有文件时 stdout 出声（**不是** `--force`：HTML 是派生物，重跑是
+    //          常态；harvest 的 `--force` 是因为产物里有人工改过的断言，两者不同）。
+    //   ·  +9  `--open` 在 Windows 走 `cmd /c start "" <file>`（`start` 是 cmd 内建命令，
+    //          直接 spawn 必 ENOENT；空串是窗口标题占位，缺了它带空格的路径什么也不打开）。
+    //   ·  +7  `stripExports` 增查残留 `import`（原只查 `export`）+ 注释说明构建期还有一道闸。
+    //  基线 = ceil(386 × 1.05) = 406（口径见 §10 2026-10-17 ref-ratchet-headroom）。
+    'view.ts': 406,
   };
   // 2026-09-23 实测总行数（`wc -l packages/cli/src/*`，wc 的计数 = 换行数）。
   // A 阶段后实测仍恰好 7410：dev.ts 1148→1133、新增 dev-logic 58，差额由同期
@@ -354,7 +372,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   `docs/plans/2026-10-16-trace-view-local-file.md`，业界已收敛到「单文件 HTML」这一形态）。
   //   抬价买的是：零外链产物（`--open` 即看 / 转发即完整）+ 默认脱敏 + 防 `</script>` 注入，
   //   三条各有用例与变异体（view.test.mjs 15 条，变异 5 条各自咬住预期的那一条）。
-  const TOTAL_BUDGET = 10574;
+  // 补账（2026-10-21，review 修复）：基线之和 10574 → **10653**（+79），实测总行数 10060 → **10135**（+75）。
+  // 两笔（都是**修复**，不是新能力；明细见上方各自文件的补账注）：
+  //    +52   view.ts      实测 337 → 386；基线 354 → 406
+  //    +27   harvest.ts   实测 390 → 416；基线 410 → 437
+  //   ─────
+  //    +79   两笔基线增量，与新的基线之和一致（现算 10653，见下方断言）
+  const TOTAL_BUDGET = 10653;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));
