@@ -218,8 +218,15 @@ agentia export  .agentia/traces.jsonl    # → 训练数据集 JSONL
 agentia view .agentia/traces.jsonl --open          # 渲完直接用默认浏览器打开
 agentia view .agentia/traces.jsonl -o r.html       # 指定产物名（缺省 = 输入名去扩展名 .html）
 agentia view .agentia/traces.jsonl --trace-id <id> # 只看一条
-agentia view .agentia/traces.jsonl --limit 20      # 默认最多 50 条（超了会明说，不静默截断）
+agentia view .agentia/traces.jsonl --limit 20      # 默认最近 50 条（超了会明说，不静默截断）
+agentia view .agentia/traces.jsonl --limit 20 --head  # 从头看（排查「第一次出现的问题」时用）
 ```
+
+⚠️ **`--limit` 缺省取「最近」N 条，不是前 N 条**：`.agentia/traces.jsonl` 只增不减，最新的一次
+run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于「想复盘刚才那次，给你今早第一批」。
+同一节奏：产物缺省写在输入旁边，但输入在**点目录**里（`.agentia/`）时**上跳到最近的可见目录**，
+不把 HTML 藏进隐藏目录；产物路径等于输入文件本身会直接报错（否则把 trace 数据覆盖成 HTML）；
+覆盖同名文件会在 stdout 明说（HTML 是派生物，重跑是常态，所以不像 `harvest` 那样要 `--force`）。
 
 产物是**单文件自包含 HTML**：CSS 与渲染器**全部内联**，零外链、离线可开、可以直接贴进 PR 或
 发给同事（业界同类工具在 2026 已收敛到这个形态）。⚠️ 三件事要知道：
@@ -880,7 +887,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
-| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` / `view` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -1158,14 +1165,15 @@ calls / err / 耗时照记（那是它自己这次调用的真账）。
 > CLI 报告的聚合口径与 `agentia dev` 面板的能力排行同源（同一份 `@migor/trace-view` 实现）。
 
 那个 jsonl 从哪来 —— 框架内置了文件 sink，一行接入（零依赖）。它产出的格式就是
-**CLI 四件套的输入**：`agentia report` / `agentia diff` / `agentia harvest` / `agentia export`
-都吃这个文件（一行一个 JSON，裸 Trace）：
+**CLI 五件套的输入**：`agentia report` / `agentia diff` / `agentia harvest` / `agentia export` /
+`agentia view` 都吃这个文件（一行一个 JSON，裸 Trace）：
 
 ```ts
 import { createApp, jsonlTraceSink } from '@migor/agentia';
 
 const app = await createApp({ /* … */ sinks: [jsonlTraceSink({ path: 'trace.jsonl' })] });
-// 之后：agentia report trace.jsonl / agentia diff a.jsonl b.jsonl / agentia harvest trace.jsonl / agentia export trace.jsonl
+// 之后：agentia report trace.jsonl / agentia diff a.jsonl b.jsonl / agentia harvest trace.jsonl /
+//       agentia export trace.jsonl / agentia view trace.jsonl --open
 ```
 
 父目录不存在会自动递归创建；**追加不覆盖**（多跑几次就累积多行）；写失败抛给 `flushSinks`
@@ -1465,7 +1473,10 @@ agentia harvest trace.jsonl --out evals/harvested.ts --force   # 覆盖已存在
 - 产物是**可粘贴进 eval 文件的用例字面量**：`client: scriptedClient([...])` 按 trace 的主循环 llm.turn 逐回合重建，`expect` 预填「主循环工具序列」的轨迹断言（文件顶部附跑法注释）。
 - `--out` 指向已存在的文件时**默认拒绝覆盖**（产物是要人工核对的脚手架，重跑一次就抹掉你改过的断言与 input）；要覆盖显式加 `--force`。
 - ⚠️ **脚手架不是成品，人工核对后再进 CI**：
-  - **trace 不记 assistant 文本**（llm.turn 只记 usage/事件），脚本里的 text 块是占位 `'[harvest] assistant 文本未入 trace'`；
+  - **assistant 文本要看 run 开没开 `traceContent: 'full'`**（§4 的 opt-in 开关）：开了就取
+    llm.turn 的 `output.text` 真值；没开则脚本**只含工具调用**，终端回合的 text 是占位
+    `'[harvest] assistant 文本未入 trace'`（纯 tool_use 回合**不补占位** —— 那会变成「模型
+    说过这句话」的假事实）。骨架头注会写明这一次是哪一种，不会让你自己去猜；
   - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本（要覆盖子 agent 请单独写 eval）；
   - 预填的 `expect` 是从原 trace **抄录的实际轨迹** —— 发生过 ≠ 应该发生；
   - `EvalCase` 没有 `expect` 字段，粘贴时把断言搬进 `defineEval({ expect })`（脚手架注释会教）。

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -249,7 +249,7 @@ describe('view 脱敏闸', { skip: SKIP }, () => {
 });
 
 describe('view 截断 / 过滤闸', { skip: SKIP }, () => {
-  it('--limit 截断必须明说（stdout + 产物各一处）', async () => {
+  it('--limit 缺省取**最近** N 条（落盘只增不减，最新在末尾），且必须明说', async () => {
     await withTmp(async (dir) => {
       const src = join(dir, 't.jsonl');
       const out = join(dir, 'o.html');
@@ -265,11 +265,36 @@ describe('view 截断 / 过滤闸', { skip: SKIP }, () => {
       }
       const html = readFileSync(out, 'utf8');
       assert.ok(
-        cap.logs.some((l) => /只含前 1 条/.test(l)),
-        `截断必须在 stdout 明说（静默少给是本仓红线），实际：${cap.logs}`,
+        cap.logs.some((l) => /只含最近 1 条/.test(l)),
+        `截断必须在 stdout 明说方向与条数（静默少给是本仓红线），实际：${cap.logs}`,
       );
-      assert.ok(/只含前 1 条/.test(html), '产物里也要标（看报告的人只看 HTML）');
-      assert.equal(/t-2/.test(html), false, '超出的 trace 不该进产物');
+      assert.ok(/只含最近 1 条/.test(html), '产物里也要标（看报告的人只看 HTML）');
+      assert.ok(
+        /t-3/.test(html),
+        '取最近 ⇒ 应拿到**最新**那条（.agentia/traces.jsonl 最新在末尾）',
+      );
+      assert.equal(/t-1/.test(html), false, '超出的 trace 不该进产物');
+    });
+  });
+
+  it('--head 取最早 N 条（排查首次出现的问题时用）', async () => {
+    await withTmp(async (dir) => {
+      const src = join(dir, 't.jsonl');
+      const out = join(dir, 'o.html');
+      writeFileSync(
+        src,
+        `${JSON.stringify(makeTrace('t-1'))}\n${JSON.stringify(makeTrace('t-2'))}\n${JSON.stringify(makeTrace('t-3'))}\n`,
+      );
+      const cap = captureConsole();
+      try {
+        await viewCommand([src, '-o', out, '--limit', '1', '--head']);
+      } finally {
+        cap.restore();
+      }
+      const html = readFileSync(out, 'utf8');
+      assert.ok(/只含最早 1 条/.test(html), '方向换了，文案也必须跟着换（不许一律写「最近」）');
+      assert.ok(/t-1/.test(html), '--head ⇒ 最早那条');
+      assert.equal(/t-3/.test(html), false);
     });
   });
 
@@ -299,23 +324,25 @@ describe('view 截断 / 过滤闸', { skip: SKIP }, () => {
     });
   });
 
-  it('同一 traceId 多行（append-only 落盘）只算一条', async () => {
+  it('同一 traceId 多行（append-only 落盘）只算一条，且位置跟着最后一行', async () => {
     await withTmp(async (dir) => {
       const src = join(dir, 't.jsonl');
       const out = join(dir, 'o.html');
       writeFileSync(
         src,
-        `${JSON.stringify(makeTrace('same'))}\n${JSON.stringify(makeTrace('same', '-v2'))}\n`,
+        `${JSON.stringify(makeTrace('same'))}\n${JSON.stringify(makeTrace('other'))}\n${JSON.stringify(makeTrace('same', '-v2'))}\n`,
       );
       const cap = captureConsole();
       try {
-        await viewCommand([src, '-o', out]);
+        await viewCommand([src, '-o', out, '--limit', '1']);
       } finally {
         cap.restore();
       }
       const html = readFileSync(out, 'utf8');
-      assert.ok(/1 条 trace/.test(cap.logs.join('\n')), `应去重成 1 条，实际：${cap.logs}`);
-      assert.ok(/demo-v2/.test(html), '去重留最后一行（与 report 同口径）');
+      assert.ok(/（1 条 trace/.test(cap.logs.join('\n')), `去重后应只剩 1 条，实际：${cap.logs}`);
+      // 关键：`Map` 原地 set 不移动位置 ⇒ 顺序会停在「首次出现」，「最近 1 条」就会拿到
+      // 最早那条（正是重跑补对时最容易踩的坑）。这里要求最后写入的那条被当成「最近」。
+      assert.ok(/demo-v2/.test(html), '去重后位置必须跟着最后一行（否则取最近拿到的是旧树）');
     });
   });
 });
@@ -346,6 +373,56 @@ describe('view 入参闸', { skip: SKIP }, () => {
         cap.logs.some((l) => /traces\.html/.test(l)),
         `默认产物名应基于输入文件名，实际：${cap.logs}`,
       );
+    });
+  });
+
+  it('输入在点目录（.agentia/）时，缺省产物上跳到可见目录（别把 HTML 藏进隐藏目录）', async () => {
+    await withTmp(async (dir) => {
+      const hidden = join(dir, '.agentia');
+      mkdirSync(hidden, { recursive: true });
+      const src = join(hidden, 'traces.jsonl');
+      writeFileSync(src, `${JSON.stringify(makeTrace('t-1'))}\n`);
+      const cap = captureConsole();
+      try {
+        await viewCommand([src]);
+      } finally {
+        cap.restore();
+      }
+      assert.ok(existsSync(join(dir, 'traces.html')), `产物应在 ${dir}/traces.html`);
+      assert.equal(
+        existsSync(join(hidden, 'traces.html')),
+        false,
+        '不该写进 .agentia/（点目录里看不见）',
+      );
+    });
+  });
+
+  it('-o 指向输入文件本身 ⇒ 报错（否则把 trace 数据覆盖成 HTML）', async () => {
+    await withTmp(async (dir) => {
+      const src = join(dir, 't.jsonl');
+      writeFileSync(src, `${JSON.stringify(makeTrace('t-1'))}\n`);
+      await assert.rejects(viewCommand([src, '-o', src]), /不能是输入文件本身/);
+      assert.ok(readFileSync(src, 'utf8').includes('t-1'), '源文件必须原样还在');
+    });
+  });
+
+  it('覆盖既有产物要出声（重跑是常态，但不许静默盖掉）', async () => {
+    await withTmp(async (dir) => {
+      const src = join(dir, 't.jsonl');
+      const out = join(dir, 'o.html');
+      writeFileSync(src, `${JSON.stringify(makeTrace('t-1'))}\n`);
+      writeFileSync(out, 'PREVIOUS CONTENT');
+      const cap = captureConsole();
+      try {
+        await viewCommand([src, '-o', out]);
+      } finally {
+        cap.restore();
+      }
+      assert.ok(
+        cap.logs.some((l) => /已覆盖同名文件/.test(l)),
+        `覆盖既有文件必须在 stdout 明说，实际：${cap.logs}`,
+      );
+      assert.ok(!readFileSync(out, 'utf8').includes('PREVIOUS CONTENT'));
     });
   });
 });

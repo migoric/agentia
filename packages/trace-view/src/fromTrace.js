@@ -93,7 +93,15 @@ function eventFull(ev) {
  */
 export function playTrace(view, trace) {
   const spans = Array.isArray(trace?.spans) ? trace.spans : [];
-  if (!spans.length) return false;
+  // ⚠️ 空 spans 也**必须 reset**：playTrace 的契约是「把这个 view 变成这棵树」——
+  // 直接 return 会把**上一条 trace 的树**留在页面上，而下拉里选中的是这一条
+  // （切换后看到别人的数据，比看到空白更坏；2026-10-21 在 `agentia view` 的多 trace
+  // 下拉里实测到：先选一个正常 trace，再选一个 0 spans 的，树原样不动）。
+  if (!spans.length) {
+    const label = trace?.traceId ? String(trace.traceId) : '空 trace';
+    view.reset(`run · ${label}（无 spans）`);
+    return false;
+  }
 
   const byId = new Map(spans.map((s) => [s.spanId, s]));
   const root = spans.find((s) => s.kind === 'run') || spans[0];

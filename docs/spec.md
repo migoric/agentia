@@ -7281,7 +7281,48 @@ NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10（两个 Web 框架宿主**只验到第
 按 `await import()` 写可避开，推断本身已标注；
 ④ edge 运行时仍未验证，且明确警告别按「Web 标准所以一定能跑」推断（框架碰 `node:http` 原语）。
 
+### 2026-10-21 ① ref-view-limit-harvest-text：`view` 取最近 N 条、`harvest` 接 opt-in 文本、bundle 加 classic-script 闸
+
+**决定**（四条全是「缝在那儿、没人接」的同族修复，来历：2026-10-21 对最近 45 个提交复评，
+记录在 `docs/reviews/2026-10-21/recent-code-review.md`）：
+
+① **`agentia view --limit` 缺省取「最近」N 条**，另给 `--head` 取最早。`.agentia/traces.jsonl`
+  只增不减（`dev-runner.ts` 明写「不轮转、不清空」），最新一次 run 在**文件末尾**；原实现
+  `slice(0, cap)` 取最早 ⇒ 长跑 dev 环里「想复盘刚才那次」拿到的是今早第一批。同一条纪律下沉到
+  去重：位置也要跟着**最后一行**（`Map` 对已存在的键原地 `set` 不移动位置，顺序会停在「首次
+  出现」，与「最近」直接矛盾 —— 重跑补对的树会被挤到前面而落选）。
+② **`harvest` 读 `output.text`**（R8-P3a 的 opt-in 文本）：框架 2026-10-03 就有
+  `traceContent: 'full'` 这条缝，`export` 接了、`harvest` 没接 ⇒ 用户为「让 harvest 出可跑用例」
+  付了体积与脱敏的代价，产物里仍是 `'[harvest] assistant 文本未入 trace'`，而注释把「trace 不记
+  文本」写成恒定事实。纯 tool_use 回合**不补占位**（占位 = 一条「模型说过这句话」的假事实），
+  只有「既没文本又没工具」的终端回合才占位；骨架头注按这一次的实际情况二选一。
+③ **bundle 构建期按 classic script 编译一次**（`vm.Script`）：`view` 把 bundle 内联进普通
+  `<script>`，而 `bundle.test.js` 用 **ESM import** 验产物 —— 后者的语法集更宽 ⇒
+  `export default` / `export *` / 残留副作用 `import './x.js'` 会「构建绿、测试绿、页面白屏」，
+  而 CLI 已经打印了「已生成」（三种形态 2026-10-21 逐一实测）。
+④ **产物落点与覆盖口径**：缺省产物避开点目录（输入在 `.agentia/` 时上跳到最近的可见目录）、
+  禁止把产物写回输入文件、覆盖既有文件在 stdout 出声，但**不引入 `--force`**。
+  `harvest` 的 `--force` 买的是「产物里有人工改过的断言，重跑就抹掉」；HTML 是派生物，重跑是常态
+  ⇒ 同一套纪律不能照抄成「重跑即失败」。
+
+**为什么值得写进决策日志**：四条都不是「写错了代码」，而是**判据放错了位置** ——
+①把「前 N 条」当默认（对只增不减的文件方向反了）；②把「trace 不记文本」当恒定事实（它早已是
+开关）；③用宽松的语法集去验一个严格消费方的产物（两种消费方式的差异没人写下来过）。这类失效
+的共同形状是**两边都自洽、中间那条缝没人负责**。
+
+**边界（如实标注）**：
+- `harvest --limit` 仍取最早 N 条（`--failed` 过滤在前、产物是脚手架）—— 与 `view` 不同向这件事
+  **已知**，改动会动它的逐字对拍夹具，留待有真实需求时再定；
+- `vm.Script` 闸只覆盖**拼出来的 body**，不覆盖单个 `src/*.js` 的语法（那由 tsc / biome 管）；
+- `--limit` 的「最近」是**文件顺序**意义下的最近，不是按 `startedAt` 重排 —— 落盘是 append-only，
+  这两个在正常情况下同向，但手改过的文件不保证。
+
+**验证**：`view.test.mjs` 拉出方向 / `--head` / 去重位置三条独立用例（各自对旧实现变红）；
+`tests/eval/harvest.test.ts` + `packages/cli/test/harvest.test.mjs`（七组夹具，新增含
+`output.text` 的一组做逐字对拍）；`bundle.test.js` 三条畸形形态 + 一条「真实 src 不误报」。
+
 ## 11. 开放项
+
 
 - **`traceLimits.maxEvents` 的截断在增量出口没有信号**（2026-09-28 外部深评 P3-1）：
   **⇒ 同日 ⑧ 已落地**（截断开始那一刻 `emit` 一条一次性 `trace.truncated` marker，见 §10 ⑧）。

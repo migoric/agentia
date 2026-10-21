@@ -123,11 +123,18 @@ function docReviewTrace() {
 }
 
 describe('playTrace · Trace.spans[] → 视图动作序列', () => {
-  it('空 trace：不做任何渲染', () => {
+  it('空 trace：清空旧树（reset），但不开任何 span', () => {
     const v = fakeView();
     assert.equal(playTrace(v, { spans: [] }), false);
     assert.equal(playTrace(v, null), false);
-    assert.equal(v.calls.length, 0);
+    // ⚠️ 早先这里是「不做任何渲染」（calls 为空）。那是错的：playTrace 的契约是
+    // 「把这个 view 变成这棵树」，直接 return 会把**上一条 trace 的树**留在页面上，
+    // 而下拉里选中的是这一条（2026-10-21 在 `agentia view` 里实测到）。
+    // 所以空 trace 也要 reset —— 只清不画，且**不开任何 span**。
+    assert.deepEqual(v.calls, [
+      ['reset', 'run · 空 trace（无 spans）'],
+      ['reset', 'run · 空 trace（无 spans）'],
+    ]);
   });
 
   it('动作顺序：父先开、事件与子 span 按发生顺序混排、run 根由 reset 建', () => {
@@ -419,6 +426,48 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
         (c) => c.className === 'tr-name' && c.textContent === 'tool:get_weather',
       ),
       'tool 行照旧',
+    );
+  });
+
+  it('DOM：从有内容的树切到空 trace，旧树必须被清掉（不许留着上一条）', () => {
+    useDom();
+    const root = makeNode();
+    const view = createTraceView(root);
+    const span = (spanId, parentSpanId, kind, name) => ({
+      spanId,
+      traceId: 'x',
+      parentSpanId,
+      kind,
+      name,
+      startedAt: 0,
+      endedAt: 5,
+      status: 'ok',
+      attributes: {},
+      events: [],
+    });
+    playTrace(view, {
+      traceId: 'first',
+      spans: [span('r', null, 'run', 'OLD-TREE-MARKER'), span('t', 'r', 'llm.turn', 'model')],
+    });
+    /** 递归收全部文本节点（行的文本挂在子节点上，行自己的 textContent 往往是空） */
+    const allText = (n, acc = []) => {
+      if (n.textContent) acc.push(String(n.textContent));
+      for (const c of n.children || []) allText(c, acc);
+      return acc;
+    };
+    assert.ok(
+      allText(root).some((t) => t.includes('OLD-TREE-MARKER')),
+      '先渲染一棵有内容的树（防真空：不然下面「清空」是白给）',
+    );
+
+    playTrace(view, { traceId: 'second', spans: [] });
+    assert.ok(
+      !allText(root).some((t) => t.includes('OLD-TREE-MARKER')),
+      '切到 0 spans 的 trace 后仍留着上一棵树的节点 —— 用户看到的是别人的 trace',
+    );
+    assert.ok(
+      allText(root).some((t) => t.includes('second')),
+      '空 trace 也该显示它自己的 traceId（让用户知道看到的是哪一条）',
     );
   });
 });

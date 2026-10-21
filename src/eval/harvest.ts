@@ -14,7 +14,10 @@ import { stringifySafe } from '../core/json.js';
  * ⚠️ module 级 export，刻意不进 src/index.ts 公共面（见 AGENTS.md「内部工具不进公共面」）。
  *
  * 已知边界（生成物顶部注释也会如实写明，不靠用的人自己发现）：
- * - trace 不记 assistant 文本（llm.turn 只记 usage/事件），脚本里的 text 块是占位；
+ * - assistant 文本**要看 run 开没开 `traceContent: 'full'`**（R8-P3a，opt-in）：开了就取
+ *   llm.turn 的 `output.text` 真值，没开则只含工具调用、终端回合的 text 是占位
+ *   （早先这里写死「trace 不记文本」—— 开关开了照样给占位，等于让付了体积与脱敏代价的
+ *   用户拿到跑不起来的用例；2026-10-21 修）；
  * - 只重建**直属 run 根**的主循环回合 —— 子 agent 的嵌套回合不走主循环脚本
  *   （scriptedClient 驱动的是主 agent 的模型往返）；
  * - `expect` 是从该 trace **抄录的实际轨迹**：发生过 ≠ 应该发生，人工核对后再进 CI；
@@ -32,8 +35,18 @@ export interface HarvestEvalCaseInput {
   source?: string;
 }
 
-/** trace 不记 assistant 文本 —— 脚本 text 块的统一占位（测试与 CLI 都对齐这个词） */
+/** trace 没开 `traceContent`（或该回合确实没说话）时，脚本 text 块的统一占位（两侧同一个词） */
 const ASSISTANT_TEXT_PLACEHOLDER = '[harvest] assistant 文本未入 trace';
+
+/**
+ * 取本回合的真实 assistant 文本 —— 只认 opt-in 的 `output.text`（R8-P3a，`turn.ts` 写入）。
+ * ⚠️ 与 `src/eval/export.ts` 同一条读法（含 `?.` 宽容读取）：trace 经 JSONL 回来后
+ * `attributes` 可能不在（类型上说必填、运行时不是），硬取会抛在「读一条老 trace」上。
+ */
+function assistantTextOf(turn: Span): string | null {
+  const text = turn.attributes?.['output.text'];
+  return typeof text === 'string' && text !== '' ? text : null;
+}
 
 /** tool.input 事件体的宽容读取形状（body 是 unknown；与 engine/replay.ts 同源） */
 interface ToolInputEvent {
@@ -124,13 +137,20 @@ export function harvestEvalCase(input: HarvestEvalCaseInput): string {
     (s) => s.kind === 'llm.turn' && s.parentSpanId !== trace.rootSpanId,
   ).length;
 
-  // 每回合 → 一个 assistant 消息：占位 text + 按 tool.input 事件重建的 tool_use 块
+  // 每回合 → 一个 assistant 消息：真文本（若 trace 记了）+ 按 tool.input 事件重建的 tool_use 块
   let tuSeq = 0;
   const steps = mainTurns.map((turn, i) => {
     const inputs = toolInputsOf(turn);
-    const content: Array<Record<string, unknown>> = [
-      { type: 'text', text: ASSISTANT_TEXT_PLACEHOLDER },
-    ];
+    const text = assistantTextOf(turn);
+    const content: Array<Record<string, unknown>> = [];
+    if (text !== null) {
+      content.push({ type: 'text', text });
+    } else if (inputs.length === 0) {
+      // 只有「既没文本又没工具」的终端回合才放占位：空 content 不是合法的 assistant
+      // 消息。⚠️ 纯 tool_use 回合**本来就没文本**（引擎只在文本非空时记 output.text）
+      // ⇒ 绝不能补占位，那会变成一条「模型说过这句话」的假事实。
+      content.push({ type: 'text', text: ASSISTANT_TEXT_PLACEHOLDER });
+    }
     for (const e of inputs) {
       content.push({
         type: 'tool_use',
@@ -149,12 +169,25 @@ export function harvestEvalCase(input: HarvestEvalCaseInput): string {
   });
   const toolSeq = mainTurns.flatMap((t) => toolInputsOf(t).map((e) => e.tool));
   const userText = lastUserText(input.messages);
+  const textTurns = mainTurns.filter((t) => assistantTextOf(t) !== null).length;
 
   const head: string[] = [
     `// ┄┄ harvest 用例骨架：${name}（trace ${oneLine(trace.traceId)}${input.source ? `，来源 ${oneLine(input.source)}` : ''}）┄┄`,
     '// ⚠️ 脚手架，不是成品 —— 人工核对后再进 CI：',
-    '//   · trace 不记 assistant 文本（llm.turn 只记 usage/事件），脚本里的 text 块是占位；',
   ];
+  if (textTurns > 0) {
+    head.push(
+      `//   · assistant 文本取自 trace 的 output.text（该 run 开了 traceContent: 'full'）` +
+        (textTurns < mainTurns.length
+          ? `；${mainTurns.length - textTurns} 个回合没有文本（纯 tool_use 回合本来就没文本）；`
+          : '；'),
+    );
+  } else {
+    head.push(
+      "//   · trace 里没有 assistant 文本（该 run 未开 traceContent: 'full'）—— 脚本只含工具调用，",
+      '//     终端回合的 text 是占位；要真文本请在 app 里开 traceContent 后重跑再 harvest；',
+    );
+  }
   if (nestedCount > 0) {
     head.push(
       `//   · 只含主循环 ${mainTurns.length} 个回合；${nestedCount} 个子 agent 嵌套回合已略去`,

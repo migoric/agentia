@@ -195,4 +195,48 @@ describe('bundle 构建期自检', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * 「合法 ESM、非法 classic script」整族 —— 2026-10-21 实测：这三种形态**构建成功、
+   * ESM import 也通过**（`export default` / `import` 在 ESM 里都是合法语法），而
+   * `agentia view` 内联进普通 `<script>` 时整页白屏、CLI 还照样打印「已生成」。
+   * 构建期按 classic script 编译一次，把这一族在产物出生前就拦下。
+   */
+  it('残留 export default ⇒ 构建期报错（内联进普通 <script> 是白屏）', () => {
+    const dir = tempSrc({ 'index.js': "export default { name: 'root' };\n" });
+    try {
+      assert.throws(() => buildBundle(dir), /classic script/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('副作用 import ⇒ 构建期报错（stripModuleSyntax 不剥它，页面会白屏）', () => {
+    const dir = tempSrc({
+      'index.js': "import './sidecar.js';\nexport const a = 1;\n",
+      'sidecar.js': 'globalThis.__side = 1;\n',
+    });
+    try {
+      assert.throws(() => buildBundle(dir), /classic script/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('export * ⇒ 构建期报错（与 export default 同族，同样不剥）', () => {
+    const dir = tempSrc({
+      'index.js': "export * from './a.js';\n",
+      'a.js': 'export const a = 1;\n',
+    });
+    try {
+      assert.throws(() => buildBundle(dir), /classic script/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('真实 src/ 拼出来必须是合法 classic script（防误报：闸不能把正常产物判红）', () => {
+    // 构建不抛就是答案 —— 上面三条说明这个闸会咬，这一条说明它不乱咬
+    assert.doesNotThrow(() => buildBundle(SRC), '真实 src/ 被闸误判 ⇒ 整个 build 会红（假红）');
+  });
 });

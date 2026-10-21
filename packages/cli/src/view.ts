@@ -16,17 +16,27 @@
  *
  * ⚠️ **不许静默截断**：`--limit` 超了必须明说（stdout + 产物 banner 各一处）——
  * 「少给了还不说」会让看报告的人以为文件里就这些，是本仓最忌的形状。
+ *
+ * ⚠️ **截断取哪一端由落盘形态决定，不是审美**：`.agentia/traces.jsonl` 是**只增不减**
+ * （dev-runner 明写「不轮转、不清空」），最新的一次 run 在**文件末尾**。所以 `--limit`
+ * 缺省取**最近** N 条 —— 取最早那种写法在长跑 dev 环里等于「想复盘刚才那次，给你今早第一批」。
+ * 要从头看（如排查首次出现的问题）用 `--head`。同一条纪律：去重时**位置也要跟着最后写入**
+ * （`Map` 原地 `set` 不移动位置，顺序会停在「首次出现」，与「最近」相矛盾）。
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { extname } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { extractTrace } from './report.js';
 import { activePresetNames, redactTrace, type TraceLike } from './redact.js';
 
 export const USAGE =
-  '用法：agentia view <trace.jsonl> [-o <out.html>] [--open] [--raw] [--limit N] [--trace-id <id>] [--redact-key <字段名>]';
+  '用法：agentia view <trace.jsonl> [-o <out.html>] [--open] [--raw] [--limit N] [--head] [--trace-id <id>] [--redact-key <字段名>]';
 
-/** 默认一次最多内联多少条 trace（与 `agentia dev` 面板的 ring 50 对齐，超了明说） */
+/**
+ * 默认一次最多内联多少条 trace（超了明说）。
+ * ⚠️ 方向是**最近 N 条**：落盘文件只增不减，最新在末尾（见文件头注）。
+ */
 export const DEFAULT_LIMIT = 50;
 
 /** 默认不带 `--limit` 时的兜底上限（字节）—— 长对话的 trace 可能很大，防止产出几百 MB 的 HTML */
@@ -47,9 +57,16 @@ function inlineJson(value: unknown): string {
 
 /** 打开浏览器（失败要出声 —— 「你说 --open 了我没打开」不能是静默的） */
 function openInBrowser(file: string): void {
-  const cmd =
-    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  const child = spawn(cmd, [file], { stdio: 'ignore', detached: true });
+  // ⚠️ Windows 的 `start` 是 cmd 内建命令（不是 exe）⇒ 直接 spawn('start') 必 ENOENT。
+  // 必须走 `cmd /c start "" <file>`：那个空串是**窗口标题占位**，缺了它 `start` 会把
+  // 带空格的路径当成标题、什么也不打开（经典的静默失败）。
+  const [cmd, argv] =
+    process.platform === 'darwin'
+      ? ['open', [file]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', file]]
+        : ['xdg-open', [file]];
+  const child = spawn(cmd, argv, { stdio: 'ignore', detached: true });
   child.on('error', () => {
     console.error(`[agentia] --open 失败：找不到 "${cmd}"，请手动打开 ${file}`);
   });
@@ -70,14 +87,16 @@ async function readAsset(rel: string): Promise<string> {
 /**
  * 把 bundle 尾部那句 `export { ... };` 剥掉 —— 内联进**普通 `<script>`**（不是 module）：
  * `file://` 下 module script 走 CORS 那条路，双击打开有失败风险，普通 script 没有。
- * ⚠️ 剥不干净要**响亮报错**：残留 `export` 在普通 script 里是 SyntaxError ⇒ 整页白屏。
+ * ⚠️ 剥不干净要**响亮报错**：残留 `export` / `import` 在普通 script 里是 SyntaxError
+ * ⇒ 整页白屏，而 CLI 已经打印了「已生成」。构建期还有一道更宽的闸
+ * （`bundle.mjs` 末尾按 classic script 编译整段 body），这里是不让旧产物溜过去的第二道。
  */
 function stripExports(bundle: string): string {
   const out = bundle.replace(/\nexport\s*\{[^}]*\};\s*$/, '\n');
-  if (/\bexport\s*\{/.test(out) || /^\s*export\s/m.test(out)) {
+  if (/\bexport\s*\{/.test(out) || /^\s*(?:export|import)\s/m.test(out)) {
     throw new Error(
-      'trace-view bundle 里仍有 export 语句 —— 内联进普通 <script> 会是 SyntaxError（整页白屏）；' +
-        '请检查 packages/trace-view/scripts/bundle.mjs 的产物形状',
+      'trace-view bundle 里仍有 export / import 语句 —— 内联进普通 <script> 会是 SyntaxError' +
+        '（整页白屏）；请检查 packages/trace-view/scripts/bundle.mjs 的产物形状',
     );
   }
   return out;
@@ -92,8 +111,11 @@ function buildHtml(opts: {
   presetNames: readonly string[];
   extraKeys: readonly string[];
   truncated: number;
+  /** 截断取的是哪一端 —— 文案必须跟着说，不能一律写「前 N 条」 */
+  rangeWord: string;
 }): string {
-  const { traces, css, bundle, source, redacted, presetNames, extraKeys, truncated } = opts;
+  const { traces, css, bundle, source, redacted, presetNames, extraKeys, truncated, rangeWord } =
+    opts;
   /* ⚠️ 「已脱敏」必须**说清覆盖什么**：只写「覆盖 6 类」读者无从判断自己的敏感字段在不在内
    * —— 实测里 `password=hunter2` 就不在任何预设里（预设只管凭证/PII 的固定形态）。
    * 与其偷偷加规则（会与 examples/observability 的 6 类漂移），不如把类名与边界都摆出来。 */
@@ -111,7 +133,7 @@ function buildHtml(opts: {
   const bannerCls = redacted ? 'ok' : 'warn';
   const truncNote =
     truncated > 0
-      ? `<div class="note">⚠️ 源文件共 ${truncated + traces.length} 条，本页只含前 ${traces.length} 条（<code>--limit</code> 调整）</div>`
+      ? `<div class="note">⚠️ 源文件共 ${truncated + traces.length} 条，本页只含${rangeWord} ${traces.length} 条（<code>--limit</code> 调整${rangeWord === '最近' ? '，<code>--head</code> 换从头看' : ''}）</div>`
       : '';
 
   return `<!doctype html>
@@ -188,6 +210,8 @@ export async function viewCommand(args: string[]): Promise<number> {
   let open = false;
   let raw = false;
   let limit: number | undefined;
+  /** 截断取最早 N 条（缺省取最近 N 条，见文件头注） */
+  let head = false;
   let traceId: string | undefined;
   /** 业务自有敏感字段（可重复）—— 预设管不到 `password=` 这类，这里是使用者的兜底口子 */
   const extraKeys: string[] = [];
@@ -198,6 +222,8 @@ export async function viewCommand(args: string[]): Promise<number> {
       open = true;
     } else if (a === '--raw') {
       raw = true;
+    } else if (a === '--head') {
+      head = true;
     } else if (a === '-o' || a === '--out') {
       out = args[i + 1];
       if (out === undefined) throw new Error(`-o 需要一个文件参数\n${USAGE}`);
@@ -236,9 +262,12 @@ export async function viewCommand(args: string[]): Promise<number> {
   }
 
   // 解析 + 按 traceId 去重（append-only 落盘里同一棵树会写多次，同 `report` 的口径：留最后一行）
+  // ⚠️ 位置也要跟着「最后一行」：`Map` 对已存在的键原地 `set` **不移动位置** ⇒ 顺序会停在
+  // 「首次出现」，与「取最近 N 条」直接矛盾（重跑补对的树会被挤到很前面而落选）。先 delete 再 set。
   const byId = new Map<string, TraceLike>();
   let badLines = 0;
   let total = 0;
+  let anonSeq = 0;
   for (const line of text.split('\n')) {
     const s = line.trim();
     if (!s) continue;
@@ -253,7 +282,9 @@ export async function viewCommand(args: string[]): Promise<number> {
       continue;
     }
     total += 1;
-    const key = parsed.traceId ?? `__anon_${byId.size}`;
+    anonSeq += 1;
+    const key = parsed.traceId ?? `__anon_${anonSeq}`;
+    if (byId.has(key)) byId.delete(key);
     byId.set(key, parsed);
   }
   if (byId.size === 0) {
@@ -273,27 +304,31 @@ export async function viewCommand(args: string[]): Promise<number> {
   }
 
   const cap = limit ?? DEFAULT_LIMIT;
+  /** 文案里说清取的是哪一端（不许一律写「前 N 条」—— 那正是本仓最忌的「少给了还说不准」） */
+  const rangeWord = head ? '最早' : '最近';
   let truncated = 0;
   if (traces.length > cap) {
     truncated = traces.length - cap;
-    traces = traces.slice(0, cap);
+    traces = head ? traces.slice(0, cap) : traces.slice(-cap);
   }
 
-  // 字节兜底：长对话的 trace 可能极大，静默产出几百 MB 的 HTML 不如响亮报错
+  // 字节兜底：长对话的 trace 可能极大，静默产出几百 MB 的 HTML 不如响亮报错。
+  // 保留方向与 --limit 一致：默认保最近的（丢最早），--head 保最早的。
   let bytes = traces.reduce((s, t) => s + JSON.stringify(t).length, 0);
   if (bytes > MAX_INLINE_BYTES) {
+    const ordered = head ? traces : [...traces].reverse();
     const keep: TraceLike[] = [];
     bytes = 0;
-    for (const t of traces) {
+    for (const t of ordered) {
       const size = JSON.stringify(t).length;
       if (bytes + size > MAX_INLINE_BYTES) break;
       keep.push(t);
       bytes += size;
     }
     truncated += traces.length - keep.length;
-    traces = keep;
+    traces = head ? keep : keep.reverse();
     console.error(
-      `[agentia] 内联体积超过 ${Math.floor(MAX_INLINE_BYTES / 1024 / 1024)} MiB，只取前 ${traces.length} 条（--limit 调整）`,
+      `[agentia] 内联体积超过 ${Math.floor(MAX_INLINE_BYTES / 1024 / 1024)} MiB，只保留${rangeWord} ${traces.length} 条（--limit 调整）`,
     );
   }
   if (traces.length === 0)
@@ -315,17 +350,31 @@ export async function viewCommand(args: string[]): Promise<number> {
     presetNames,
     extraKeys: raw ? [] : extraKeys,
     truncated,
+    rangeWord,
   });
 
-  const target = out ?? `${file.replace(new RegExp(`${extname(file)}$`), '')}.html`;
+  // 缺省产物放「人看得见的地方」：输入在点目录里（`agentia dev` 的缺省落盘就是
+  // `.agentia/traces.jsonl`）时**上跳到最近的非点目录**再写 —— 别把 HTML 藏进隐藏目录：
+  // Finder 里看不见，也容易被 `.gitignore` 的 `.agentia/` 一并吞掉。
+  // 其余情况写在输入旁边（同 report 的直觉）。
+  const absIn = resolve(file);
+  let outDir = dirname(absIn);
+  while (basename(outDir).startsWith('.') && dirname(outDir) !== outDir) outDir = dirname(outDir);
+  const baseName = `${basename(absIn, extname(absIn))}.html`;
+  const target = out ?? join(outDir, baseName);
+  if (resolve(target) === absIn) {
+    throw new Error(`产物路径不能是输入文件本身（${target}）—— 那会把 trace 数据覆盖成 HTML`);
+  }
+  const overwriting = existsSync(target);
   await writeFile(target, html, 'utf8');
 
   console.log(
-    `已生成 ${target}（${traces.length} 条 trace，${(html.length / 1024).toFixed(1)} KiB，单文件自包含）`,
+    `已生成 ${target}（${traces.length} 条 trace，${(html.length / 1024).toFixed(1)} KiB，单文件自包含）` +
+      (overwriting ? ' —— 已覆盖同名文件' : ''),
   );
   if (truncated > 0) {
     console.log(
-      `⚠️ 源文件共 ${total} 行记录 / ${truncated + traces.length} 条 trace，本页只含前 ${traces.length} 条 —— 用 --limit 调整`,
+      `⚠️ 源文件共 ${total} 行记录 / ${truncated + traces.length} 条 trace，本页只含${rangeWord} ${traces.length} 条 —— 用 --limit 调整`,
     );
   }
   if (badLines > 0) console.log(`⚠️ 另有 ${badLines} 行无法解析（已跳过）`);

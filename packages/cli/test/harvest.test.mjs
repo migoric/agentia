@@ -404,7 +404,7 @@ describe('agentia harvest', { skip: SKIP }, () => {
     assert.match(run(['--help']), /agentia harvest <trace\.jsonl>/);
   });
 
-  it('CLI 生成器与框架 harvestEvalCase 逐字相等（移植漂移对拍，六组夹具）', async () => {
+  it('CLI 生成器与框架 harvestEvalCase 逐字相等（移植漂移对拍，七组夹具）', async () => {
     if (!distReadyOrLoud(FW_HARVEST, '框架构建产物')) return; // 本地未 build：醒目警告后跳过
     const { harvestEvalCase: fwHarvest } = await import(FW_HARVEST);
     const { harvestEvalCase: cliHarvest } = await import(CLI_HARVEST);
@@ -461,6 +461,57 @@ describe('agentia harvest', { skip: SKIP }, () => {
           trace: traceNoTurns,
           messages: [{ role: 'user', content: 'go' }],
           name: 'harvest-run-empty',
+        },
+      ],
+      [
+        '开了 traceContent 的 run（assistant 文本取 output.text 真值）',
+        {
+          trace: {
+            traceId: 'run-text',
+            rootSpanId: 's0',
+            status: 'ok',
+            spans: [
+              {
+                spanId: 's0',
+                parentSpanId: null,
+                kind: 'run',
+                name: 'agent.run',
+                startedAt: 0,
+                endedAt: 30,
+                status: 'ok',
+                attributes: {},
+                events: [],
+              },
+              {
+                spanId: 't1',
+                parentSpanId: 's0',
+                kind: 'llm.turn',
+                name: 'claude-opus-5',
+                startedAt: 10,
+                status: 'ok',
+                attributes: { 'output.text': '我先查一下。' },
+                events: [
+                  {
+                    time: 11,
+                    name: 'tool.input',
+                    body: { tool: 'search', tool_use_id: 'tu_1', input: '{"q":"x"}' },
+                  },
+                ],
+              },
+              {
+                spanId: 't2',
+                parentSpanId: 's0',
+                kind: 'llm.turn',
+                name: 'claude-opus-5',
+                startedAt: 20,
+                status: 'ok',
+                attributes: { 'output.text': '查到了：晴。' },
+                events: [],
+              },
+            ],
+          },
+          messages: [{ role: 'user', content: '查天气' }],
+          name: 'harvest-run-text',
         },
       ],
     ];

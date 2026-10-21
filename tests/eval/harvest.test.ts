@@ -106,6 +106,29 @@ describe('harvestEvalCase（R7 回流）', () => {
     assert.ok(code.includes('assert.deepEqual(tools, ["search","translate"]);'));
   });
 
+  it('trace 记了 output.text ⇒ 用真文本；纯 tool_use 回合不加占位', () => {
+    const trace = makeTrace();
+    const t1 = trace.spans.find((s) => s.spanId === 't1') as { attributes: object };
+    t1.attributes = { 'output.text': '我先查一下北京的天气。' };
+    const code = harvestEvalCase({ trace });
+
+    assert.ok(code.includes('"text": "我先查一下北京的天气。"'), '真文本应进脚本（不是占位）');
+    // t1 有文本、t2（无文本无工具）是终端回合 ⇒ 占位只应出现 1 次（t2 那条）
+    assert.equal(
+      (code.match(/assistant 文本未入 trace/g) ?? []).length,
+      1,
+      '纯 tool_use 回合补占位会变成「模型说过这句话」的假事实',
+    );
+    assert.match(code, /assistant 文本取自 trace 的 output\.text/);
+    assert.match(code, /1 个回合没有文本/);
+  });
+
+  it('没开 traceContent ⇒ 头注如实说「没有 assistant 文本」并给开关名', () => {
+    const code = harvestEvalCase({ trace: makeTrace() });
+    assert.match(code, /trace 里没有 assistant 文本（该 run 未开 traceContent/);
+    assert.ok(!code.includes('assistant 文本取自 trace 的 output.text'));
+  });
+
   it('生成物可 eval，且按骨架真跑一轮：轨迹断言对新 trace 不抛', async () => {
     const code = harvestEvalCase({
       trace: makeTrace(),

@@ -22,6 +22,7 @@ interface SpanLike {
   kind?: string;
   name?: string;
   startedAt?: number;
+  attributes?: Record<string, unknown>;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -38,8 +39,14 @@ interface HarvestTraceLike {
   spans?: SpanLike[];
 }
 
-/** trace 不记 assistant 文本 —— 脚本 text 块的统一占位（与框架侧同一个词） */
+/** trace 没开 `traceContent`（或该回合确实没说话）时，脚本 text 块的统一占位（与框架侧同一个词） */
 const ASSISTANT_TEXT_PLACEHOLDER = '[harvest] assistant 文本未入 trace';
+
+/** 取本回合的真实 assistant 文本 —— 只认 opt-in 的 `output.text`（与框架侧逐字同形） */
+function assistantTextOf(turn: SpanLike): string | null {
+  const text = turn.attributes?.['output.text'];
+  return typeof text === 'string' && text !== '' ? text : null;
+}
 
 /** 任意值 → 字符串（core/json.ts stringifySafe 的移植） */
 function stringifySafe(x: unknown): string {
@@ -143,9 +150,14 @@ export function harvestEvalCase(input: HarvestCaseArgs): string {
   let tuSeq = 0;
   const steps = mainTurns.map((turn, i) => {
     const inputs = toolInputsOf(turn);
-    const content: Array<Record<string, unknown>> = [
-      { type: 'text', text: ASSISTANT_TEXT_PLACEHOLDER },
-    ];
+    const text = assistantTextOf(turn);
+    const content: Array<Record<string, unknown>> = [];
+    if (text !== null) {
+      content.push({ type: 'text', text });
+    } else if (inputs.length === 0) {
+      // 只有「既没文本又没工具」的终端回合才放占位（与框架侧逐字同步）
+      content.push({ type: 'text', text: ASSISTANT_TEXT_PLACEHOLDER });
+    }
     for (const e of inputs) {
       content.push({
         type: 'tool_use',
@@ -164,12 +176,25 @@ export function harvestEvalCase(input: HarvestCaseArgs): string {
   });
   const toolSeq = mainTurns.flatMap((t) => toolInputsOf(t).map((e) => e.tool));
   const userText = lastUserText(input.messages);
+  const textTurns = mainTurns.filter((t) => assistantTextOf(t) !== null).length;
 
   const head: string[] = [
     `// ┄┄ harvest 用例骨架：${name}（trace ${oneLine(trace.traceId ?? '')}${input.source ? `，来源 ${oneLine(input.source)}` : ''}）┄┄`,
     '// ⚠️ 脚手架，不是成品 —— 人工核对后再进 CI：',
-    '//   · trace 不记 assistant 文本（llm.turn 只记 usage/事件），脚本里的 text 块是占位；',
   ];
+  if (textTurns > 0) {
+    head.push(
+      `//   · assistant 文本取自 trace 的 output.text（该 run 开了 traceContent: 'full'）` +
+        (textTurns < mainTurns.length
+          ? `；${mainTurns.length - textTurns} 个回合没有文本（纯 tool_use 回合本来就没文本）；`
+          : '；'),
+    );
+  } else {
+    head.push(
+      "//   · trace 里没有 assistant 文本（该 run 未开 traceContent: 'full'）—— 脚本只含工具调用，",
+      '//     终端回合的 text 是占位；要真文本请在 app 里开 traceContent 后重跑再 harvest；',
+    );
+  }
   if (nestedCount > 0) {
     head.push(
       `//   · 只含主循环 ${mainTurns.length} 个回合；${nestedCount} 个子 agent 嵌套回合已略去`,
@@ -266,8 +291,9 @@ function renderEvalFile(opts: {
     (opts.badLines > 0 ? `，跳过无法解析 ${opts.badLines} 行` : '');
   const cases = opts.cases.map((c) => c.replace(/\n$/, '').replace(/^/gm, '  ')).join(',\n');
   return `// 由 \`agentia harvest\` 生成的 eval 用例脚手架（${note}）
-// ⚠️ 这是脚手架：assistant 文本为占位（trace 不记文本）；每个用例里的 expect 是
-//    从原 trace 抄录的「实际轨迹」—— 发生过 ≠ 应该发生，人工核对后再进 CI。
+// ⚠️ 这是脚手架：assistant 文本视 trace 而定（run 开了 traceContent: 'full' 则取自
+//     output.text，否则只含工具调用）；每个用例里的 expect 是
+//     从原 trace 抄录的「实际轨迹」—— 发生过 ≠ 应该发生，人工核对后再进 CI。
 import assert from 'node:assert/strict';
 import { defineEval, scriptedClient } from '@migor/agentia';
 
