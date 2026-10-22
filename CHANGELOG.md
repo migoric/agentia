@@ -7,6 +7,61 @@
 
 ## [Unreleased]
 
+### 文档：接数据库（新增 `docs/database.md` + MySQL `TaskStore` 骨架）
+
+宿主问的是「我要连 mysql，是不是得再写个数据库的包」—— 答案是不用，但这个答案此前**没有落点**：
+`TaskStore` 的注释写着「队列 / DB 版只需实现 `TaskStore`」，而宿主从零实现时要自己摸清
+「哪份数据归框架、哪份归自己」「`listDue` 为什么值得实现」「多实例为什么会双跑」。
+
+- **落库**：[`docs/database.md`](docs/database.md) —— 三件事分治表（业务数据 / 任务状态 / 会话记忆）、
+  业务数据的构造注入写法（provider + `@Tool`，框架零改动）、`TaskStore` 的 6 必需 + 3 可选契约、
+  可照抄的 MySQL 骨架（建表 DDL、`ON DUPLICATE KEY UPDATE`、`(status, wake_at)` 到期索引）、
+  三个真坑（幂等键 last-wins 不能靠插入序 / `listDue` 写成 `JSON_EXTRACT` 等于白实现 /
+  **跨进程认领不是原子的**：靠 `ownerId` + pid 存活 + 新鲜度启发式，要真原子得在 store 内部加锁，
+  而那不是接口的一部分）、以及「别把业务事务和 run 记录塞进一个事务」。
+- **不做什么**：不新增 `@migor/*-mysql` 包（拆包判据是**真有第二个使用方**，而 `TaskStore` 接口已冻结
+  ⇒ 将来提取只是剪切粘贴，成本不随时间涨）；不把驱动放进核心（`dependencies` 仍为空 ——
+  `SqliteTaskStore` 能进核只因为 `node:sqlite` 随 Node 发行）。
+- **记录一个缺口**（不改公共面）：`src/store/record.ts` 的 `parseTaskRecord`（含旧形状归一）**没导出**，
+  而它是读回记录的**唯一入口**；外部实现 `TaskStore` 只能 `JSON.parse(...) as TaskRecord`，
+  正是那个 `as` 在讲的东西（旧记录带着已不存在的状态值被读回来）。文档里给了「自己补归一」的
+  临时写法，并把导出这件事留给后续决策。
+- **守卫**：`docs/database.md` 纳入 `tests/docs/code-fences.test.ts` 取样面（骨架是宿主会逐字复制的，
+  必须真编译）；`docs/guards.md` 的取样面描述同步。变异 2 条各咬住预期用例：删掉 `clear()` ⇒
+  `docs/database.md:124（块内第 26 行）TS2420`；把 `pool.execute` 改成 `pool.exec` ⇒
+  `docs/database.md:29（块内第 13 行）TS2339`。README 中英两版补索引行。
+- **§7 回答「要不要出包 / NestJS 式接入」**（同一问题问了两次 ⇒ 判据落纸）：拆包的判据是
+  **真有第二个使用方**，而 `TaskStore` 接口已冻结 ⇒ 提取成本不随时间涨，提前出包反而要认领
+  驱动版本 / 变体语义 / 表结构迁移；真出包时形态是**收 pool 不 import 驱动**（照 `RedisTaskStore`
+  的 `RedisLike` 先例，仍是零运行时依赖）。NestJS 四部件对照：DI + token 有（但 `Token = string`，
+  拼错只在首次 `resolve` 才抛）、模块化靠返回 `Provider[]` 的函数拆、**生命周期刻意没有**
+  （判据是**进程级决策归宿主**：不读 env / 不订阅信号 / 不关 store / `createHttpHandler` 不 listen
+  ⇒ 关池是宿主的 `SIGTERM` 钩子；⚠️ 唯一例外是 MCP 反向桥，那里它自己就是服务端）、实体 → Repository 不做。
+
+### 新增：`serve()` / `gracefulShutdown()` —— 起服务 + 优雅停机的两个宿主原语（2026-10-22 ref-serve-graceful-shutdown）
+
+宿主反馈「server 这块让用户写的好麻烦」。对照 `examples/deploy/src/main.ts`：108 行里约 35 行是与
+业务无关的 server 样板，而那 35 行藏着四个**静默错** —— 写错没人报，只在 K8s 滚动更新那天发作：
+
+- **新增导出**（`src/transport/serve.ts`，决策见 `docs/spec.md` §10）：
+  `serve(handler, { port, host?, backlog? })` → `{ server, port, close() }`；
+  `gracefulShutdown({ server, drain, signals?, timeoutMs?, onSecondSignal?, onShutdown? })` → 幂等 `stop()`。
+  宿主侧从 ~35 行降到 ~8 行（两份参考示例已改用，`e2e-deploy` 仍报 `shutdownExitCode: 0`）。
+- **收进实现的四条**：① 连接收干净 —— ⚠️ 版本有关：Node **19.0.0** 起 `close()` 自己会收空闲连接
+  （nodejs/node#43522），只有 18.x 必须显式 `closeIdleConnections()`；而「已连接但没发过请求」的裸
+  TCP **任何版本都收不掉** ⇒ 预算是必需品；② **先 drain 再 close**（反过来切断在飞请求）；
+  ③ 第二次信号**不吞** —— `if (stopping) return` 是反例：信号**已被拦截**，Node 默认行为不会发生
+  ⇒ 运维强杀杀不掉（两份示例当时都这么写）；④ `onShutdown(clean)` 把结论交回宿主。
+- **边界**：`signals` **不传 = 一个信号都不订阅**；本原语**不调 `process.exit`**（退出码与
+  「关池 / 冲 sink 之后再退」是宿主的编排）。判据是**谁发起** —— 与 Nest 的 `app.listen()` /
+  `enableShutdownHooks()` 同构（那边信号订阅**默认也是关的**）。不做 `serve(app, {...})` 一体化：
+  那会把 `createApp` / `AsyncRunner` / `createHttpHandler` 焊死，挂进已有 Express 的宿主反而用不上。
+- **验证**：`tests/transport/serve.test.ts` 15 例（真实 http server + 真实 socket），**变异 8/8**
+  各咬住预期用例后还原。⚠️ `closeIdleConnections` 那条**只能用调用断言钉**（当前运行时 Node 22
+  自带该行为 ⇒ 行为断言抓不到），期望次数按运行时算 ⇒ 18 与 ≥19 上删掉它都红。
+- **同步**：`docs/usage-guide.md` 优雅停机小节、`docs/deployment.md` §5（含那四个坑的清单）、
+  `docs/database.md` §7（`pool.end()` 接在 `onShutdown`）、`docs/guards.md` 登记行。
+
 ### 修复：`view` 取最近 N 条、`harvest` 接 opt-in 文本、bundle 加构建期语法闸（2026-10-21 ① ref-view-limit-harvest-text）
 
 对最近 45 个提交复评后的一批修复（评审记录 `docs/reviews/2026-10-21/recent-code-review.md`）。
@@ -1920,8 +1975,6 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 **顺带**：`guards.md §2` 那条「`async.ts` 没有行数上限闸」**闭环**（划掉、移入 §1.1）；
 `AGENTS.md` 的 `transport/` 段补登记三个监督件，并订正那句已过时的「910 行的类 / 后续抽块三步一步
 没走」（抽块其实已走了三步）。
-
-## [Unreleased]
 
 ## [0.9.5] - 2026-09-29
 

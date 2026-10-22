@@ -60,6 +60,27 @@
 4. store 的 `close()`（若有）排在 drain **之后**——drain 不关 store（同一个 store 可能被调度器
    或另一个宿主共用）。
 
+第 1–2 步加「起监听」合起来约 20 行样板，里面藏着四个**静默错**（写错没人报、只在 K8s 滚动
+更新那天发作）：连接没收干净（close 等满超时）、先 close 再 drain（切断在飞请求）、
+`if (stopping) return` 吞掉第二次信号（运维强杀杀不掉 —— 信号**已被拦截**，Node 默认行为不会
+发生）、停完不 exit。⇒ 用 `serve()` + `gracefulShutdown()` 把四条收进实现（2026-10-22 ref-serve-graceful-shutdown）：
+
+```ts
+import { gracefulShutdown, serve } from '@migor/agentia';
+
+const { server, port } = await serve(handler, { port: PORT });
+gracefulShutdown({
+  server,
+  drain: () => handler.drain({ timeoutMs: 15_000 }),
+  signals: ['SIGTERM', 'SIGINT'],          // 不传 = 一个都不订阅
+  onSecondSignal: () => process.exit(1),
+  onShutdown: (clean) => { store.close(); process.exit(clean ? 0 : 1); },   // 关 store 排在最后
+});
+```
+
+⚠️ 两个原语都**要宿主显式调用**——这不是「框架替你做进程级决策」：判据是**谁发起**，
+与 Nest 的 `app.listen()` / `enableShutdownHooks()` 同构（那边信号订阅**也是显式 opt-in**）。
+
 崩溃路径（没机会 drain）：挂起任务由下次启动的 `resumePending()` 兜回（§2）。
 
 ## 6. 资源上限（失控保险丝）
@@ -101,7 +122,8 @@
       `e2e-deploy` 的做法可以照抄）（§2）
 - [ ] `authenticate` 已实现，或**明确决定**只有反代可达、并写进运维文档（§3）
 - [ ] `/metrics` 的可达性已由反代限制（§3）
-- [ ] `SIGTERM → drain` 已接线；停机宽限 > `timeoutMs`；store `close()` 排在 drain 后（§5）
+- [ ] `SIGTERM → drain` 已接线（手写的请逐条对 §5 那四个静默错）；停机宽限 > `timeoutMs`；
+     store `close()` 排在 drain 后（§5）
 - [ ] 四个预算旋钮至少设了 `maxTotalTokens`（§6）
 - [ ] trace 的消费方式定了（四配方之一）；缺省不记 assistant 文本这点已知（§7）
 - [ ] `/healthz` 已接负载均衡，`draining` 用于摘流量（§4）

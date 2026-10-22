@@ -169,6 +169,10 @@ export type {
   RunHttpResponse,
   TaskSubmitBody,
 } from './transport/http.js';
+// 起服务 + 优雅停机：两个正交的宿主原语（都要宿主显式调用；不传 signals 就不订阅信号）
+// 设计稿 `docs/plans/2026-10-22-serve-graceful-shutdown.md`；决策 2026-10-22 ref-serve-graceful-shutdown
+export { serve, gracefulShutdown } from './transport/serve.js';
+export type { ServeOptions, Served, GracefulShutdownOptions } from './transport/serve.js';
 export { SqliteTaskStore } from './store/sqliteStore.js';
 export { createOtlpExporter } from './integrations/otlp.js';
 // JSONL 文件 sink：`agentia report` / `diff` / `harvest` / `export` 的输入格式（一行一条裸 Trace）

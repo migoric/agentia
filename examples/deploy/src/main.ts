@@ -11,7 +11,6 @@
  * 观测配方（落库 / 采样 / 脱敏 / 日志关联）见 ../observability/ 与 docs/observability.md。
  */
 import { mkdirSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { dirname } from 'node:path';
 import {
   AsyncRunner,
@@ -19,7 +18,9 @@ import {
   SystemPrompt,
   createApp,
   createHttpHandler,
+  gracefulShutdown,
   metricsSink,
+  serve,
 } from '@migor/agentia';
 import { providers } from './registry.js';
 
@@ -64,45 +65,41 @@ const resumed = await runner.resumePending();
 if (resumed) console.log(`[boot] 续跑 ${resumed} 个未完成任务`);
 
 // —— 4) HTTP 宿主 ——
-const handler = createHttpHandler(app, { runner, maxConcurrentRuns: 32 });
+// `/metrics` 由 handler 自带的 `metrics` 选项提供（与 `/healthz` 同档：不鉴权、停机中仍可拉，
+// Content-Type 跟 sink 走）。⚠️ 别在 `createServer` 里手写 `/metrics` 旁路 —— 那是 handler
+// 还没有这个选项时的写法，会让宿主的 server 层无端多一层 wrap。
+const handler = createHttpHandler(app, { runner, maxConcurrentRuns: 32, metrics });
 
-const server = createServer((req, res) => {
-  // 额外运维端点：/metrics（Prometheus 抓取）。⚠️ 走 handler 之外，不受 authenticate 管 ——
-  // 生产请由反代 / 内网限制其可达性（探针端点通常如此）。
-  if (req.method === 'GET' && (req.url ?? '').split('?')[0] === '/metrics') {
-    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
-    res.end(metrics.render());
-    return;
-  }
-  void handler(req, res);
+// `serve` = createServer + listen + 等到真的在听。`port` 是**实际**端口（PORT=0 时由 OS 分配），
+// 端口冲突 / 权限不足直接 reject —— boot 阶段静默起不来比崩更难查。
+const { server, port } = await serve(handler, { port: PORT });
+
+// ⚠️ 首行是**就绪信号**（scripts/e2e-deploy.ts 从它解析实际端口判定服务可用）——
+//    改文案要同步改那边的正则。
+console.log(`[boot] listening on :${port}（db=${DB_PATH}）`);
+console.log('  POST /run        同步 run（带 Accept: text/event-stream → SSE 逐帧）');
+console.log('  POST /tasks      异步任务（轮询 GET /tasks/:id）');
+console.log('  GET  /healthz    健康检查（探针用，不鉴权）');
+console.log('  GET  /metrics    Prometheus 指标');
+
+// —— 5) 优雅停机 ——
+// 以前这段是 ~20 行手写样板，其中藏着四个静默错（清单见
+// docs/plans/2026-10-22-serve-graceful-shutdown.md §1）：
+//   ① 空闲 / 裸连接没收干净 ⇒ close() 等满超时；② 先 close 再 drain ⇒ 切断在飞请求；
+//   ③ `if (stopping) return` 吞掉第二次信号 ⇒ 运维强杀杀不掉；④ 停完不 exit。
+// `gracefulShutdown` 把这四条收进实现里，只把「退不退出、退几」留给你。
+gracefulShutdown({
+  server,
+  // 拒新单 → 等在飞同步 run 与异步任务收尾 → 超时强制收口 SSE
+  drain: () => handler.drain({ timeoutMs: 15_000 }),
+  // 不传 = 一个信号都不订阅（框架不做进程级决策）；传了即宿主显式认领
+  signals: ['SIGTERM', 'SIGINT'],
+  timeoutMs: 15_000,
+  // 第二次信号：本原语不吞它 —— 给了这个钩子就交给你，没给就摘掉监听让 Node 默认行为接管
+  onSecondSignal: () => process.exit(1),
+  // 停机完成（`clean` = 排空且连接关干净）。本原语自己不 exit —— 退出码是宿主的编排
+  onShutdown: (clean) => {
+    console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
+    process.exit(clean ? 0 : 1);
+  },
 });
-
-server.listen(PORT, () => {
-  // PORT=0 时端口由操作系统分配，以 server.address() 拿到的实际端口为准
-  const addr = server.address();
-  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
-  // ⚠️ 首行是**就绪信号**（scripts/e2e-deploy.ts 从它解析实际端口判定服务可用）——
-  //    改文案要同步改那边的正则。
-  console.log(`[boot] listening on :${actualPort}（db=${DB_PATH}）`);
-  console.log('  POST /run        同步 run（带 Accept: text/event-stream → SSE 逐帧）');
-  console.log('  POST /tasks      异步任务（轮询 GET /tasks/:id）');
-  console.log('  GET  /healthz    健康检查（探针用，不鉴权）');
-  console.log('  GET  /metrics    Prometheus 指标');
-});
-
-// —— 5) 优雅停机（框架不订阅信号 —— 这是宿主的职责）——
-let stopping = false;
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    if (stopping) return; // 第二次信号不再拦截，便于强杀
-    stopping = true;
-    console.log(`[${sig}] 优雅停机……`);
-    void (async () => {
-      // 拒新单 → 等在飞同步 run 与异步任务收尾 → 超时强制收口 SSE
-      const clean = await handler.drain({ timeoutMs: 15_000 });
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
-      process.exit(0);
-    })();
-  });
-}

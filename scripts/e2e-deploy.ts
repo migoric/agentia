@@ -388,7 +388,7 @@ try {
     `finalText 应是假端点的收尾文本，实际 ${JSON.stringify(runBody.finalText)}`,
   );
 
-  // —— /metrics（Prometheus 文本；走 handler 之外，不鉴权）——
+  // —— /metrics（Prometheus 文本；handler 自带的 metrics 选项，不鉴权）——
   // 注：不断言 capability_calls_total —— echo 是普通 @Tool，按 trace 模型**不建 capability
   // span**（capability span 只给 @Skill/@SubAgent 这类嵌套能力，见 core/trace.ts），
   // 工具是否真执行已由上面的 tool_result 断言钉住。

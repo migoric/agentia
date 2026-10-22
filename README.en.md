@@ -195,6 +195,7 @@ One run == one trace (`traceId === runId`), **built in from turn 0** — not a b
 |---|---|
 | Usage guide (authoritative, zh) | [`docs/usage-guide.md`](./docs/usage-guide.md) |
 | Production observability recipes | [`docs/observability.md`](./docs/observability.md) |
+| Database integration (inject your pool / implement `TaskStore` for MySQL) | [`docs/database.md`](./docs/database.md) |
 | Framework compatibility (measured: NestJS / Egg / Bun / Deno) | [`docs/frameworks.md`](./docs/frameworks.md) |
 | Examples (complete app / minimal deploy / observability) | [`examples/`](./examples/) |
 | Design spec & roadmap | [`docs/spec.md`](./docs/spec.md) · [`docs/roadmap.md`](./docs/roadmap.md) |
