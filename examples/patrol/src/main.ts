@@ -14,7 +14,6 @@
  *   §7 两个 sink（指标 + JSONL trace）        §9 回滚要看迁移小节（见 README）
  */
 import { mkdirSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import {
   AsyncRunner,
@@ -23,8 +22,10 @@ import {
   SystemPrompt,
   createApp,
   createHttpHandler,
+  gracefulShutdown,
   jsonlTraceSink,
   metricsSink,
+  serve,
 } from '@migor/agentia';
 import { wireModel } from './model.js';
 import { buildProviders } from './registry.js';
@@ -138,38 +139,33 @@ const handler = createHttpHandler(app, {
   },
 });
 
-const server = createServer((req, res) => void handler(req, res));
-server.listen(PORT, () => {
-  const addr = server.address();
-  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
-  // ⚠️ 首行是**就绪信号**（drill.ts 从它解析实际端口）——改文案要同步改那边的正则
-  console.log(`[boot] listening on :${actualPort}`);
-  console.log(`[boot] root=${ROOT}`);
-  console.log(`[boot] reports=${REPORTS}`);
-  console.log(`[boot] db=${DB_PATH}`);
-  console.log(`[boot] model=${model}${pricingIsPlaceholder ? '（价目表是占位值）' : ''}`);
-  if (!TOKEN) console.warn('[boot] ⚠️ 未启用 authenticate（PATROL_ALLOW_NO_AUTH=1）');
-  if (pricingIsPlaceholder) {
-    console.warn('[boot] ⚠️ 用的是占位价目表 —— maxCostUsd 的读数不可信，请设 PATROL_PRICE_IN/OUT');
-  }
-});
+// `serve` = createServer + listen + 等真的在听；`port` 是**实际**端口（PORT=0 时由 OS 分配）
+const { server, port } = await serve(handler, { port: PORT });
 
-// ── §5 优雅停机：框架不订阅信号，订阅是宿主的职责；顺序是死的 ───────────────
-let stopping = false;
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    if (stopping) return; // 第二次信号放行，便于强杀
-    stopping = true;
-    console.log(`[${sig}] 优雅停机……`);
-    void (async () => {
-      // ① 拒新单 → 等在飞收尾（超时强制收口 SSE）
-      const clean = await handler.drain({ timeoutMs: DRAIN_TIMEOUT_MS });
-      // ② 关服务器
-      await new Promise<void>((r) => server.close(() => r()));
-      // ③ store.close() **排在 drain 之后**（drain 不关 store：同一个 store 可能被共用）
-      store.close();
-      console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
-      process.exit(0);
-    })();
-  });
+// ⚠️ 首行是**就绪信号**（drill.ts 从它解析实际端口）——改文案要同步改那边的正则
+console.log(`[boot] listening on :${port}`);
+console.log(`[boot] root=${ROOT}`);
+console.log(`[boot] reports=${REPORTS}`);
+console.log(`[boot] db=${DB_PATH}`);
+console.log(`[boot] model=${model}${pricingIsPlaceholder ? '（价目表是占位值）' : ''}`);
+if (!TOKEN) console.warn('[boot] ⚠️ 未启用 authenticate（PATROL_ALLOW_NO_AUTH=1）');
+if (pricingIsPlaceholder) {
+  console.warn('[boot] ⚠️ 用的是占位价目表 —— maxCostUsd 的读数不可信，请设 PATROL_PRICE_IN/OUT');
 }
+
+// ── §5 优雅停机：框架不订阅信号，传 `signals` 即宿主显式认领；顺序是死的 ─────
+gracefulShutdown({
+  server,
+  // ① 拒新单 → 等在飞收尾（超时强制收口 SSE）
+  drain: () => handler.drain({ timeoutMs: DRAIN_TIMEOUT_MS }),
+  signals: ['SIGTERM', 'SIGINT'],
+  timeoutMs: DRAIN_TIMEOUT_MS,
+  onSecondSignal: () => process.exit(1),
+  onShutdown: (clean) => {
+    // ② 关服务器已由本原语做完；③ store.close() **排在 drain 之后**
+    //    （drain 不关 store：同一个 store 可能被共用）
+    store.close();
+    console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
+    process.exit(clean ? 0 : 1);
+  },
+});

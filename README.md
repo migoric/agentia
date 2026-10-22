@@ -324,6 +324,7 @@ npm run e2e          # 端到端：CLI 脚手架 → 装配 mock run；再真跑
 - 设计规格：[`docs/spec.md`](docs/spec.md)
 - 生产可观测配方：[`docs/observability.md`](docs/observability.md)
 - 上线清单（store 选型 / 鉴权边界 / 优雅停机 / 预算 / 回滚）：[`docs/deployment.md`](docs/deployment.md)
+- 接数据库（业务数据构造注入 / 自建 `TaskStore` 的 MySQL 骨架 / 别把业务事务和 run 混一个事务）：[`docs/database.md`](docs/database.md)
 - 框架兼容性实测（NestJS / Egg / Bun / Deno 结论表 + 最小代码 + Egg 三坑）：[`docs/frameworks.md`](docs/frameworks.md)
 - 完整示例：[`examples/complete/`](examples/complete/) · 最小部署：[`examples/deploy/`](examples/deploy/) · 存量改造：[`examples/agent-endpoint/`](examples/agent-endpoint/)
 - 官网：[agentia-web.pages.dev](https://agentia-web.pages.dev)（[Playground](https://agentia-web.pages.dev/playground) · [文档](https://agentia-web.pages.dev/docs) · [取舍对照](https://agentia-web.pages.dev/tradeoffs)）

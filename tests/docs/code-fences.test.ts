@@ -62,6 +62,9 @@ const SAMPLE = [
   'docs/usage-guide.md',
   'docs/observability.md',
   'docs/eval-gate.md',
+  // 2026-10-22：该页承诺「照抄就能接上你的库」，骨架是宿主会逐字复制的
+  // （TaskStore 的 6 个方法签名、JSON 往返与副本契约）⇒ 纳入取样面。
+  'docs/database.md',
   'docs/roadmap.md',
   // 2026-10-17 ref-frameworks-compat：该页承诺「照抄可跑」的最小接入代码，
   // 且它踩过真坑（CJS 片段写成裸顶层 await，探针报 TS1309）⇒ 纳入取样面。

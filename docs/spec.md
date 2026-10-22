@@ -7321,6 +7321,52 @@ NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10（两个 Web 框架宿主**只验到第
 `tests/eval/harvest.test.ts` + `packages/cli/test/harvest.test.mjs`（七组夹具，新增含
 `output.text` 的一组做逐字对拍）；`bundle.test.js` 三条畸形形态 + 一条「真实 src 不误报」。
 
+### 2026-10-22 ② ref-serve-graceful-shutdown：新增 `serve()` / `gracefulShutdown()` 两个宿主原语
+
+**决定**：`src/transport/serve.ts` 新增两个**正交**导出 —— `serve(handler, { port })` 与
+`gracefulShutdown({ server, drain, signals?, timeoutMs?, onSecondSignal?, onShutdown? })`。
+起因是宿主反馈「server 这块让用户写的好麻烦」：参考宿主 `examples/deploy/src/main.ts` 里约 35 行
+与业务无关，而这 35 行藏着四个**静默错**（写错没人报，只在 K8s 滚动更新那天发作）：
+
+① **连接没收干净** —— `close()` 要等所有连接结束。⚠️ 版本有关：Node **19.0.0** 起 `close()`
+  自己会收空闲连接（nodejs/node#43522），只有 18.x 上必须显式 `closeIdleConnections()`；而
+  「已连接但没发过请求」的裸 TCP **任何版本都收不掉**（不在 http 的 idle 列表里），只有
+  `closeAllConnections()` 能收 ⇒ **预算是必需品不是装饰**；
+② **先 close 再 drain** —— 顺序反了就把在飞请求切断，等于把「排空」这层保护作废；
+③ **二次信号被吞** —— `if (stopping) return;` 只是忽略，**信号已被拦截**，Node 默认行为不会
+  发生 ⇒ 运维第二次想强杀时杀不掉（两份参考示例当时都是这么写的）；
+④ **停完不 exit** —— `drain()` 返回 `false` 的契约是「本进程此后不再推进任何任务 ⇒ 必须退出」
+  （`drain-gate.ts` 类头注释）；不退出会让停机窗口里已落库的记录永远停在 `running`。
+
+**为什么这条不违反「不做进程级决策」**：判据是**谁发起**，不是「有没有碰 process」。`createApp()`
+里偷偷 `listen` / `process.on('SIGTERM')` 是越界；宿主写 `serve(...)` / 显式传 `signals` 不越界
+—— 与 Nest 的 `app.listen()` / `enableShutdownHooks()` 同构，而**那边信号订阅默认也是关的**
+（官方理由：listener 占资源，一进程多实例会 listener 泄漏）。所以：
+- **`signals` 不传 = 一个信号都不订阅**；
+- **不调用 `process.exit`**（退出码与「关池 / 冲 sink 之后再退」是宿主的编排）—— 留给
+  `onShutdown(clean)` 这个缝；
+- 第二次信号**不吞**：给了 `onSecondSignal` 就交还宿主，没给就摘掉监听让 Node 默认行为接管。
+
+对照前一日的「库 vs 框架」措辞纠错：真正的判据是「进程级决策归谁」，不是身份标签。
+
+**为什么不做 `serve(app, {...})` 一体化**：那会把 `createApp` / `AsyncRunner` /
+`createHttpHandler` 三件事焊死，想把 agent 挂进已有 Express 的宿主（`createHttpHandler`
+的既有卖点）反而用不上。
+
+**验证**：`tests/transport/serve.test.ts` 15 例（真实 `node:http` server + 真实 socket ——
+被测的就是与 Node 连接生命周期的对齐，换成假 server 等于把被测的东西 mock 掉）。变异 **8/8**
+各咬住预期用例后还原：删 `closeIdleConnections` / `closeAllConnections` / `off('error')`、
+`??=` 改 `=`、二次信号改 `return`、drain 抛错不关 server、`closeServer` 提前到 drain 之前、
+删 `onShutdown?.()`。
+⚠️ 其中第一条**只能用调用断言钉**（当前运行时 Node 22 的 `close()` 自带该行为），期望次数按
+运行时算（≥19 是 2 次：Node 一次 + 我们一次）⇒ 两个版本上删掉它都会红。
+
+**边界（如实标注）**：
+- 本原语**不覆盖** store / sink / 池的关闭 —— 那些排在宿主的 `onShutdown` 里（`database.md` §7
+  给了 `pool.end()` 的接法）；
+- `timeoutMs <= 0` 读作「不限」，不是「立刻超时」；
+- 只收 http server 的连接；WebSocket / HTTP2 升级的 socket `closeAllConnections` 不碰（Node 行为）。
+
 ## 11. 开放项
 
 

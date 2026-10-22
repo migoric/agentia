@@ -752,21 +752,43 @@ const handler = createHttpHandler(callable, { runner });
     `abort` 收尾的，不是排空的；只关掉**旁观者长连**（`GET /tasks/:id/stream`）⇒ 不损失任何工作，
     不影响这个布尔。宿主的 SIGTERM 决策（退出 / 再等）就依赖它。
   **框架不订阅信号** —— `process.on('SIGTERM', () => handler.drain())` 是宿主的事（同「框架不读 env」）。
+  不想自己写那 ~20 行停机样板就用 `serve()` + `gracefulShutdown()`（2026-10-22 ref-serve-graceful-shutdown）：它们把
+  「起监听 / 收连接 / 二次信号 / 停完回调」收进实现，但仍要**宿主显式调用、显式传 `signals`**
+  —— 不传就一个信号都不订阅。
 - **`handler.runner`** —— 内部 `AsyncRunner`，需要时手动控制（`resumePending` / `awaitTask` / `list`）。
 
 ```ts
+import {
+  createHttpHandler,
+  gracefulShutdown,
+  serve,
+  HttpException,
+} from '@migor/agentia';
+
 const handler = createHttpHandler(app, {
   // 只给缝：token/JWT/签名策略由你的宿主或反代实现
   authenticate: (req) => {
     if (req.headers['x-api-key'] !== expected) throw new HttpException(401, { error: '无效凭据' });
   },
 });
-http.createServer(handler).listen(3000);
 
-process.on('SIGTERM', async () => {
-  const clean = await handler.drain({ timeoutMs: 15_000 });
-  console.log(clean ? '已排空' : '超时收口，剩余任务下次启动续跑');
-  process.exit(0);
+// `serve` = createServer + listen + 等真的在听；`port` 是**实际**端口（传 0 时由 OS 分配）。
+// 端口冲突 / 权限不足直接 reject —— boot 阶段静默起不来比崩更难查。
+serve(handler, { port: 3000 }).then(({ server }) => {
+  gracefulShutdown({
+    server,
+    drain: () => handler.drain({ timeoutMs: 15_000 }),
+    // 不传 = 一个信号都不订阅（框架不做进程级决策）；传了即宿主显式认领
+    signals: ['SIGTERM', 'SIGINT'],
+    timeoutMs: 15_000,
+    // 第二次信号：本原语**不吞** —— 给了这个钩子就交给你，没给就摘掉监听让 Node 默认行为接管
+    onSecondSignal: () => process.exit(1),
+    // 停机完成（`clean` = 排空且连接关干净）。本原语自己不 exit —— 退出码是宿主的编排
+    onShutdown: (clean) => {
+      console.log(clean ? '已排空' : '超时收口，剩余任务下次启动续跑');
+      process.exit(clean ? 0 : 1);
+    },
+  });
 });
 ```
 

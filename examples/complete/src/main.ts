@@ -14,7 +14,6 @@
  *   OPENAI_BASE_URL=https://api.deepseek.com OPENAI_API_KEY=sk-... AGENTIA_MODEL=deepseek-chat npm start
  */
 import { mkdirSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { dirname } from 'node:path';
 import {
   AsyncRunner,
@@ -25,6 +24,8 @@ import {
   createApp,
   createHttpHandler,
   createOpenAIClient,
+  gracefulShutdown,
+  serve,
 } from '@migor/agentia';
 import type { AppCallable } from '@migor/agentia';
 import { buildObservability } from './observability.js';
@@ -103,6 +104,9 @@ if (job) console.log(`[boot] 定时任务已启用，每 ${CHECK_INTERVAL_MS}ms 
 const handler = createHttpHandler(callable, {
   runner,
   maxConcurrentRuns: 32,
+  // /metrics 由 handler 提供（与 /healthz 同档不鉴权，Content-Type 跟 sink 走）。
+  // ⚠️ 别在 createServer 里手写 /metrics 旁路 —— 那是 handler 还没有这个选项时的写法。
+  metrics: obs.metrics,
   // 除 /healthz 外的所有路径都先过这里，且在读 body 之前
   ...(API_KEY
     ? {
@@ -115,47 +119,37 @@ const handler = createHttpHandler(callable, {
     : {}),
 });
 
-const server = createServer((req, res) => {
-  // /metrics 走 handler 之外（Prometheus 抓取端点在业务路由之外；生产由反代限制可达性）
-  if (req.method === 'GET' && (req.url ?? '').split('?')[0] === '/metrics') {
-    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
-    res.end(obs.metrics.render());
-    return;
-  }
-  void handler(req, res);
-});
+// `serve` = createServer + listen + 等到真的在听；`port` 是**实际**端口（PORT=0 时由 OS 分配）。
+const { server, port } = await serve(handler, { port: PORT });
 
-server.listen(PORT, () => {
-  // PORT=0 时端口由操作系统分配，以 server.address() 拿到的实际端口为准
-  const addr = server.address();
-  const actualPort = typeof addr === 'object' && addr !== null ? addr.port : PORT;
-  // ⚠️ 首行是**就绪信号**（scripts/e2e-examples.ts 从它解析实际端口判定服务可用）——
-  //    改文案要同步改那边的正则。
-  console.log(
-    `[boot] listening on :${actualPort}（db=${DB_PATH}，鉴权=${API_KEY ? '开' : '关'}，` +
-      `provider=${OPENAI_BASE_URL ? `openai 兼容 ${OPENAI_BASE_URL}` : 'anthropic'}）`,
-  );
-  console.log('  POST /run        同步 run（Accept: text/event-stream → SSE）');
-  console.log('  POST /tasks      异步任务（body { input, idempotencyKey?, options? }）');
-  console.log('  GET  /tasks/:id  轮询任务记录');
-  console.log('  GET  /healthz    健康检查（不鉴权）');
-  console.log('  GET  /metrics    Prometheus 指标');
-});
+// ⚠️ 首行是**就绪信号**（scripts/e2e-examples.ts 从它解析实际端口判定服务可用）——
+//    改文案要同步改那边的正则。
+console.log(
+  `[boot] listening on :${port}（db=${DB_PATH}，鉴权=${API_KEY ? '开' : '关'}，` +
+    `provider=${OPENAI_BASE_URL ? `openai 兼容 ${OPENAI_BASE_URL}` : 'anthropic'}）`,
+);
+console.log('  POST /run        同步 run（Accept: text/event-stream → SSE）');
+console.log('  POST /tasks      异步任务（body { input, idempotencyKey?, options? }）');
+console.log('  GET  /tasks/:id  轮询任务记录');
+console.log('  GET  /healthz    健康检查（不鉴权）');
+console.log('  GET  /metrics    Prometheus 指标');
 
-// —— 7) 优雅停机（框架不订阅信号 —— 宿主自己的事）——
-let stopping = false;
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    if (stopping) return;
-    stopping = true;
-    console.log(`[${sig}] 优雅停机……`);
+// —— 7) 优雅停机 ——
+// 手写版约 17 行，其中四个静默错（清单见 docs/plans/2026-10-22-serve-graceful-shutdown.md §1）：
+// 连接没收干净 / 先 close 再 drain 切断在飞请求 / `if (stopping) return` 吞掉第二次信号 /
+// 停完不 exit。`gracefulShutdown` 收走这四条，只把编排留给你：
+gracefulShutdown({
+  server,
+  drain: () => {
     job?.cancel(); // 先停定时，别再派新任务
-    void (async () => {
-      const clean = await handler.drain({ timeoutMs: 15_000 });
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      obs.close();
-      console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
-      process.exit(0);
-    })();
-  });
-}
+    return handler.drain({ timeoutMs: 15_000 });
+  },
+  signals: ['SIGTERM', 'SIGINT'], // 不传 = 一个都不订阅（框架不做进程级决策）
+  timeoutMs: 15_000,
+  onSecondSignal: () => process.exit(1),
+  onShutdown: (clean) => {
+    obs.close(); // sink 冲完再退（drain → 关连接 → 冲 sink → exit，顺序不能反）
+    console.log(clean ? '[bye] 已排空退出' : '[bye] 超时收口，剩余任务下次启动续跑');
+    process.exit(clean ? 0 : 1);
+  },
+});
