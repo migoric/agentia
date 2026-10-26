@@ -265,6 +265,14 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       stopReason = resolution.stopReason;
       finalText = resolution.finalText;
       if (resolution.error) error = resolution.error;
+      if (args.resultSchema !== undefined && !ctx.submitted && isSuccessStopReason(stopReason)) {
+        stopReason = 'result_missing';
+        error = {
+          type: 'result_missing',
+          message: '已声明 resultSchema，但模型自然收尾时仍未提交合法结构化结果',
+          retryable: false,
+        };
+      }
       finished = true;
       break;
     }

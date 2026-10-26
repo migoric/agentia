@@ -48,7 +48,7 @@ export interface SubAgentSpec {
   /**
    * 子 agent 的结构化结果 schema（R6）：给出后子 agent 循环追加隐藏 submit_result 工具，
    * 校验通过的结果随最终报告一起交回主 agent —— tool_result 为
-   * { report: 最终文本报告, result: 结构化结果 }（模型未提交则退化为纯文本报告，同不设时）。
+   * { report: 最终文本报告, result: 结构化结果 }（模型未提交则以 result_missing 失败回主 agent）。
    */
   resultSchema?: JsonSchema;
 }

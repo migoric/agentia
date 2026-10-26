@@ -60,4 +60,28 @@ describe('InMemoryTaskStore 内存闸门（maxRecords）', () => {
     assert.throws(() => new InMemoryTaskStore({ maxRecords: 0 }), /maxRecords/);
     assert.throws(() => new InMemoryTaskStore({ maxRecords: -1 }), /maxRecords/);
   });
+
+  it('副本保留 __proto__ 自有键，不改原型，也不与库内记录共享可变数据', () => {
+    const store = new InMemoryTaskStore();
+    const original = rec({
+      spec: {
+        messages: [{ role: 'user', content: 'a' }],
+        options: { labels: JSON.parse('{"__proto__":{"tenant":"acme"}}') },
+      },
+    });
+    store.save(original);
+
+    const out = store.get(original.taskId)!;
+    const labels = out.spec.options?.labels as unknown as Record<string, { tenant: string }>;
+    assert.equal(Object.hasOwn(labels, '__proto__'), true);
+    const special = Object.getOwnPropertyDescriptor(labels, '__proto__')!;
+    assert.deepEqual(special.value, { tenant: 'acme' });
+    assert.equal(Object.getPrototypeOf(labels), Object.prototype);
+
+    (special.value as { tenant: string }).tenant = 'changed';
+    const reread = store.get(original.taskId)!;
+    const stored = reread.spec.options?.labels as unknown as Record<string, { tenant: string }>;
+    const storedSpecial = Object.getOwnPropertyDescriptor(stored, '__proto__')!;
+    assert.equal((storedSpecial.value as { tenant: string }).tenant, 'acme');
+  });
 });

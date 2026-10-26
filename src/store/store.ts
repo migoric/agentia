@@ -172,7 +172,15 @@ function cloneData<T>(value: T): T {
     // 类实例（AbortSignal 等）按引用保留：克隆它没有意义，也克隆不了
     if (proto !== Object.prototype && proto !== null) return value;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = cloneData(v);
+    for (const [k, v] of Object.entries(value)) {
+      // 直接赋值 '__proto__' 会走原型 setter：自有键丢失且副本原型被改。
+      Object.defineProperty(out, k, {
+        value: cloneData(v),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
     return out as T;
   }
   return value;

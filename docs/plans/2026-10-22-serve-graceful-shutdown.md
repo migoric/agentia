@@ -13,7 +13,7 @@
 
 | 坑 | 写错的后果 |
 |---|---|
-| **连接没收干净** | `server.close()` 要等所有连接结束。⚠️ **版本有关**：Node **19.0.0** 起 `close()` 自己会收空闲连接（nodejs/node#43522，官方措辞「19 之后没必要再配合调 `closeIdleConnections()`，但调也无害」）⇒ 只有 **18.x** 上「不显式收 keep-alive」才会让它等满 `keepAliveTimeout`。而「已连接但没发过请求」的裸 TCP **任何版本都收不掉**（不在 http 的 idle 列表里），只有 `closeAllConnections()` 能收 ⇒ 预算是必需品不是装饰 |
+| **连接没收干净** | `server.close()` 要等所有连接结束。⚠️ **版本有关**：Node **19.0.0** 起 `close()` 自己会收空闲连接（nodejs/node#43522，官方措辞「19 之后没必要再配合调 `closeIdleConnections()`，但调也无害」）⇒ 只有 **18.x** 上「不显式收 keep-alive」才会让它等满 `keepAliveTimeout`。旧版 Node 对「已连接但没发过请求」的裸 TCP 还需要 `closeAllConnections()` 兜底；2026-10-26 在 Node 26.5 实测它已能在预算前干净收掉裸 TCP / 半开请求，故测试按运行时分支，不再把旧行为写成跨版本不变量 |
 | **先 close 再 drain** | 顺序反了会把在飞请求直接切断（`close()` 不再接受新连接，但已建立的连接仍可写；先 close 等于把「排空」这层保护作废） |
 | **二次信号被吞** | `if (stopping) return;` 只是忽略，**信号已被拦截**，默认行为不会发生 ⇒ 运维第二次想强杀时杀不掉 |
 | **超时后不退出** | `drain()` 返回 `false` 的含义是「本进程此后不再推进任何任务 ⇒ 宿主必须退出」（`drain-gate.ts` 的类头注释）；不退出会让停机窗口里已落库的记录永远停在 `running` |
@@ -83,29 +83,29 @@ gracefulShutdown({
 1. **顺序固定**：`drain()`（拒新单 + 等在飞）→ `server.close()` + `closeIdleConnections()`
    → 等 close 回调 → 超时 `closeAllConnections()`。顺序不可参数化 —— 反过来就是第 1 节的坑二。
    `closeIdleConnections()` **放在 `close()` 之后**（官方建议：避免两次调用之间新进的连接漏掉）；
-   `engines` 是 `>=18` ⇒ 这行对 18.x 承重、对 ≥19 冗余，**只能用调用断言钉住**（当前运行时 22）。
+   `engines` 是 `>=18` ⇒ 这行对 18.x 承重、对 ≥19 冗余，**只能用调用断言钉住**。
 2. **一份预算**：`deadline = now + timeoutMs`，drain 与 close 共用（否则 15s + 15s = 30s，
-   K8s 的 `terminationGracePeriodSeconds` 会被打穿）。drain 内部若也传了 `timeoutMs`，
-   取两者更小者不现实（看不到对方），所以文档要求：**要么用本原语的预算，要么自己编排**。
-3. **drain 抛错仍然关 server**：`try { drained = await drain() } catch { drained = false }`，
-   不能因为业务排空失败就把监听继续挂着。
+   K8s 的 `terminationGracePeriodSeconds` 会被打穿）。2026-10-26 补上 drain 本身的等待闸：
+   drain 永不返回时到期按 false 继续关服务器，不能只让 close 享受预算。
+3. **drain 抛错仍然关 server**：排空失败按 false，不能因为业务排空失败就把监听继续挂着。
 4. **幂等**：并发 / 重复 `stop()` 返回**同一个** in-flight promise（不是「第二次返回 false」——
    那会让调用方误以为没排干净）。
 5. **`serve` 失败要响亮**：`EADDRINUSE` / `EACCES` 直接 reject，不 swallow（宿主 boot 阶段
    静默起不来比崩更难查）。
 
-## 6. 变异清单（**已实测**，7/7 各咬住预期用例后还原）
+## 6. 变异清单（初版已实测；2026-10-26 补 drain 挂起与 Node 26 分支）
 
 | # | 变异 | 实测（fail 数） |
 |---|---|---|
 | M1 | 删 `server.closeIdleConnections?.()` | 1（「Node 18 兼容契约」例；≥19 上只有调用断言能抓） |
-| M2 | 删 `server.closeAllConnections?.()` | 2（「裸连接」+「预算耗尽」，报 HUNG 而不是超时） |
+| M2 | 删 `server.closeAllConnections?.()` | 旧版 Node 的「裸连接」+「预算耗尽」报 HUNG；Node 26 已会提前干净收口 |
 | M3 | 删 `server.off('error', onError)` | 1（boot 的一次性 error 监听没摘掉） |
 | M4 | `running ??=` → `running =` | 1（幂等例：drain 被跑了两次） |
 | M5 | 二次信号分支改成直接 `return`（吞掉） | 1（只红「没给 onSecondSignal」那例 —— 给了的走不到这行） |
 | M6 | drain 抛错就不关服务器 | 2 |
 | M7 | 把 `closeServer` 提前到 `drain` 之前 | 1（drain 期间 `server.listening` 已是 false） |
 | M8 | 删 `onShutdown?.(clean)` 调用 | 1 |
+| M9 | drain 等待不过总预算 | 「drain 永不返回」用例 HUNG |
 
 > M8 之外还补了 `onShutdown` 这个缝：本原语不 `process.exit`，但「停完就退」是宿主的刚需
 > （`drain()` 返回 `false` 的契约就是「此后不再推进任何任务 ⇒ 必须退出」）⇒ 把结论回调出去。

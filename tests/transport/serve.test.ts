@@ -15,17 +15,21 @@ import { waitFor } from '../helpers.js';
  *
  * 变异清单（改 src/transport/serve.ts 后本文件应红）：
  * - 删 `server.closeIdleConnections?.()` → 「Node 18 兼容契约」用例 red（行为断言抓不到，见该用例注）
- * - 删 `server.closeAllConnections?.()` → 「在飞连接」/「裸连接」两例 HUNG
+ * - 删 `server.closeAllConnections?.()` → 旧版 Node 的「半开请求」/「裸连接」两例 HUNG
  * - 删 `server.off('error', onError)` → 「一次性 error 监听」用例 listenerCount 变 1
  * - `running ??=` 改成每次新建 → 「幂等」用例 drainCalls 变 2
  * - 二次信号分支改成 `return`（吞掉）→ 「没给 onSecondSignal」那例红（给了的那例走不到这行）
  * - `drain` catch 里改成不关服务器 → 「排空抛错」两例红（该例 + 「预算耗尽」因连接没被收）
+ * - drain 等待不过总预算 → 「drain 永不返回」用例 HUNG
  * - 把 `closeServer` 提前到 `drain` 之前 → 「drain 期间仍在 listen」例红
  * - 删 `onShutdown?.(clean)` → 「onShutdown」例红
  */
 
 const OPEN_SERVERS: Server[] = [];
 const OPEN_SOCKETS: Socket[] = [];
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+/** Node 26 实测：close() 会在预算前收掉裸 TCP / 半开请求；旧版本需要 closeAllConnections 兜底。 */
+const CLOSE_HANDLES_INCOMPLETE_EARLY = NODE_MAJOR >= 26;
 
 afterEach(() => {
   for (const s of OPEN_SOCKETS.splice(0)) s.destroy();
@@ -127,15 +131,17 @@ describe('serve', () => {
     assert.equal(calls.length, expected, 'close() 必须显式收一次空闲连接 —— 见用例上方的版本注');
   });
 
-  it('一条「已连接但没发过请求」的裸连接会让 close() 挂住，靠预算强收', async () => {
+  it('裸 TCP 连接：新版 Node 提前干净收口，旧版由预算强收', async () => {
     const served = await serveEcho();
     const sock = await openIdleSocket(served.port);
 
     const clean = await withHungGuard(served.close({ timeoutMs: 200 }), 3000, 'close()');
-    // 这类连接**不**在 http 的 idle 列表里（还没进入请求/响应循环），closeIdleConnections 收不到它，
-    // 只有预算耗尽后的 closeAllConnections 能收 ⇒ 这正是「必须有预算」的理由。
-    assert.equal(clean, false, '没关干净必须如实报 false');
-    await waitFor(() => sock.destroyed, 'closeAllConnections 收掉裸连接');
+    assert.equal(
+      clean,
+      CLOSE_HANDLES_INCOMPLETE_EARLY,
+      'Node 26 起 close() 可提前干净收口；旧版必须等预算强收并如实报 false',
+    );
+    await waitFor(() => sock.destroyed, '裸连接最终必须被收掉');
   });
 });
 
@@ -277,9 +283,8 @@ describe('gracefulShutdown', () => {
     assert.equal(served.server.listening, false);
   });
 
-  it('预算耗尽时强收在飞连接并如实返回 false（不假装干净）', async () => {
+  it('半开请求连接：新版 Node 提前干净收口，旧版预算强收报 false', async () => {
     const served = await serveEcho();
-    // 半开一条「有在飞数据」的连接：只写请求行不写完 ⇒ 不是 idle，closeIdleConnections 收不掉它
     const sock = await openIdleSocket(served.port);
     sock.write('GET / HTTP/1.1\r\nHost: localhost\r\n');
 
@@ -289,9 +294,25 @@ describe('gracefulShutdown', () => {
       timeoutMs: 120,
     });
     const ok = await withHungGuard(stop(), 4000, 'stop()');
-    assert.equal(ok, false, '预算内没关干净必须报 false —— 假报 true 会让宿主以为可以安全复用');
+    assert.equal(ok, CLOSE_HANDLES_INCOMPLETE_EARLY);
     assert.equal(served.server.listening, false);
-    await waitFor(() => sock.destroyed, 'closeAllConnections 收掉在飞连接');
+    await waitFor(() => sock.destroyed, '半开请求连接最终必须被收掉');
+  });
+
+  it('drain 永不返回也不能绕过总预算：到期关服务器并回报 false', async () => {
+    const served = await serveEcho();
+    const seen: boolean[] = [];
+    const stop = gracefulShutdown({
+      server: served.server,
+      drain: () => new Promise(() => {}),
+      timeoutMs: 40,
+      onShutdown: (clean) => seen.push(clean),
+    });
+
+    const ok = await withHungGuard(stop(), 1000, 'drain 永不返回时的 stop()');
+    assert.equal(ok, false);
+    assert.equal(served.server.listening, false, 'drain 卡死也不能让监听永远挂着');
+    assert.deepEqual(seen, [false]);
   });
 
   it('onShutdown 收到最终结论、只调一次（这是留给 process.exit 的缝）', async () => {

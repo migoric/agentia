@@ -94,13 +94,19 @@ describe('子 agent typed 结果（SubAgentSpec.resultSchema）', () => {
     assert.equal(capability.attributes.stop_reason, 'end_turn');
   });
 
-  it('resultSchema 已给但子 agent 未提交（纯文本 end_turn）：退化为纯文本报告', async () => {
+  it('resultSchema 已给但子 agent 未提交（纯文本 end_turn）：能力调用失败，不静默降级', async () => {
     const { client } = mockClient([endTurnMsg('只有文字结论')]);
-    const { ctx } = makeCtx(client);
+    const { ctx, recorder } = makeCtx(client);
     const tool = subagentToTool(researcherCapability({ resultSchema: RESULT_SCHEMA }), () => []);
 
-    const out = await tool.run({ task: 't' }, ctx);
-    assert.equal(out, '只有文字结论'); // 保持报告可读性：无 typed 时与不设 resultSchema 同形
+    await assert.rejects(async () => {
+      await tool.run({ task: 't' }, ctx);
+    }, /result_missing/);
+    const capability = recorder
+      .snapshot('error')
+      .spans.find((s) => s.kind === 'capability' && s.name === 'researcher')!;
+    assert.equal(capability.status, 'error');
+    assert.equal(capability.error?.type, 'result_missing');
   });
 
   it('未设 resultSchema：交回最终文本（行为与现状一致），子循环无隐藏工具', async () => {

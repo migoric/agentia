@@ -11,6 +11,7 @@ import type { RunMeta, RunStatus } from '../core/run.js';
 import { RunContext, withRunContext } from './context.js';
 import type { MemoryStore } from './memory.js';
 import type { SessionStore } from './session.js';
+import { flushTraceSinks } from '../core/trace-sink.js';
 
 /**
  * Run —— 一次运行的生命周期容器（spec §2/§6.1）。
@@ -155,7 +156,7 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    * 意外抛出等）；rethrow:false 时这些同样收成 result 返回。
    */
   rethrow?: boolean;
-  /** trace 出口（观测）：run 收尾后逐个投递；sink 抛错被吞（吞之前落一条 console.warn 告警），不影响 run */
+  /** trace 出口（观测）：run 收尾后逐个投递；抛错或超时只告警并放弃等待，不影响 run */
   sinks?: TraceSink[];
   /**
    * trace 交给 sinks **之前**的最后一笔账（`run.finish` 之后、`flushSinks` 之前调一次，
@@ -376,19 +377,11 @@ async function runBeforeFlush<S extends JsonSchema>(
 }
 
 /**
- * 投递 trace 给所有 sink：观测失败（sink 抛错）不得影响 run 结果（同 memory 回写防护），
- * 但**不再零信号**：吞之前落一条 console.warn（文案含「trace sink」，可 grep / 接日志采集）——
- * 否则 sink 天天挂、面板一切如常，「trace 根本没落盘」要等下游消费时才发现。
+ * 投递 trace 给所有 sink：抛错或永久挂起都不得影响 run 结果；
+ * 失败与超时均有 console.warn，后续 sink 仍照常接收（实现与 MCP 反向桥共用）。
  */
 async function flushSinks(sinks: TraceSink[] | undefined, trace: Trace): Promise<void> {
-  if (!sinks || sinks.length === 0) return;
-  for (const sink of sinks) {
-    try {
-      await sink.export(trace);
-    } catch (e) {
-      console.warn('[agentia] trace sink 投递失败:', e instanceof Error ? e.message : e);
-    }
-  }
+  await flushTraceSinks(sinks, trace);
 }
 
 /** 水合：store 值注入 blackboard；contextInit 已写的同名 key 不覆盖（用户种子优先）。

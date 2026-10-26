@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+### 修复：结构化结果、停机总预算、sink 挂起与任务记录副本（2026-10-26）
+
+- **行为变更**：声明 `resultSchema` 后，模型自然收尾但未提交合法结构化结果时，run 现在以
+  `stopReason='result_missing'` 失败，不再返回 `succeeded` + `typed=undefined`。子 agent
+  同样以 `is_error` 交回，不再退化为纯文本报告。依赖旧宽松行为的调用方需显式处理该失败；
+  未声明 schema 的普通文本 run 不变。决策：`docs/spec.md` §10 ref-structured-result-required。
+- **停机**：`gracefulShutdown({ timeoutMs })` 的总预算现在真正覆盖 drain 本身；drain 永不返回
+  也会到期关服务器并回报 `false`。Node 26 的裸 TCP / 半开连接测试改为按运行时行为分支。
+- **观测**：run 与 MCP 反向桥的 sink 投递共用一套实现；单个 sink 默认最多等 10 秒，
+  抛错或超时都告警且不影响后续 sink。超时是放弃等待，不取消底层导出。
+- **存储**：`cloneTaskRecord` 保留 `__proto__` 自有键，不再丢字段或改变副本原型。
+
 ### 文档：接数据库（新增 `docs/database.md` + MySQL `TaskStore` 骨架）
 
 宿主问的是「我要连 mysql，是不是得再写个数据库的包」—— 答案是不用，但这个答案此前**没有落点**：
@@ -48,8 +60,8 @@
   `gracefulShutdown({ server, drain, signals?, timeoutMs?, onSecondSignal?, onShutdown? })` → 幂等 `stop()`。
   宿主侧从 ~35 行降到 ~8 行（两份参考示例已改用，`e2e-deploy` 仍报 `shutdownExitCode: 0`）。
 - **收进实现的四条**：① 连接收干净 —— ⚠️ 版本有关：Node **19.0.0** 起 `close()` 自己会收空闲连接
-  （nodejs/node#43522），只有 18.x 必须显式 `closeIdleConnections()`；而「已连接但没发过请求」的裸
-  TCP **任何版本都收不掉** ⇒ 预算是必需品；② **先 drain 再 close**（反过来切断在飞请求）；
+  （nodejs/node#43522），只有 18.x 必须显式 `closeIdleConnections()`；旧版 Node 对裸 TCP 还需
+  `closeAllConnections()` 兜底（Node 26 已可提前干净收口）；② **先 drain 再 close**（反过来切断在飞请求）；
   ③ 第二次信号**不吞** —— `if (stopping) return` 是反例：信号**已被拦截**，Node 默认行为不会发生
   ⇒ 运维强杀杀不掉（两份示例当时都这么写）；④ `onShutdown(clean)` 把结论交回宿主。
 - **边界**：`signals` **不传 = 一个信号都不订阅**；本原语**不调 `process.exit`**（退出码与

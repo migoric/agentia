@@ -29,6 +29,7 @@ const allClassified: Record<AgentStopReason, boolean> = {
   refusal: false,
   pause_turn: false,
   max_iterations: false,
+  result_missing: false,
   aborted: false,
   budget_exceeded: false,
   tool_use_no_blocks: false,

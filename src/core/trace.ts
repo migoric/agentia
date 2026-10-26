@@ -261,7 +261,8 @@ export function capabilityKindOf(span: Span): string {
 
 /**
  * trace 出口：run 收尾（成功或失败）后，框架把【完整 Trace】交给每个 sink。
- * sink 抛错由框架吞掉（吞之前落一条 console.warn 告警），绝不影响 run 结果（与 memory 回写同款防护）。
+ * sink 抛错或永久挂起都不影响 run 结果：抛错告警，超过默认 10 秒则告警并放弃等待；
+ * 放弃不等于取消底层导出，后续 sink 仍照常接收。
  * 形状与 OtlpExporter 一致 —— createOtlpExporter() 的返回值天然满足本接口。
  */
 export interface TraceSink {

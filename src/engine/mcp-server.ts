@@ -5,6 +5,7 @@ import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
 import type { AgentTool, ModelClient, ToolRunContext } from '../core/tool.js';
 import type { SpanError, TraceContext, TraceSink } from '../core/trace.js';
+import { flushTraceSinks } from '../core/trace-sink.js';
 import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT, parseTraceparent } from '../core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../integrations/mcp.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
@@ -49,7 +50,7 @@ import type { TraceLimits } from './tracer.js';
  * name `mcp.tools/call`）下挂一个 capability span（kind `capability`、name = 工具名 ——
  * metrics 的 `capabilityKindOf` 把它归为 `capability:<name>` 标签，自动进能力指标），
  * 并按 `tool-events.ts` 的口径记同名 `tool.input` / `tool.output` 事件（账目形状与引擎
- * 一致）；收尾 snapshot 投递 `opts.sinks`（sink 抛错吞掉 + `console.warn`，观测不击穿业务）。
+ * 一致）；收尾 snapshot 投递 `opts.sinks`（抛错或超时只告警，观测不击穿业务）。
  * 入站链路（SEP-414）：`params._meta.traceparent` 合法时记成 run 根的一条 `links`
  * （与 HTTP 宿主的 `traceparent` 头同款缝合；缺失 / 畸形静默当作孤立根）。
  * `tools/list` / `initialize` 不建 trace。
@@ -84,7 +85,7 @@ export interface McpServerOptions {
    * 才构造，不在 `createMcpServer` 时构造（纯工具菜单的 server 不该要求 API key 在场）。
    */
   client?: ModelClient;
-  /** trace 出口：每次 `tools/call` 收尾投递（抛错被吞，观测不击穿业务） */
+  /** trace 出口：每次 `tools/call` 收尾投递（抛错或超时只告警，观测不击穿业务） */
   sinks?: TraceSink[];
   /**
    * 每次 `tools/call` 那棵 trace 的事件数闸（语义与引擎 `traceLimits` **同款**：
@@ -302,14 +303,8 @@ async function callTool(
         },
   );
   const trace = recorder.snapshot(ok ? 'ok' : 'error');
-  // 观测不击穿业务：sink 抛错吞掉 + console.warn（与 runtime 的 flushSinks 同款文案）
-  for (const sink of sinks) {
-    try {
-      await sink.export(trace);
-    } catch (e) {
-      console.warn('[agentia] trace sink 投递失败:', e instanceof Error ? e.message : e);
-    }
-  }
+  // 抛错或永久挂起都不击穿业务；与 runtime 共用同一份投递与超时口径
+  await flushTraceSinks(sinks, trace);
 
   // 结果映射：抛错 → 协议层成功 + isError（MCP 惯例；正向桥那头正好把 isError 转回抛错，
   // 方向对称）；string 原样进 text；其他 JSON 化进 text

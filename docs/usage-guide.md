@@ -470,7 +470,7 @@ const { result } = await app.run(messages, {
 result.typed;   // { answer: string } | undefined
 ```
 
-模型没提交就是 `undefined`（不是失败）。`stopReason` 仍以 `end_turn` 正常收尾。
+模型没提交时 `typed` 为 `undefined`，且 run 以 `stopReason='result_missing'` **失败**（trace 同样记 `error`，`error.type='result_missing'`）；不再把「声明了结构化结果却没收尾」当成功。子 agent 声明 `resultSchema` 后未提交也会以 `is_error` 回主 agent。
 
 ### 5.4 消息类型族（自有公共类型，与厂商 SDK 结构兼容）
 
@@ -904,7 +904,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 
 | API | 说明 |
 |---|---|
-| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递，抛错被吞（吞之前落一条 `console.warn`，文案含「trace sink」） |
+| `TraceSink` | `{ export(trace) }`，run 收尾（成功/失败）都投递。抛错只告警、不影响 run；单个 sink 默认最多等待 10 秒，超时同样告警并放弃等待（**不取消底层导出**），后续 sink 仍照常接收。run 宿主与 MCP 反向桥共用这套口径 |
 | `registerDefaultTraceSink` | 注册全局默认 sink（构造期快照合并） |
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
