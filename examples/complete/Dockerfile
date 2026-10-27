@@ -7,7 +7,7 @@
 #   docker build -f examples/complete/Dockerfile -t agentia-complete .
 #   docker compose -f examples/complete/docker-compose.yml up --build
 #
-# 想改用 npm 发布版，把应用 package.json 的依赖从 `file:../..` 改成 `^0.10.3`，
+# 想改用 npm 发布版，把应用 package.json 的依赖从 `file:../..` 改成 `^0.10.4`，
 # 即可退回常规单包 Dockerfile（`npm install && npm run build`）。
 
 # ---------- 构建期：框架 → 应用 ----------
