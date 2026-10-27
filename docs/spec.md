@@ -7401,6 +7401,22 @@ schema 都需要这个形态），并未把类型系统误当成运行期保证�
 保留的既有契约不变。回归经真实 `save()/get()` 验证：键与值保留、原型不变、出站副本与库内
 数据不共享。该问题只造成副本字段丢失和自身原型改变，不声称全局原型污染。
 
+### 2026-10-27 ① ref-progressive-onboarding：复杂度按需暴露，新增 minimal 而不削弱完整模板
+
+**决定**：`agentia create <name> --minimal` 生成单文件、裸 `AgentTool` 的项目，只含运行必需文件；
+不带参数时仍生成原来的完整服务模板（decorator 能力目录、registry、inspector、HTTP 与一次性
+入口），既有项目与自动化脚本不变。CLI 帮助按「核心工作流 / 观测与调优 / 评测与数据 / 能力包」
+分组，README、usage-guide 与中英官网都按「先跑裸工具，再引入装配与服务」展开。
+
+**为什么不直接简化原模板**：原模板的装配工厂、能力选择与生产服务是有意组合，删文件只会同时
+破坏 dev 与部署路径。最小路径必须独立，不能把完整模板再变成一组互相排斥的开关。
+
+**工程约束**：minimal 的 `package.json` 复用完整模板并只替换 scripts，框架与 CLI 的版本 pin
+仍只有 `packages/cli/templates/package.json` 一处发布面。模板本身是合法 TS 文件，纳入既有
+tsc/Biome；默认与 minimal 都要真建工程过类型检查。E2E 必须按生成物自己的 scripts 真跑
+`dev` / `typecheck` / `build` / `start`，并在 pack → 离线安装后再建一个 minimal，防止
+「文档说简单、产物却缺文件或跑不起来」。框架公共 API、依赖与包版本均不变。
+
 ## 11. 开放项
 
 

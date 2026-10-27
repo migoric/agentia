@@ -62,13 +62,37 @@ const cli = (args: string[], cwd: string): string =>
  * 测试会在脚本变的那一刻**静默测旧形态**。这里只给依赖解析（`node_modules` 里的软链），
  * 命令本身字面来自生成物 `package.json`。
  */
-const npmRun = (script: string, cwd: string): void => {
+const npmRun = (script: string, cwd: string, env: NodeJS.ProcessEnv = process.env): void => {
   execFileSync('npm', ['run', script], {
     cwd,
     stdio: 'inherit',
     // 不碰宿主 npm 缓存（与步骤 8 的 pack/install 同一套临时 cache）
-    env: { ...process.env, npm_config_cache: npmCache, npm_config_update_notifier: 'false' },
+    env: { ...env, npm_config_cache: npmCache, npm_config_update_notifier: 'false' },
   });
+};
+
+/** 给生成工程接依赖解析；实际执行的仍是工程自己的 scripts 与 tsconfig。 */
+const linkProjectDeps = (proj: string): void => {
+  mkdirSync(join(proj, 'node_modules', '@migor'), { recursive: true });
+  symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
+  symlinkSync(
+    join(repoRoot, 'node_modules', '@types'),
+    join(proj, 'node_modules', '@types'),
+    'dir',
+  );
+  mkdirSync(join(proj, 'node_modules', '.bin'), { recursive: true });
+  writeFileSync(
+    join(proj, 'node_modules', '.bin', 'tsc'),
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ` +
+      `${JSON.stringify(join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'))} "$@"\n`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(proj, 'node_modules', '.bin', 'tsx'),
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ` +
+      `${JSON.stringify(join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'))} "$@"\n`,
+    { mode: 0o755 },
+  );
 };
 
 try {
@@ -218,21 +242,7 @@ try {
   // 而产物自己的 `tsc` / `tsconfig.json`（`types: ["node"]`）需要 `node_modules/.bin/tsc` 与
   // `@types/node` 可解析。给了它们，后面 4c/4d 才能**字面跑 `npm run typecheck` / `npm run build`**，
   // 而不是测试自己复刻一遍脚本里的命令。
-  mkdirSync(join(proj, 'node_modules', '@migor'), { recursive: true });
-  symlinkSync(repoRoot, join(proj, 'node_modules', '@migor', 'agentia'), 'dir');
-  symlinkSync(
-    join(repoRoot, 'node_modules', '@types'),
-    join(proj, 'node_modules', '@types'),
-    'dir',
-  );
-  mkdirSync(join(proj, 'node_modules', '.bin'), { recursive: true });
-  writeFileSync(
-    join(proj, 'node_modules', '.bin', 'tsc'),
-    // npm 装的 bin shim 形态：可执行 + 转调 node（这里手写一份，免得去 chmod 仓库的 node_modules）
-    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ` +
-      `${JSON.stringify(join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'))} "$@"\n`,
-    { mode: 0o755 },
-  );
+  linkProjectDeps(proj);
 
   // —— 4b) .env 真的会被读到（跑一遍脚手架入口的同一句，而不是只看文件在不在）——
   // 这里最危险的是**静默失败**：文件生成得漂漂亮亮、key 却没进 process.env，用户只会看到
@@ -419,6 +429,47 @@ try {
         b.includes('"hello"'),
         `生产形态的能力菜单里应有脚手架生成的 hello 能力（请求体开头：${b.slice(0, 300)}）`,
       );
+    }
+
+    // —— 4e-min) minimal 的全部 scripts 真跑：单文件 + 裸工具也必须能 dev / typecheck / build / start。
+    cli(['create', 'minimal-app', '--minimal', '--dir', tmp], tmp);
+    const minimalProj = join(tmp, 'minimal-app');
+    for (const f of [
+      'package.json',
+      'tsconfig.json',
+      'README.md',
+      'src/main.ts',
+      '.env',
+      '.env.example',
+      '.gitignore',
+      'AGENTS.md',
+    ]) {
+      assert(existsSync(join(minimalProj, f)), `minimal 缺文件：${f}`);
+    }
+    for (const f of ['src/app.ts', 'src/registry.ts', 'src/batch.ts', 'src/dev.config.ts']) {
+      assert(!existsSync(join(minimalProj, f)), `minimal 不该生成完整模板文件：${f}`);
+    }
+    linkProjectDeps(minimalProj);
+    const minimalCallsBefore = seenBodies.length;
+    npmRun('typecheck', minimalProj);
+    // 假端点在本进程内：dev/start 必须异步等待，同步 execFileSync 会把事件循环堵死。
+    const minimalDev = await runChild('npm', ['run', 'dev'], { cwd: minimalProj, env: fakeEnv });
+    assert(
+      minimalDev.status === 0 && minimalDev.stdout.includes('PROD_OK'),
+      `minimal dev 没跑通：stdout=${minimalDev.stdout}\nstderr=${minimalDev.stderr}`,
+    );
+    npmRun('build', minimalProj);
+    const minimalStart = await runChild('npm', ['start'], { cwd: minimalProj, env: fakeEnv });
+    assert(
+      minimalStart.status === 0 && minimalStart.stdout.includes('PROD_OK'),
+      `minimal start 没跑通：stdout=${minimalStart.stdout}\nstderr=${minimalStart.stderr}`,
+    );
+    assert(
+      seenBodies.length === minimalCallsBefore + 2,
+      `minimal 的 dev 与 start 都应真调一次模型：新增请求=${seenBodies.length - minimalCallsBefore}`,
+    );
+    for (const b of seenBodies.slice(minimalCallsBefore)) {
+      assert(b.includes('"echo"'), `minimal 的裸工具应进入模型菜单：${b.slice(0, 300)}`);
     }
 
     // —— 4f) 默认入口（服务）【真起一遍】：`npm start` 跑的就是 `node dist/main.js` ——
@@ -703,6 +754,18 @@ try {
         `装出来的 CLI 建出的工程缺 ${rel} —— 模板没进 tarball 或漏了文件`,
       );
     }
+    execFileSync(process.execPath, [cliBin, 'create', 'packed-minimal', '--minimal'], {
+      cwd: probe,
+      encoding: 'utf8',
+    });
+    assert(
+      existsSync(join(probe, 'packed-minimal', 'src/main.ts')),
+      '发布物里的 minimal 模板必须能生成 src/main.ts',
+    );
+    assert(
+      !existsSync(join(probe, 'packed-minimal', 'src/registry.ts')),
+      'minimal 不应生成 registry —— 发布物混入了完整模板文件',
+    );
   } finally {
     rmSync(packDir, { recursive: true, force: true });
     rmSync(probe, { recursive: true, force: true });

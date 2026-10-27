@@ -44,13 +44,12 @@
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
           <pre><code><span class="cmd">npm</span> i -g @migor/cli
-<span class="cmd">agentia</span> create my-app        <span class="cm"># 脚手架：四分类目录 + src/registry.ts + .env</span>
+<span class="cmd">agentia</span> create my-app --minimal  <span class="cm"># 最小模板：单文件 + 裸工具，无装饰器 / registry</span>
 <span class="cmd">cd</span> my-app && npm install
-<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># 生成能力并自动登记</span>
 <span class="cm"># 把 ANTHROPIC_API_KEY 填进脚手架生成的 .env（.gitignore 已挡住它）</span>
 <span class="cmd">npm</span> run dev -- <span class="str">"帮我审查 docs/report.md"</span></code></pre>
         </div>
-        <p><strong>装配与启动是分开的</strong>：装配工厂在 <code>src/app.ts</code>，两个入口共用它 —— 默认入口 <code>src/main.ts</code> 起的是 <strong>HTTP 服务</strong>（<code>npm run build</code> 之后 <code>npm start</code>），一次性批处理在 <code>src/batch.ts</code>（<code>npm run start:batch -- "你的问题"</code>）。</p>
+        <p>minimal 只含一个入口文件和一个裸工具，先跑通模型即可。需要 inspector、能力目录与生产服务时，使用<strong>不带 <code>--minimal</code> 的默认完整模板</strong>：它的装配工厂在 <code>src/app.ts</code>，默认入口 <code>src/main.ts</code> 起 HTTP 服务，一次性批处理在 <code>src/batch.ts</code>。</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>src/</em></div>
           <pre><code>app.ts       <span class="cm"># createAgentApp() 装配工厂：能力选择 / 工作目录 / .env（dev 环与两个入口共用）</span>
@@ -596,7 +595,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><th>命令</th><th>作用</th></tr>
           </thead>
           <tbody>
-            <tr><td>agentia create &lt;name&gt;</td><td>脚手架新项目：四分类目录（含 .gitkeep）、src/registry.ts 注册表、src/app.ts（装配工厂）+ src/main.ts（<strong>默认入口 —— HTTP 服务</strong>）+ src/batch.ts（一次性入口）+ src/dev.config.ts、tsconfig。</td></tr>
+            <tr><td>agentia create &lt;name&gt; [--minimal]</td><td>默认生成完整服务项目：四分类目录、src/registry.ts、src/app.ts 装配工厂、src/main.ts HTTP 服务、src/batch.ts 一次性入口与 dev 配置。加 <code>--minimal</code> 则只生成单个 src/main.ts 与运行必需文件（裸工具，无装饰器 / registry / HTTP 宿主），适合先跑通模型。</td></tr>
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>生成能力到对应的分类目录（tool → src/tools/、skill → src/skills/、prompt → src/prompts/、subagent → src/subagents/），并自动登记 src/registry.ts；长文本资产（system.md / asset.md）一并生成。</td></tr>
             <tr><td>agentia dev</td><td>起本地 inspector 面板：在面板上输入 prompt 驱动一次真 run（带 ↑/↓ 历史），可多选能力（收窄菜单）、选工作目录、开关多轮，再在 trace-view 里看调用树。CLI 自己管文件监视（允许清单含 .md —— 改文本资产不用重启）。只绑 127.0.0.1，带 Origin 校验 + 每次启动一次性 token。</td></tr>
             <tr><td>agentia doctor</td><td>装配体检：未登记/悬空能力、命名规范、重复条目。</td></tr>

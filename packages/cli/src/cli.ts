@@ -16,23 +16,29 @@ import { readCliVersion } from './version.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
 
-用法：
-  agentia create <name> [--dir <parent>]   创建项目脚手架（目录 <parent|当前目录>/<name>/）
+核心工作流：
+  agentia create <name> [--dir <parent>] [--minimal]
+                                           创建项目（默认完整服务；--minimal = 单文件 + 裸工具）
   agentia g <type> <name>                  在当前目录生成能力（别名：generate）
                                            type: ${CAPABILITY_TYPES.join(' | ')}
   agentia dev [-- "问题"]                   启动开发模式（常驻 runner + 本地 inspector 面板：
                                            在面板里选能力/工作目录、输入 prompt 驱动一次 run，
                                            并看它的调用树；改代码或 .md 自动重启）
   agentia doctor [--json]                  装配体检（未登记/悬空能力/命名规范/重复条目）
-  agentia report <trace.jsonl> [--json]    从 trace 落盘文件生成调优报告（能力耗时/成本/错误率排行）
+
+观测与调优：
+  agentia view <trace.jsonl>               落盘 trace → 单文件自包含 HTML（离线可开、可转发）
+                                           （[-o <out.html>] [--open] [--raw] [--limit N] [--trace-id <id>]）
+  agentia report <trace.jsonl> [--json]    生成调优报告（能力耗时/成本/错误率排行）
+  agentia diff <a.jsonl> <b.jsonl> [--json] 两条 trace 的调用树 A/B 比对（有差异时退出码 1）
+
+评测与数据：
   agentia harvest <trace.jsonl>            把线上 trace 翻成 eval 用例骨架
                                            （[--out <file.ts>] [--force] [--failed] [--limit N]）
-  agentia diff <a.jsonl> <b.jsonl> [--json] 两条 trace 的调用树 A/B 比对（有差异时退出码 1）
   agentia export <trace.jsonl>             trace 落盘文件 → 训练数据集（JSONL，一行一份 messages）
                                            （[--out <file>] [--ok-only] [--min-score n]）
-  agentia view <trace.jsonl>               落盘 trace → 单文件自包含 HTML（无外链、离线可开、
-                                           可转发）—— 事后看一棵调用树（dev 面板只管在飞的）
-                                           （[-o <out.html>] [--open] [--raw] [--limit N] [--trace-id <id>]）
+
+能力包与其他：
   agentia add <pkg>                        安装第三方能力包并登记到 src/registry.ts
   agentia --help                           显示本帮助
   agentia --version                        显示版本（等价 -v）
@@ -45,7 +51,7 @@ name 规则：小写字母开头的小写 kebab-case（如 hello、doc-reviewer�
 
 // 各子命令自己的用法串 —— 同时供 fail() 与「子命令级 --help」使用（单源，不写两遍）。
 // report / harvest / diff 的用法串在各自模块里（那里本来就有），此处 import 复用。
-const CREATE_USAGE = '用法：agentia create <name> [--dir <parent>]';
+const CREATE_USAGE = '用法：agentia create <name> [--dir <parent>] [--minimal]';
 const G_USAGE = `用法：agentia g <type> <name>（type: ${CAPABILITY_TYPES.join(' | ')}）`;
 const ADD_USAGE = '用法：agentia add <pkg>（npm 包名或本地包路径）';
 
@@ -102,11 +108,14 @@ function main(argv: string[]): number {
   if (command === 'create') {
     const name = rest[0];
     let parent: string | undefined;
+    let minimal = false;
     for (let i = 1; i < rest.length; i += 1) {
       if (rest[i] === '--dir') {
         parent = rest[i + 1];
         if (parent === undefined) return fail('--dir 需要一个目录参数');
         i += 1;
+      } else if (rest[i] === '--minimal') {
+        minimal = true;
       } else {
         return fail(`未知参数：${rest[i]}`);
       }
@@ -115,7 +124,7 @@ function main(argv: string[]): number {
     if (!checkName(name)) {
       return fail(`非法项目名「${name}」：需匹配小写 kebab-case（如 my-app）`);
     }
-    return createProject(name, parent);
+    return createProject(name, parent, { minimal });
   }
 
   if (command === 'g' || command === 'generate') {

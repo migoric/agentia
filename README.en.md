@@ -32,24 +32,33 @@ readable error at construction — importing the package still works.
 npm i @migor/agentia          # the framework
 npm i -g @migor/cli           # CLI: scaffold / generate / dev inspector
 
-agentia create my-app         # scaffold ships .env / .env.example
-$EDITOR my-app/.env           # put ANTHROPIC_API_KEY here (export works too — real env wins)
+agentia create my-app --minimal  # single entry file + a bare tool; ships .env / .env.example
+cd my-app && npm install
+$EDITOR .env                     # put ANTHROPIC_API_KEY here (export works too — real env wins)
+npm run dev -- "your question"   # tsx src/main.ts: one run, then exit
 # optional: ANTHROPIC_BASE_URL (compatible gateways), AGENTIA_MODEL (default claude-opus-5)
 ```
 
-> The framework does **not** read `.env` on its own: the scaffolded `src/app.ts` calls `loadEnvFile()`.
+> The framework does **not** read `.env` on its own: the template entry calls `loadEnvFile()`.
 > Real environment variables win over the file unless you pass `{ override: true }`.
 
 ## Quick start
 
 ### A. CLI
 
+Start with `--minimal` to exercise the model and a bare tool without learning decorators, DI or the HTTP
+host first. For the inspector, four capability directories and a production service, use the **default
+full template without `--minimal`** (unchanged):
+
 ```bash
-agentia create my-app
-cd my-app && npm install
+agentia create my-service
+cd my-service && npm install
 agentia g tool weather          # create src/tools/weather/index.ts and register it
 agentia dev                     # local inspector panel (drive a run, pick capabilities/workdir)
 ```
+
+In the full template, `src/main.ts` starts the HTTP service and `src/batch.ts` is the one-shot
+`npm run start:batch` entry.
 
 Four self-describing directories hold capabilities — the directory name **is** the kind:
 `src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/`; the registry is `src/registry.ts`.

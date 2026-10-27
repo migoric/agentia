@@ -27,16 +27,15 @@ observable call tree (trace, cost, metrics).
 ## 安装与配置
 
 ```bash
-npx @migor/cli create my-app         # 脚手架（含 .env / .env.example）
+npx @migor/cli create my-app --minimal  # 最小模板：单文件 + 裸工具（含 .env / .env.example）
 cd my-app && npm install
-$EDITOR .env                         # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
-npm run dev                          # = agentia dev：本地 inspector 面板
+$EDITOR .env                            # 填 ANTHROPIC_API_KEY（也可直接 export，真实环境变量优先）
+npm run dev -- "你的问题"               # = tsx src/main.ts，跑一次并退出
 ```
 
 - **首次创建必须带 scope** —— npm 上另有一个别人的 `agentia` 包，短名会装错东西。
 - 可选：`ANTHROPIC_BASE_URL`（兼容端点）、`AGENTIA_MODEL`（缺省 `claude-opus-5`）。
-- 框架**不自动**读 `.env`：脚手架 `src/app.ts` 的 `loadEnvFile()` 负责把它读进 `process.env`
-  （放在装配模块而非入口，因为 `agentia dev` 只 import app.ts、从不执行入口）。
+- 框架**不自动**读 `.env`：模板入口的 `loadEnvFile()` 负责把它读进 `process.env`。
 - **运行时**：Node ≥ 18（`engines` 唯一要求），CI 覆盖 18 / 20 / 24。按 Node 设计并测试；
   **Bun / Deno 已实测可跑**（四步判定 + 各宿主最小代码 + 实测版本见 [`docs/frameworks.md`](docs/frameworks.md)，
   门面上不写版本号 —— 会腐烂）；**edge 仍未验证**。
@@ -50,15 +49,20 @@ npm run dev                          # = agentia dev：本地 inspector 面板
 
 ### 路线 A：CLI 脚手架
 
+minimal 先跑通模型与裸工具，不要求先理解装饰器、DI 或 HTTP 宿主。需要 inspector、四类能力目录和
+生产服务时，使用**不带 `--minimal` 的默认完整模板**（既有行为不变）：
+
 ```bash
-agentia create my-app
-cd my-app && npm install
+agentia create my-service
+cd my-service && npm install
 agentia g tool weather                 # 生成 src/tools/weather/index.ts 并登记 src/registry.ts
 agentia g subagent doc-reviewer        # 生成 src/subagents/doc-reviewer/{index.ts,system.md}
 agentia g skill note-writer            # 生成 src/skills/note-writer/index.ts
 agentia g prompt style-guide           # 生成 src/prompts/style-guide/{index.ts,asset.md}
 agentia dev                            # 本地 inspector：输入 prompt 驱动一次 run + 看 trace
 ```
+
+完整模板的 `src/main.ts` 是 HTTP 服务入口，`src/batch.ts` 是 `npm run start:batch` 的一次性入口。
 
 **目录约定**：四分类目录，一能力一文件夹 —— `src/tools/` · `src/skills/` · `src/prompts/` · `src/subagents/`。
 目录名就是类型；每个文件夹的 `index.ts` default export 一个 provider 类，DI token 缺省 = 文件夹名；

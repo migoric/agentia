@@ -3,30 +3,51 @@
 Agentia 框架的命令行工具：脚手架、能力生成、本地调试与 **trace 观测**。
 
 ```bash
-npx @migor/cli create my-app       # 脚手架：四分类目录 + src/registry.ts + src/app.ts + src/main.ts + src/batch.ts
-cd my-app && npm install           # 框架与 CLI 都进工程（CLI 在 devDependencies）
-npx agentia g subagent doc-reviewer # 生成能力并自动登记到注册表
-npm run dev                        # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
-npx agentia doctor                 # 装配体检：未登记 / 悬空能力、命名规范、重复条目
-npx agentia add <pkg>              # 安装第三方能力包并登记
-npx agentia --version              # 版本（= -v）
+npx @migor/cli create my-app --minimal  # 最小模板：单文件 + 裸工具，无装饰器 / registry / 服务
+cd my-app && npm install                # 框架与 CLI 都进工程（CLI 在 devDependencies）
+npm run dev -- "你的问题"               # = tsx src/main.ts，跑一次并退出
+
+# 需要 inspector 与完整服务时（默认模板不变）：
+npx @migor/cli create my-service
+cd my-service && npm install
+npx agentia g subagent doc-reviewer     # 生成能力并自动登记到注册表
+npm run dev                             # = agentia dev：本地 inspector 面板
+npx agentia doctor                      # 装配体检
+npx agentia --version                   # 版本（= -v）
 ```
 
 > 首次创建必须带 scope（`npx @migor/cli`）—— npm 上另有一个别人的 `agentia` 包。
 > 工程内用短名 `npx agentia` 走的是本地 bin（CLI 已进 `devDependencies`：离线可用、版本与框架同批 pin）。
 > 想全局装：`npm i -g @migor/cli`。
 
-## 命令
+## 核心工作流
 
 | 命令 | 作用 |
 |---|---|
-| `agentia create <name>` | 脚手架新项目：`src/tools` · `src/skills` · `src/prompts` · `src/subagents` 四分类目录、`src/registry.ts` 注册表、`src/app.ts`（装配工厂）+ `src/main.ts`（**默认入口 —— HTTP 服务**，`npm start` 起的就是它）+ `src/batch.ts`（一次性入口，`npm run start:batch`）+ `src/dev.config.ts`、tsconfig。CLI 本身也装进工程的 `devDependencies` |
+| `agentia create <name> [--minimal]` | 默认生成完整服务项目：`src/tools` 等四分类目录、`src/registry.ts`、`src/app.ts` 装配工厂、`src/main.ts` HTTP 服务、`src/batch.ts` 一次性入口与 dev 配置。`--minimal` 只生成单个 `src/main.ts` 与运行必需文件（裸工具，无装饰器 / registry / HTTP 宿主）。CLI 本身都装进工程的 `devDependencies` |
 | `agentia g <type> <name>` | 生成能力（`tool` / `skill` / `subagent` / `prompt`）到对应分类目录 `src/<分类>/<name>/` 并登记注册表；长文本资产（`system.md` / `asset.md`）一并生成 |
 | `agentia dev [-- "首次 run 的 prompt"]` | 起本地 inspector 面板：面板上输入 prompt 驱动一次真 run（`↑`/`↓` 调历史）、**多选能力**（收窄菜单）、**选工作目录**、**开关多轮**，再在 trace-view 里看调用树。CLI 自己管文件监视（允许清单含 `.md` —— 改文本资产不用重启）与子进程重启。首个非空参数作为第一次 run 的 prompt（`npm run dev -- "问题"` 就是这么走的） |
 | `agentia doctor [--json]` | 纯静态体检，不加载用户代码。`--json` 出结构化结果（有错误仍退出 1） |
+
+## 观测与调优
+
+| 命令 | 作用 |
+|---|---|
+| `agentia view <trace.jsonl>` | 落盘 trace → 单文件自包含 HTML（离线可开、可转发），事后看一棵调用树 |
 | `agentia report <trace.jsonl> [--json]` | 从 trace 落盘文件生成调优报告（能力耗时 / 成本 / 错误率排行）。`--json` 出单个 JSON 文档，便于 CI 断言 |
-| `agentia harvest <trace.jsonl>` | trace → eval 用例骨架（`--out` / `--force` / `--failed` / `--limit`）。**无 `--json`**：它的 stdout 本身就是产物 |
 | `agentia diff <a.jsonl> <b.jsonl> [--json]` | 两条 trace 的调用树 A/B 比对（有差异时退出码 1）。`--json` 出结构化差异，退出码语义不变 |
+
+## 评测与数据
+
+| 命令 | 作用 |
+|---|---|
+| `agentia harvest <trace.jsonl>` | trace → eval 用例骨架（`--out` / `--force` / `--failed` / `--limit`）。**无 `--json`**：它的 stdout 本身就是产物 |
+| `agentia export <trace.jsonl>` | trace → 训练数据集（JSONL，一行一份 messages）。stdout 就是产物，同样无 `--json` |
+
+## 能力包与其他
+
+| 命令 | 作用 |
+|---|---|
 | `agentia add <pkg>` | 安装第三方能力包（`defineModule` 能力包）并登记到注册表 |
 | `agentia --version` / `-v` | 报出 CLI 版本（读包自身 `package.json`，不另存常量） |
 
