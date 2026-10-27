@@ -146,7 +146,7 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     assert.deepEqual(result.typed, { answer: 'ok', confidence: 1 });
   });
 
-  it('模型始终未提交而正常 end_turn：typed 为 undefined', async () => {
+  it('模型始终未提交而正常 end_turn：以 result_missing 失败，不把契约缺口当成功', async () => {
     const { client } = mockClient([endTurnMsg('纯文本回答')]);
     const result = await runAgent({
       client,
@@ -154,9 +154,15 @@ describe('typed 结构化结果（hidden submit_result）', () => {
       tools: [echoTool()],
       resultSchema: RESULT_SCHEMA,
     });
-    assert.equal(result.stopReason, 'end_turn');
+    assert.equal(result.stopReason, 'result_missing');
     assert.equal(result.typed, undefined);
     assert.equal(result.finalText, '纯文本回答');
+    assert.equal(result.trace.status, 'error');
+    assert.deepEqual(result.error, {
+      type: 'result_missing',
+      message: '已声明 resultSchema，但模型自然收尾时仍未提交合法结构化结果',
+      retryable: false,
+    });
   });
 
   it('未给 resultSchema：typed 为 undefined，行为与现状一致', async () => {
@@ -199,10 +205,9 @@ describe('typed 结构化结果（hidden submit_result）', () => {
     assert.equal(result.trace.status, 'error');
   });
 
-  it('畸形 resultSchema（required 非数组）：只废掉这次提交，整次 run 不失败', async () => {
+  it('畸形 resultSchema（required 非数组）：单次提交回 is_error，最终未提交按 result_missing 失败', async () => {
     // required: 5 会让校验器抛 TypeError（5 不可迭代）——校验本身在 try 内，
-    // 只该回 is_error，不该让整次 run 以 error 收场（否则 trace 把该回合记成 ok、
-    // 与 run 结论自相矛盾）。
+    // 只废掉这次提交并回 is_error；模型之后仍不提交合法结果时，run 不能把契约缺口记成成功。
     const brokenSchema = { type: 'object', properties: {}, required: 5 } as unknown as JsonSchema;
     const { client } = mockClient([
       toolUseMsg('submit_result', { a: 'x' }, 'tu1'),
@@ -214,9 +219,10 @@ describe('typed 结构化结果（hidden submit_result）', () => {
       tools: [echoTool()],
       resultSchema: brokenSchema,
     });
-    assert.equal(result.stopReason, 'end_turn', '畸形 schema 不得把 run 打成 error');
+    assert.equal(result.stopReason, 'result_missing');
     assert.equal(result.typed, undefined);
-    assert.equal(result.trace.status, 'ok');
+    assert.equal(result.trace.status, 'error');
+    assert.equal(result.error?.type, 'result_missing');
 
     // 那次提交以 is_error 回给模型（含 classify 后的类型），而非掀翻整次 run
     const turn = result.trace.spans.find((s) => s.kind === 'llm.turn')!;

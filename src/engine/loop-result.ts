@@ -30,7 +30,7 @@ export interface AgentLoopResult<T = unknown> {
   error: SpanError | undefined;
   /** 本轮循环自己发起的模型往返次数 */
   iterations: number;
-  /** submit_result 校验通过的结构化结果；未提交则为 undefined（类型由 resultSchema 推导） */
+  /** submit_result 校验通过的结构化结果；声明 schema 却未提交会以 result_missing 失败，未声明则为 undefined */
   typed: T | undefined;
   /**
    * HITL 挂起（stopReason === 'suspended'）时的完整消息历史

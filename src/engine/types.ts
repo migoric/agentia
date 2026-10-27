@@ -43,6 +43,8 @@ export type AgentStopReason =
   | 'refusal'
   | 'pause_turn'
   | 'max_iterations'
+  /** 声明了 resultSchema，但模型自然收尾时仍未提交合法结构化结果 */
+  | 'result_missing'
   /** 调用方主动取消（AbortSignal）：run 未跑完，按失败收尾 */
   | 'aborted'
   /**
@@ -92,6 +94,7 @@ const SUCCESS_STOP_REASON: Record<AgentStopReason, boolean> = {
   refusal: false,
   pause_turn: false,
   max_iterations: false,
+  result_missing: false,
   aborted: false,
   budget_exceeded: false, // 护栏拦下的，不是正常收尾
   tool_use_no_blocks: false,
@@ -224,7 +227,7 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
   /**
    * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
    * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；
-   * 模型始终未提交则 typed 为 undefined（行为与不设时一致）。
+   * 模型自然收尾却始终未提交则以 stopReason='result_missing' 失败，typed 为 undefined。
    *
    * 泛型 S：传 `fromZod<T>(...)`（TypedSchema<T>）时，返回值 `typed` 自动是 `T | undefined`；
    * 传裸 JsonSchema 时回落 `unknown`。
@@ -347,7 +350,8 @@ export interface AgentRunResult<T = unknown> {
   /** 非正常收尾时的结构化原因；正常收尾为 undefined（**字段在场**，见 RunMeta 的说明） */
   error: SpanError | undefined;
   /**
-   * resultSchema 校验通过的结构化结果；模型没提交（或未设 resultSchema）则为 undefined。
+   * resultSchema 校验通过的结构化结果；未设 resultSchema 时为 undefined。
+   * 已设 schema 却没提交会以 result_missing 失败，此时同样为 undefined。
    * 类型由 resultSchema 推导（见 RunAgentOptions.resultSchema 的泛型说明）。
    */
   typed: T | undefined;

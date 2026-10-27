@@ -163,8 +163,8 @@ Agent 服务靠**事后**调试，trace 是调试表面 + 审计记录（对话�
   按 runId 检索都由宿主用 sink 组合，零 engine 改动。
 - 成本：span 级 usage 聚合自 API usage 字段（`cache_read_input_tokens` 等），run 汇总 = 各 span 求和。
 - **trace 出口（sink）**：`TraceSink { export(trace) }` —— run 收尾（成功 / 失败两条路径）后框架把
-  完整 trace 交给每个 sink；sink 抛错被吞（吞之前落一条 `console.warn` 告警，§10 2026-09-27 ref-sink-failure-warn），
-  不影响 run。
+  完整 trace 交给每个 sink；抛错或单个 sink 超过默认 10 秒都只告警、不影响 run
+  （2026-10-26 ref-shutdown-sink-timeouts）。超时是放弃等待、不是取消底层导出，后续 sink 照常接收。
 - **增量出口（2026-09-21，与 sink 并列为第二条缝）**：`onTraceEvent`（单次 run 一个 + 应用级缺省）
   在 run **进行中**逐笔回调记账事件（`span.begin` / `span.end` / `span.event` / `span.attribute` /
   `span.link`，各带单调 `seq`），消费者是**等不了收尾**的那一类（终端面板 / SSE / 异步任务流）。
@@ -7330,8 +7330,8 @@ NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10（两个 Web 框架宿主**只验到第
 
 ① **连接没收干净** —— `close()` 要等所有连接结束。⚠️ 版本有关：Node **19.0.0** 起 `close()`
   自己会收空闲连接（nodejs/node#43522），只有 18.x 上必须显式 `closeIdleConnections()`；而
-  「已连接但没发过请求」的裸 TCP **任何版本都收不掉**（不在 http 的 idle 列表里），只有
-  `closeAllConnections()` 能收 ⇒ **预算是必需品不是装饰**；
+  「已连接但没发过请求」的裸 TCP 在当时的运行时上要靠 `closeAllConnections()` 兜底 ⇒ **预算是必需品不是装饰**。
+  （2026-10-26 补测：Node 26.5 已能在预算前干净收掉裸 TCP / 半开请求，测试按运行时分支。）
 ② **先 close 再 drain** —— 顺序反了就把在飞请求切断，等于把「排空」这层保护作废；
 ③ **二次信号被吞** —— `if (stopping) return;` 只是忽略，**信号已被拦截**，Node 默认行为不会
   发生 ⇒ 运维第二次想强杀时杀不掉（两份参考示例当时都是这么写的）；
@@ -7366,6 +7366,40 @@ NestJS 12.1.3（CJS + ESM）/ Egg 4.0.10（两个 Web 框架宿主**只验到第
   给了 `pool.end()` 的接法）；
 - `timeoutMs <= 0` 读作「不限」，不是「立刻超时」；
 - 只收 http server 的连接；WebSocket / HTTP2 升级的 socket `closeAllConnections` 不碰（Node 行为）。
+
+### 2026-10-26 ① ref-structured-result-required：`resultSchema` 未提交必须失败
+
+**决定**：声明 `resultSchema` 后，模型若以 `end_turn` / `stop_sequence` 自然收尾却从未通过
+`submit_result`，run 不再算成功。新增 `AgentStopReason='result_missing'`，穷尽式成功分类表归为
+`false`，`error.type='result_missing'`、`retryable=false`；保留 `finalText`，`typed` 仍为
+`undefined`。子 agent 复用同一成功分类表，因此未提交不再退化成纯文本报告，而以 `is_error`
+交回主 agent。未声明 schema 的普通文本 run 行为不变。
+
+**理由**：原行为把「调用方声明的结构化契约没有兑现」记成 `succeeded` + `end_turn`，与
+「每次 run 产出结构化结果」的定位冲突，调用方还得另做一次容易漏掉的 `undefined` 检查。
+本轮不自动追加模型重试：模型请求本身已经成功，失败的是结果契约；先让 run 状态说真话，
+由调用方决定重提还是降级。`AgentRunResult.typed` 的类型仍含 `undefined`（失败结果与未声明
+schema 都需要这个形态），并未把类型系统误当成运行期保证。
+
+### 2026-10-26 ② ref-shutdown-sink-timeouts：停机总预算与 sink 等待都必须有终点
+
+**决定**：两处「辅助动作只防抛错、不防挂死」收口：
+- `gracefulShutdown` 的 `timeoutMs` 真正覆盖 drain + 关连接的总时长。drain 先启动并被
+  `withTimeout` 观察，到期按 `drained=false` 继续关服务器；`timeoutMs<=0` 才是不限。
+- trace sink 的顺序投递统一收进内部 `core/trace-sink.ts`，run 宿主与 MCP 反向桥共用。
+  单个 sink 默认最多等 10 秒；抛错或超时都 `console.warn`，后续 sink 照常收到 trace。
+  超时只是**放弃等待**，不声称取消底层导出，与工具超时的语义一致。
+
+**Node 26 实测修正**：Node 26.5 的 `server.close()` 已能在预算前干净收掉裸 TCP 与半开请求，
+旧版仍需 `closeAllConnections()` 兜底。测试按运行时分支，不再把「任何版本都只能强收」
+写成不变量；预算与 `closeAllConnections` 仍保留给旧版与真实长尾连接。
+
+### 2026-10-26 ③ ref-task-record-special-keys：任务记录副本保留 `__proto__` 自有键
+
+**决定**：`cloneTaskRecord` 的纯对象克隆改用 `Object.defineProperty` 写数据属性，不再用
+`out[k]=...` 触发 `__proto__` 的原型 setter。普通对象形状、数组递归与类实例/函数按引用
+保留的既有契约不变。回归经真实 `save()/get()` 验证：键与值保留、原型不变、出站副本与库内
+数据不共享。该问题只造成副本字段丢失和自身原型改变，不声称全局原型污染。
 
 ## 11. 开放项
 

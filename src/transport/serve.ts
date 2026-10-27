@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { assertTimerDelay } from '../core/timeout.js';
+import { assertTimerDelay, TIMED_OUT, withTimeout } from '../core/timeout.js';
 
 /**
  * 起服务 + 优雅停机 —— 两个**正交**的宿主原语。
@@ -174,12 +174,25 @@ async function runShutdown(
   onShutdown: GracefulShutdownOptions['onShutdown'],
 ): Promise<boolean> {
   const deadline = budgetOf(timeoutMs);
-  let drained = false;
-  try {
-    drained = (await drain()) !== false;
-  } catch {
-    // 排空失败也要继续关服务器（见 GracefulShutdownOptions.drain 的注释）
-    drained = false;
+  // 先启动排空并接住迟到失败：有限预算到点后不再等它，继续关服务器。
+  // 总预算若只包住 closeServer，drain 永不返回时 stop() 也会永不返回。
+  const draining = Promise.resolve()
+    .then(drain)
+    .then(
+      (value) => value !== false,
+      () => false,
+    );
+  let drained: boolean;
+  if (deadline === Number.POSITIVE_INFINITY) {
+    drained = await draining;
+  } else {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      drained = false;
+    } else {
+      const outcome = await withTimeout(draining, remaining);
+      drained = outcome === TIMED_OUT ? false : outcome;
+    }
   }
   const closed = await closeServer(server, deadline);
   const clean = drained && closed;
@@ -198,9 +211,10 @@ async function runShutdown(
  *    它是承重的（不调的话 `close()` 会等 keep-alive 挂到 `keepAliveTimeout` = 5s，
  *    K8s 里表现成滚动更新卡满 gracePeriod 再被 SIGKILL）。⚠️ 官方建议它**在 `close()`
  *    之后**调，避免两次调用之间新进的连接漏掉 —— 本函数正是这个顺序。
- *    ⇒ 这条**无法用行为断言钉住**（当前运行时是 22），测试里只能用调用断言。
- * 3. 预算耗尽 → `closeAllConnections()` 强收（否则 `close()` 永不回调，停机卡死）。
- *    「已连接但还没发过请求」的裸 TCP 连接不在 http 的 idle 列表里，只有这一步能收掉它。
+ *    ⇒ 这条**无法只用行为断言钉住**（新版运行时自带该行为），测试里还要用调用断言。
+ * 3. 预算耗尽 → `closeAllConnections()` 强收（否则旧运行时上 `close()` 可能永不回调）。
+ *    裸 TCP / 半开请求在新版运行时也可能被 `close()` 提前收掉；测试按运行时分支，
+ *    不再把「只能靠预算强收」误写成跨版本不变量。
  */
 function closeServer(server: Server, deadline: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
