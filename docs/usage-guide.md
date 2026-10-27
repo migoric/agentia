@@ -41,10 +41,41 @@
 
 ## 1. 最小可运行示例
 
+### 1.1 先跑一个裸工具（不需要装饰器 / DI）
+
+```ts
+import { createApp } from '@migor/agentia';
+
+const app = createApp({
+  system: '你是友好的助手。',
+  tools: [
+    {
+      name: 'say_hello',
+      description: '向某人打招呼',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+      run: (input) => `你好，${(input as { name: string }).name}`,
+    },
+  ],
+});
+
+const { result } = await app.run([{ role: 'user', content: '跟小明打个招呼' }]);
+if (result.error) throw new Error(`${result.stopReason}: ${result.error.message}`);
+console.log(result.finalText, result.trace.totalUsage);
+```
+
+这是最短路径：`tools + createApp + app.run`。`inputSchema` 约束模型入参，`run` 是实际函数；
+`result.error` 必须检查，不能只打印 `finalText`。`trace` 从第一次 run 就在，不需要先配观测后端。
+
+也可以直接 `npx @migor/cli create my-app --minimal` 生成同形态的单文件工程（见下一节）。
+
+### 1.2 能力变多后再用装饰器组织
+
 ```ts
 import { Tool, createApp, SystemPrompt } from '@migor/agentia';
-
-const OBJ = { type: 'object', properties: {} } as const;
 
 class Greeter {
   @Tool({
@@ -80,14 +111,23 @@ console.log(result.finalText, result.stopReason, result.trace.totalUsage);
 ## 2. 项目结构（CLI 约定）
 
 ```bash
-npx @migor/cli create my-app     # 首次创建：必须带 scope（短名 agentia 在 npm 上是别人的包）
+# 只想先跑一个 agent：单文件 + 裸工具，无装饰器 / registry / HTTP 宿主
+npx @migor/cli create my-app --minimal
 cd my-app && npm install         # 框架与 CLI 都装进工程
 $EDITOR .env                     # 填 ANTHROPIC_API_KEY（脚手架已生成，且已被 .gitignore 挡住）
+npm run dev -- "你的问题"        # = tsx src/main.ts，跑一次并退出
+
+# 需要 inspector、能力目录与生产服务时：不带 --minimal 的默认完整模板
+npx @migor/cli create my-service
+cd my-service && npm install
 npm run dev                      # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
-npx agentia g tool fetch-weather   # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
+npx agentia g tool fetch-weather # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
 npx agentia doctor               # 静态体检（未登记/悬空/命名/重复）
 npx agentia --version            # CLI 版本（= -v）
 ```
+
+**两种模板只是起点不同**：minimal 用于先跑通模型与工具，完整模板用于继续组织能力和交付服务；
+默认仍是不带 `--minimal` 的完整服务模板，既有项目与脚本不变。
 
 > **命令从哪来**：脚手架把 `@migor/cli` 装进工程的 `devDependencies`，所以**工程内**用短名
 > `npx agentia …` 即可（走本地 bin：离线可用、版本与工程一同 pin）。**首次创建**必须用带 scope 的

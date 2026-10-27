@@ -46,30 +46,35 @@ describe('模板工程的编译级对拍（建工程 → tsc --noEmit）', { ski
     console.log = () => {}; // createProject 会打一大段「后续步骤」，别污染 TAP 输出
     console.error = () => {};
     try {
-      assert.equal(createProject('demo', parent), 0, 'createProject 应成功');
-      const proj = join(parent, 'demo');
+      for (const [name, options] of [
+        ['demo-full', undefined],
+        ['demo-minimal', { minimal: true }],
+      ]) {
+        assert.equal(createProject(name, parent, options), 0, `${name} 应创建成功`);
+        const proj = join(parent, name);
 
-      // 依赖解析：**不 npm install**（不依赖网络、不拖慢门禁）—— 把框架仓库与 @types
-      // 直接链进工程。Node/tsc 的解析规则照常生效，等价于装好了那两个包。
-      const nm = join(proj, 'node_modules');
-      mkdirSync(join(nm, '@migor'), { recursive: true });
-      symlinkSync(REPO_ROOT, join(nm, '@migor', 'agentia'), 'dir');
-      symlinkSync(join(REPO_ROOT, 'node_modules', '@types'), join(nm, '@types'), 'dir');
+        // 依赖解析：**不 npm install**（不依赖网络、不拖慢门禁）—— 把框架仓库与 @types
+        // 直接链进工程。Node/tsc 的解析规则照常生效，等价于装好了那两个包。
+        const nm = join(proj, 'node_modules');
+        mkdirSync(join(nm, '@migor'), { recursive: true });
+        symlinkSync(REPO_ROOT, join(nm, '@migor', 'agentia'), 'dir');
+        symlinkSync(join(REPO_ROOT, 'node_modules', '@types'), join(nm, '@types'), 'dir');
 
-      let out = '';
-      try {
-        out = execFileSync(process.execPath, [tsc, '--noEmit', '-p', 'tsconfig.json'], {
-          cwd: proj,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-      } catch (e) {
-        assert.fail(
-          `模板工程类型检查失败（模板与框架 API 对不上）：\n` +
-            `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`,
-        );
+        let out = '';
+        try {
+          out = execFileSync(process.execPath, [tsc, '--noEmit', '-p', 'tsconfig.json'], {
+            cwd: proj,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch (e) {
+          assert.fail(
+            `${name} 类型检查失败（模板与框架 API 对不上）：\n` +
+              `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`,
+          );
+        }
+        assert.ok(!/error TS/.test(out), `${name} 的 tsc 输出出现 error TS：\n${out}`);
       }
-      assert.ok(!/error TS/.test(out), `tsc 输出里出现了 error TS（模板没编译过）：\n${out}`);
     } finally {
       console.log = realLog;
       console.error = realErr;

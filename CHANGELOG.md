@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### 新增：`agentia create --minimal` 与渐进式上手路径（2026-10-27 ref-progressive-onboarding）
+
+- **最小模板**：单个 `src/main.ts` + 裸工具，不要求先理解装饰器、DI、registry 或 HTTP 宿主；
+  `dev` / `typecheck` / `build` / `start` 四个脚本均可直接运行。
+- **默认不变**：不带 `--minimal` 仍生成完整服务模板，既有项目、inspector 与部署路径不受影响。
+- **CLI 与文档**：帮助按核心工作流、观测与调优、评测与数据、能力包分组；README、usage-guide、
+  中英官网都先讲裸工具，再进入完整装配。
+- **验证**：默认与 minimal 都真建工程过类型检查；E2E 按 minimal 自己的 scripts 真跑，
+  pack → 离线安装后也能创建 minimal。依赖版本仍复用同一发布面，不新增运行时依赖。
+
 ### 修复：结构化结果、停机总预算、sink 挂起与任务记录副本（2026-10-26）
 
 - **行为变更**：声明 `resultSchema` 后，模型自然收尾但未提交合法结构化结果时，run 现在以

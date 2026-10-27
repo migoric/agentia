@@ -124,6 +124,14 @@ export function projectPackageJson(name: string): string {
   return renderTemplate('package.json', { __PROJECT_NAME__: name });
 }
 
+export function minimalMainTs(name: string): string {
+  return renderTemplate('minimal/src/main.ts', { __PROJECT_NAME__: name });
+}
+
+export function minimalReadme(name: string): string {
+  return renderTemplate('minimal/README.md', { __PROJECT_NAME__: name });
+}
+
 /**
  * 脚手架 tsconfig（templates/tsconfig.json）。两处口径：
  * - `rootDir: src` + `outDir: dist`：编译产物落 dist/（npm run build → npm start 跑

@@ -24,6 +24,7 @@ import {
 } from './templates.js';
 import { registerCapability } from './registry.js';
 import { GUIDE_VERSION_MARKER, readCliVersion } from './version.js';
+import { createMinimalProject } from './create-minimal.js';
 
 function write(dir: string, rel: string, content: string): void {
   const file = join(dir, rel);
@@ -51,7 +52,12 @@ function readUsageGuide(): string {
   );
 }
 
-export function createProject(name: string, parent: string | undefined): number {
+export type CreateProjectOptions = { minimal?: boolean };
+export function createProject(
+  name: string,
+  parent: string | undefined,
+  options: CreateProjectOptions = {},
+): number {
   const dir = resolve(parent ?? process.cwd(), name);
 
   let guide: string;
@@ -77,6 +83,7 @@ export function createProject(name: string, parent: string | undefined): number 
     return 1;
   }
   mkdirSync(dir, { recursive: true });
+  if (options.minimal === true) return createMinimalProject(dir, name, guide);
 
   write(dir, 'package.json', projectPackageJson(name));
   write(dir, 'tsconfig.json', projectTsconfig());

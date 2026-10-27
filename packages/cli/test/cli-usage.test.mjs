@@ -78,6 +78,19 @@ describe('CLI 用法与错误路径', { skip: SKIP }, () => {
     }
   });
 
+  it('create 帮助暴露 --minimal，顶层帮助按任务分组', () => {
+    const create = run(['create', '--help'], tmpdir());
+    assert.equal(create.status, 0);
+    assert.match(create.stdout, /\[--minimal\]/);
+
+    const all = run(['--help'], tmpdir());
+    assert.equal(all.status, 0);
+    for (const group of ['核心工作流', '观测与调优', '评测与数据', '能力包与其他']) {
+      assert.ok(all.stdout.includes(group), `帮助缺命令分组：${group}`);
+    }
+    assert.match(all.stdout, /默认完整服务；--minimal = 单文件 \+ 裸工具/);
+  });
+
   it('create：目标路径是普通文件 → 可读报错，而不是裸 ENOTDIR 栈', () => {
     withTmp((dir) => {
       writeFileSync(join(dir, 'my-app'), 'not a directory');

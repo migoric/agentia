@@ -46,13 +46,12 @@
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>terminal</em></div>
           <pre><code><span class="cmd">npm</span> i -g @migor/cli
-<span class="cmd">agentia</span> create my-app        <span class="cm"># scaffold: four category folders + src/registry.ts + .env</span>
+<span class="cmd">agentia</span> create my-app --minimal  <span class="cm"># minimal: one entry file + a bare tool, no decorators/registry</span>
 <span class="cmd">cd</span> my-app && npm install
-<span class="cmd">agentia</span> g subagent doc-reviewer  <span class="cm"># generate a capability and register it automatically</span>
 <span class="cm"># put ANTHROPIC_API_KEY into the .env the scaffold generated (.gitignore already covers it)</span>
 <span class="cmd">npm</span> run dev -- <span class="str">"review docs/report.md for me"</span></code></pre>
         </div>
-        <p><strong>Assembly and startup are separate</strong>: the factory lives in <code>src/app.ts</code> and both entries share it — the default entry <code>src/main.ts</code> is the <strong>HTTP service</strong> (<code>npm run build</code>, then <code>npm start</code>), and the one-shot batch job is <code>src/batch.ts</code> (<code>npm run start:batch -- "your question"</code>).</p>
+        <p>Minimal contains one entry file and a bare tool, so you can exercise the model first. For the inspector, capability directories and a production service, use the <strong>default full template without <code>--minimal</code></strong>: its assembly factory lives in <code>src/app.ts</code>, the default <code>src/main.ts</code> starts the HTTP service, and the one-shot batch job is <code>src/batch.ts</code>.</p>
         <div class="code-block">
           <div class="code-title"><i></i><i></i><i></i><em>src/</em></div>
           <pre><code>app.ts       <span class="cm"># createAgentApp() assembly factory: capabilities / workdir / .env (shared by the dev loop and both entries)</span>
@@ -600,7 +599,7 @@ process.<span class="fn">on</span>(<span class="str">'SIGTERM'</span>, () =&gt; 
             <tr><th>Command</th><th>What it does</th></tr>
           </thead>
           <tbody>
-            <tr><td>agentia create &lt;name&gt;</td><td>Scaffolds a new project: the four category folders (with .gitkeep), a src/registry.ts registry, src/app.ts (the assembly factory) + src/main.ts (<strong>the default entry — an HTTP service</strong>) + src/batch.ts (a one-shot entry) + src/dev.config.ts, and tsconfig.</td></tr>
+            <tr><td>agentia create &lt;name&gt; [--minimal]</td><td>Creates the full service project by default: four category folders, src/registry.ts, the src/app.ts assembly factory, the src/main.ts HTTP service, the src/batch.ts one-shot entry and dev config. With <code>--minimal</code>, generates only one src/main.ts plus runtime essentials (a bare tool, no decorators / registry / HTTP host), ideal for exercising the model first.</td></tr>
             <tr><td>agentia g &lt;type&gt; &lt;name&gt;</td><td>Generates a capability into the matching category folder (tool → src/tools/, skill → src/skills/, prompt → src/prompts/, subagent → src/subagents/) and registers it in src/registry.ts automatically; long-text assets (system.md / asset.md) are generated along with it.</td></tr>
             <tr><td>agentia dev</td><td>Starts a local inspector panel: type a prompt to drive one real run (with ↑/↓ history), multi-select capabilities (narrowing the menu), choose the working directory, toggle multi-turn, then inspect the call tree in trace-view. The CLI manages file watching itself (the allow-list includes .md, so editing a text asset needs no restart). Binds 127.0.0.1 only, with Origin checks and a one-time token per launch.</td></tr>
             <tr><td>agentia doctor</td><td>Assembly health check: unregistered / dangling capabilities, naming rules, duplicate entries.</td></tr>
