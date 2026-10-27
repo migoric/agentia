@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-28
+
+### 变更
+
+本版包含**渐进式上手、结构化结果契约与生产可靠性修复**：
+
+- 新增 `agentia create --minimal`：单文件 + 裸工具即可跑通 agent；默认完整服务模板不变。
+- 声明 `resultSchema` 后未提交合法结构化结果时，以 `result_missing` 失败，不再静默算成功；
+  依赖旧宽松行为的调用方需显式处理该失败，普通文本 run 不受影响。
+- `gracefulShutdown` 的总预算覆盖 drain 本身；trace sink 默认最多等待 10 秒，
+  抛错或超时均告警且不阻断后续 sink。
+- `cloneTaskRecord` 保留 `__proto__` 自有键，不再丢字段或改变副本原型。
+- 另含数据库接入文档、HTTP serve/优雅停机、CLI view/harvest 与官网可读性改进。
+  详细条目如下。
+
 ### 新增：`agentia create --minimal` 与渐进式上手路径（2026-10-27 ref-progressive-onboarding）
 
 - **最小模板**：单个 `src/main.ts` + 裸工具，不要求先理解装饰器、DI、registry 或 HTTP 宿主；
@@ -4133,7 +4148,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/migoric/agentia/releases/tag/v0.10.4
 [0.10.3]: https://github.com/migoric/agentia/releases/tag/v0.10.3
 [0.10.2]: https://github.com/migoric/agentia/releases/tag/v0.10.2
 [0.10.1]: https://github.com/migoric/agentia/releases/tag/v0.10.1

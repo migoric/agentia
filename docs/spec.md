@@ -7546,7 +7546,10 @@ tsc/Biome；默认与 minimal 都要真建工程过类型检查。E2E 必须按�
     ⚠️ **三条读数会变（变小）**：嵌套 capability 的 tokens/cost 只认顶层（此前外层内层各计一次、
     列不可加总，影响 `buildRunReport` / trace-view 排行 / CLI report / dev 面板 / 官网 playground）、
     `report` 按 `traceId` 去重（append-only 不再翻倍）、`retry` 坏值不再谎报「用户取消」）；
-  `AGENTIA_VERSION = '0.10.3'`。决策均见 §10。
+  → v0.10.4（**渐进式上手与契约收口**：`agentia create --minimal` 让单文件裸工具成为第一条路径，
+    默认完整服务模板不变；`resultSchema` 未提交改以 `result_missing` 失败（行为变更，需显式处理），
+    另含停机总预算、sink 超时与任务副本特殊键修复；无新增运行时依赖）；
+  `AGENTIA_VERSION = '0.10.4'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

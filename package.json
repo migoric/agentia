@@ -1,6 +1,6 @@
 {
   "name": "@migor/agentia",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "description": "Declarative agent service framework for TypeScript: decorators + DI declare four capability kinds, durable runs, and per-run traces, cost and metrics. Zero runtime dependencies.",
   "type": "module",
   "main": "dist/index.js",

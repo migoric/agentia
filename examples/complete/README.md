@@ -34,7 +34,7 @@ scripts/copy-assets.mjs   # 把 .md 资产拷进 dist（asset() 按文件位置�
 ## 跑起来
 
 依赖走 `file:../..` 指向本仓库 —— **刻意的**：跑的就是工作区里刚构建的那份框架，而不是 npm
-发布版（想用发布版就把这一行换成 `^0.10.3`）：
+发布版（想用发布版就把这一行换成 `^0.10.4`）：
 
 ```bash
 cd ..                      # 仓库根
@@ -70,7 +70,7 @@ docker compose up --build                 # 在本目录执行
 # 或：docker build -f examples/complete/Dockerfile -t agentia-complete .
 ```
 
-想改用 npm 发布版，把 `package.json` 的 `"@migor/agentia": "file:../.."` 改成 `"^0.10.3"`，
+想改用 npm 发布版，把 `package.json` 的 `"@migor/agentia": "file:../.."` 改成 `"^0.10.4"`，
 Dockerfile 即可退回常规单包写法。
 
 ## 试试端点
