@@ -713,7 +713,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | 端点 | 请求 | 响应 |
 |---|---|---|
 | `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
-| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
+| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 只接受**白名单**：`traceContext` / `maxCostUsd` / `maxTotalTokens`（多一个键 → 400，含 `blackboard` / `tools` / `model`）。**身份与租户不走 body** —— 由宿主的 `resolveRunOptions` 按请求注入 | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；`decisions` 里有不在该任务 `pendingApprovals` 里的 id → **400（整批拒，记录一字不动）**；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
@@ -774,7 +774,8 @@ const handler = createHttpHandler(callable, { runner });
 
 | 选项 | 说明 |
 |---|---|
-| `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过，**返回值作为 `principal` 交给 `resolveRunOptions`**；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `resolveRunOptions` | `(req, { route, principal }) => { blackboard?, labels?, maxCostUsd?, maxTotalTokens? }` —— **身份 / 租户 / 配额封顶的唯一可信通道**（`/run` 与 `/tasks` 都生效）。`blackboard` **整体替换**、`labels` 按键盘合并（服务端胜）、预算与客户端值取**更严者**（上限不能由叫价方抬高）。抛 `HttpException` 按其状态码回。为什么必须有它：`POST /tasks` 的 `body.options` 走白名单之后，客户端已经**设不了** `blackboard` —— 身份不从这里进就没有地方进了（见 §6.6「多租户配额」） |
 | `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB。构造期校验：必须 > 0 或 `Infinity` —— 0 会让**每个带 body 的请求**都 413（`POST /run` / `POST /tasks` / 审批全废），故直接抛错。⚠️ 还挡 `Number('') === 0`：从**空的环境变量**读出来的配置会静默变成「拒绝一切」 |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限）。构造期校验：必须 > 0 或 Infinity —— NaN 会让闸门静默失效、0/负数会全部 503，故直接抛错 |
@@ -809,6 +810,13 @@ const handler = createHttpHandler(app, {
   // 只给缝：token/JWT/签名策略由你的宿主或反代实现
   authenticate: (req) => {
     if (req.headers['x-api-key'] !== expected) throw new HttpException(401, { error: '无效凭据' });
+    // 返回值不是白抛的：它就是 principal，下一步交给 resolveRunOptions
+    return { userId: String(req.headers['x-user-id'] ?? '') };
+  },
+  // 身份 / 租户进 run 的唯一可信通道（客户端在 body 里填不了黑板）
+  resolveRunOptions: (_req, { principal }) => {
+    const { userId } = principal as { userId: string };
+    return { blackboard: { tenant: tenantOf(userId) }, labels: { user: userId } };
   },
 });
 
@@ -1679,6 +1687,9 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
 - 被拦下的能力**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
+- ⚠️ **`tenant` 从哪来**（2026-11-04 起）：只能由宿主注入 —— `createHttpHandler({ authenticate, resolveRunOptions })` 里
+  `resolveRunOptions` 返回 `{ blackboard: { tenant } }`。客户端在 `POST /tasks` 的 `options` 里**填不了黑板**
+  （白名单外即 400）：这条配方此前照着抄会被绕过 —— 谁能调 `/tasks` 谁就能自填 `tenant`，额度记到别人头上。
 
 #### 人工审批
 

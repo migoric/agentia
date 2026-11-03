@@ -7,6 +7,29 @@
 
 ## [Unreleased]
 
+### ⚠️ 行为变更（安全修）：`POST /tasks` 的 `options` 白名单化 + 宿主 `resolveRunOptions` 缝（2026-11-04 ref-run-options-trust-boundary）
+
+- **修的是什么**：`POST /tasks` 此前把 `body.options` **整体透传**给引擎，而它是
+  `RunInvocationOptions` 的全套旋钮。任何能调这个端点的人都能写
+  `{ blackboard: { tenant: '别人的租户' } }`，而 usage-guide §6.6 的多租户配额配方第一步正是
+  「用黑板存 tenant」⇒ 额度记到别人头上。同一件事在 `POST /run` 上却是**死路**（body 是 `RunInput`，
+  没有 options 入口）：需要身份的那条拿不到，拿得到的那条不可信。
+- **现在**：客户端只能设 `traceContext` / `maxCostUsd` / `maxTotalTokens`，**其余键一律 400 并点名**
+  （`blackboard` / `tools` / `model` / `fallbacks` / `priceOverrides` …）。身份 / 租户由新增的
+  `HttpHandlerOptions.resolveRunOptions(req, { route, principal })` 按请求注入 —— `authenticate`
+  的返回值从此**不再被丢弃**，作为 `principal` 传进该钩子（此前注释建议「存在钩子自己的闭包里」，
+  但闭包与 run 之间没有任何关联手段）。`/run` 与 `/tasks` 都过这条缝。
+- **合并语义（三条各不相同）**：`blackboard` **整体替换**（身份载体不允许与客户端键合并）；
+  `labels` 按键盘合并、服务端胜；预算与客户端值取**更严者** —— 上限不能由叫价方抬高。
+- **迁移**：若你在 HTTP 的 `options` 里传了上述按键之外的字段（例如 `maxIterations` / `model` /
+  `blackboard`），请求现在会 400。这些旋钮请改成应用级配置（`createApp` / `RunnerOptions`），
+  或由宿主在 `resolveRunOptions` 里注入。TS 侧 `TaskSubmitBody.options` 从 `RunInvocationOptions`
+  收窄为 `ClientRunOptions`，这类写法会**当场编译报错**。
+- **验证**：`tests/transport/http-run-options.test.ts`（9 例）+ `tests/transport/run-options.test.ts`（9 例）。
+  反向变异 4/4 咬住（放行未知键 / 上限取更宽 / 钩子结果不生效 / `principal` 不转交）；
+  实测读数：`options.blackboard` → 400 且任务表为空；宿主注入后工具方法体里读到的是
+  `tenant-of-u-42`（来自 `authenticate`）。决策：`docs/spec.md` §10 ref-run-options-trust-boundary。
+
 ## [0.10.4] - 2026-10-28
 
 ### 变更

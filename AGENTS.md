@@ -128,6 +128,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   parseJsonBody / 405 / 413 / 503 / 500 的机械动作，**零内部依赖**
 │   │                        #   （只 import node:http 的类型）—— 宿主与端点都引它 ⇒ 不可能成环是**构造性**的
 │   │                        #   （`HttpException` 刻意不在这里：它是宿主契约，搬过去会让原语层反向依赖宿主）
+│   │                        #   run-options.ts = **run 选项的可信边界**（2026-11-04 run-options-trust-boundary）：
+│   │                        #   pickClientRunOptions 是 POST /tasks 的 `body.options` **白名单**
+│   │                        #   （只留 traceContext / maxCostUsd / maxTotalTokens；未知键即 400），
+│   │                        #   mergeRunOptions 把宿主 resolveRunOptions 的注入叠上去（blackboard 替换 /
+│   │                        #   labels 合并 / 预算取更严者）。此前 options 整体透传 ⇒ 客户端能自填
+│   │                        #   `blackboard.tenant` 冒充租户（usage-guide §6.6 的配额配方正好踩它）
 │   │                        #   run-call-options.ts = run 选项的**装配件**（2026-10-11 自 async.ts 抽出）：
 │   │                        #   buildRunCallOptions 把「按 isResume / sessionId / signal / trace 桥」拼出
 │   │                        #   一套 RunCallOptions 的那 42 行收成一处，adoptSucceededOutcome 收「幂等去重的
