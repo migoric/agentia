@@ -24,7 +24,8 @@
     "examples/eval-gate/src",
     "examples/terminal-bench/src",
     "examples/patrol/src",
-    "examples/patrol/drill.ts"
+    "examples/patrol/drill.ts",
+    "examples/super-agent/src"
   ],
   "exclude": ["node_modules", "dist", "tests/fixtures/capabilities-loadfail", "tests/types"]
 }

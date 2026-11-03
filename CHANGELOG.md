@@ -45,6 +45,20 @@
 - **验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
   预算护栏经 ctx 透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
 
+### 新增：`examples/super-agent` 多工单编排示例，并纳入 e2e 门禁（2026-11-03）
+
+- **示例形状**：Router 把一句目标拆成可并行工单，Worker 走 `AsyncRunner` 的 **task**（不是 `@SubAgent`）、
+  各自独立上下文；改数据的动作标 `approval: 'required'`，挂起等人批后恢复；四棵 trace 靠 `traceContext`
+  连成一条链。`npm run demo` 零网络、零 key、约 30ms 自检。
+- **门禁**：`scripts/e2e-examples.ts` 第 11 步（`verifySuperAgent`）按示例自己的 `npm run build` 构建，
+  再跑 dist 形态的 demo，然后**从它落的产物自己复算一遍 trace 图**（唯一的根 / 每条树几跳回家 /
+  哪条是恢复段），不转发 demo 的 `hopsTo` 结论。产物只在 `SUPERAGENT_DEMO_OUT` 指向文件时写，
+  交互式 demo 保持零副作用。`examples/super-agent/src` 同时进了 `tsconfig.tests.json`（类型层面也纳入门禁）。
+- **反向验证（三个变异 + 一个反方向探针）**：中和 demo 全部断言后 —— 去掉 Worker 的 `traceContext`
+  ⇒ 门禁红「每条 trace 都要沿 links 回得到 Router，断了的是 […]」；摘掉 `write_file` 的 `approval`
+  ⇒ 门禁红「要审批的工单应产生两棵 trace（挂起段 + 恢复段），实际 1」。反方向：实现不动、只让 demo 的
+  `hopsTo` 谎报一跳 ⇒ 门禁**仍绿**且自己算出 `worker-fix@2` —— 它算的是产物，不是文案。还原后 `sha256` 逐字节一致。
+
 ## [0.10.4] - 2026-10-28
 
 ### 变更

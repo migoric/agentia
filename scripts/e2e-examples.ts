@@ -1,5 +1,6 @@
 // 示例端到端验证：`examples/complete` 按它 README 里写的方式**真起服务、真跑三种触发**；
-// `examples/code-review` 真构建并跑它的**离线确定性 demo**（scriptedClient 剧本，零网络）。
+// 其余示例各自真构建并跑**离线确定性 demo**（`code-review` / `eval-gate` / `observability-mcp` /
+// `super-agent` —— 都是 scriptedClient 剧本或纯本地构造，零网络）。
 //
 // 为什么要有这一条：`examples/complete` 被 usage-guide / 项目 README 指着说「完整可跑写法见
 // examples/complete/」，但它此前只被 `typecheck:tests` 覆盖 —— 全仓**没有任何门禁真跑过**它
@@ -35,6 +36,7 @@ const obsPkgDir = join(repoRoot, 'examples', 'observability');
 const codeReviewDir = join(repoRoot, 'examples', 'code-review');
 const evalGateDir = join(repoRoot, 'examples', 'eval-gate');
 const obsMcpDir = join(repoRoot, 'examples', 'observability-mcp');
+const superAgentDir = join(repoRoot, 'examples', 'super-agent');
 
 /** 假 OpenAI 兼容端点的记录（断言「能力真的被执行」靠它，而不是靠自己读响应文本） */
 interface FakeProviderObserved {
@@ -173,6 +175,7 @@ function ensureLinks(): void {
     [join(codeReviewDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     [join(evalGateDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     [join(obsMcpDir, 'node_modules', '@migor', 'agentia'), repoRoot],
+    [join(superAgentDir, 'node_modules', '@migor', 'agentia'), repoRoot],
     // 本地小包**自己也要能构建** —— CI 上没有它的 node_modules，不建的话 `tsc -p` 会
     // 报「Cannot find module '@migor/agentia'」+「Cannot find name 'process'」
     // （@types/node 沿目录树上溯到仓库根即可解析，只有 @migor 需要这一步）
@@ -586,6 +589,191 @@ function verifyObservabilityMcp(): Record<string, unknown> {
   };
 }
 
+/** super-agent demo 产物里本脚本要断言的最小形状（只声明用到的字段） */
+interface SaArtifact {
+  routerRunId: string;
+  plan: Array<{ id: string; kind: string }>;
+  outcomes: Array<{ id: string; kind: string; taskId: string; status: string; runIds: string[] }>;
+  files: Record<string, string>;
+  traces: Array<{
+    traceId: string;
+    rootSpanId: string;
+    spans: Array<{ spanId: string; name: string; links?: Array<{ traceId: string }> }>;
+  }>;
+}
+
+/**
+ * `examples/super-agent` 的验证（它 README「npm run demo」一节的可执行版本）。
+ *
+ * 为什么值得进门禁：这个示例承载的是一条**结构性主张** —— Worker 走 task 而不是子 agent，
+ * 于是 Router 与每个 Worker 各是一棵 trace、靠 link 连成链。这条主张的失败方式很安静：
+ * 一旦有人把 Worker 改回 `@SubAgent`（同步 tool 调用），demo 照样「跑成功」，
+ * 只是**少了几棵树、多了一层嵌套 span**，输出仍然好看。所以这里不转发 demo 自己的结论，
+ * 而是拿它落的**原始产物**自己算一遍图：谁是唯一的根、每条树沿 links 几跳回家、
+ * 哪条树是恢复段。demo 内部的 `hopsTo` 改坏或改恒真，这里照样红。
+ *
+ * 另加一条纪律：产物只在 `SUPERAGENT_DEMO_OUT` 指向文件时才写 —— 交互式 `npm run demo`
+ * 保持零副作用，门禁自己带路径。
+ */
+function verifySuperAgent(): Record<string, unknown> {
+  // 构建走示例自己 package.json 承诺的 script（本仓纪律：测产物用产物自己的命令）
+  const npmRun = (script: string): { code: number; out: string } => {
+    const r = spawnSync('npm', ['run', script], {
+      cwd: superAgentDir,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  const built = npmRun('build');
+  assert(
+    built.code === 0,
+    `示例自己的 npm run build 应成功，实际 ${String(built.code)}：\n${built.out}`,
+  );
+
+  // 剥掉模型侧 env：剧本里的 `model` 字段取自 AGENTIA_MODEL，真 export 过时产物会跟着变 ——
+  // 确定性验证必须在自己控制的环境里跑（与 verifyCodeReview 同一条理由）
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of [
+    'AGENTIA_MODEL',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_BASE_URL',
+    'OPENAI_API_KEY',
+    'OPENAI_BASE_URL',
+  ]) {
+    delete env[key];
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'agentia-super-agent-'));
+  const outFile = join(dir, 'demo.json');
+  try {
+    const stdout = execFileSync(process.execPath, ['dist/demo.js'], {
+      cwd: superAgentDir,
+      env: { ...env, SUPERAGENT_DEMO_OUT: outFile },
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const artifact = JSON.parse(readFileSync(outFile, 'utf8')) as SaArtifact;
+
+    // —— ① 拆单：结构化结果（不是从自由文本里抠出来的）——
+    assert(
+      JSON.stringify(artifact.plan.map((t) => `${t.id}/${t.kind}`)) ===
+        JSON.stringify(['T1/repro', 'T2/fix']),
+      `Router 应拆出 T1[repro] + T2[fix]，实际 ${JSON.stringify(artifact.plan)}`,
+    );
+
+    // —— ② 每个工单都是**自己的 task** 并跑到终态（含被批准后恢复的那一单）——
+    assert(
+      artifact.outcomes.length === 2,
+      `应有 2 个工单结果，实际 ${JSON.stringify(artifact.outcomes.map((o) => o.id))}`,
+    );
+    const failedOutcomes = artifact.outcomes
+      .filter((o) => o.status !== 'succeeded')
+      .map((o) => `${o.id}:${o.status}`);
+    assert(failedOutcomes.length === 0, `所有工单都应 succeeded，实际 ${failedOutcomes.join(',')}`);
+    assert(
+      artifact.outcomes.every((o) => o.taskId.length > 0 && o.runIds.length > 0),
+      `每个工单都应有 taskId 与至少一段 run，实际 ${JSON.stringify(artifact.outcomes)}`,
+    );
+
+    // —— ③ 不可逆动作真落地（读沙箱快照，不是读它自己印的那行「true」）——
+    const pricing = artifact.files['src/pricing.ts'] ?? '';
+    assert(
+      pricing.includes('item.price * item.quantity'),
+      `写操作应在批准后落到 src/pricing.ts，实际前 200 字：${pricing.slice(0, 200)}`,
+    );
+
+    // —— ④ trace 图：自己算可达性 ——
+    const traces = artifact.traces;
+    const rootOf = (t: SaArtifact['traces'][number]) =>
+      t.spans.find((s) => s.spanId === t.rootSpanId);
+    const rootName = (t: SaArtifact['traces'][number]) => rootOf(t)?.name ?? '(no root)';
+    const linksOf = (t: SaArtifact['traces'][number]) => rootOf(t)?.links ?? [];
+
+    assert(
+      traces.every((t) => rootOf(t) !== undefined),
+      '每条 trace 都要有可解析的根 span（rootSpanId 指向的 span 不存在 = 产物形状变了）',
+    );
+    const ids = new Set(traces.map((t) => t.traceId));
+    assert(ids.has(artifact.routerRunId), 'Router 那棵树必须在 traces 里');
+    for (const t of traces) {
+      for (const link of linksOf(t)) {
+        assert(
+          ids.has(link.traceId),
+          `${t.traceId.slice(0, 8)} 的根 link 指向了不存在的树 ${link.traceId.slice(0, 8)}`,
+        );
+      }
+    }
+
+    // 跳数：从 Router 那棵出发，沿 links 能到几步（图很小，迭代到不动点即可）
+    const hops = new Map<string, number>([[artifact.routerRunId, 0]]);
+    for (let round = 0; round < traces.length; round++) {
+      for (const t of traces) {
+        if (hops.has(t.traceId)) continue;
+        const parents = linksOf(t)
+          .map((l) => hops.get(l.traceId))
+          .filter((h): h is number => h !== undefined);
+        if (parents.length > 0) hops.set(t.traceId, Math.min(...parents) + 1);
+      }
+    }
+    const stranded = traces.filter((t) => !hops.has(t.traceId)).map((t) => t.traceId.slice(0, 8));
+    assert(
+      stranded.length === 0,
+      `每条 trace 都要沿 links 回得到 Router，断了的是 ${JSON.stringify(stranded)}`,
+    );
+    const roots = traces.filter((t) => hops.get(t.traceId) === 0);
+    assert(
+      roots.length === 1 && rootName(roots[0]) === 'router',
+      `Router 应是唯一没有上家的树且根名 router，实际 ${JSON.stringify(roots.map(rootName))}`,
+    );
+
+    // 「不是子 agent」这条的结构判据：Worker 是**各自的 run**（各自一棵树），
+    // 不是一个 span 套在 Router 那棵树里。改成 @SubAgent 会同时打破下面两条。
+    const reproTrees = traces.filter((t) => rootName(t) === 'worker-repro');
+    assert(
+      reproTrees.length === 1 && hops.get(reproTrees[0].traceId) === 1,
+      `只读工单应是 1 棵独立的树、1 跳回 Router，实际 ${JSON.stringify(reproTrees.map((t) => rootName(t)))}`,
+    );
+    // 要审批的那单是**两跳**：恢复段 link 的是挂起段，不是 Router（这条曾经被写成「一跳」判成失败）
+    const fixTrees = traces.filter((t) => rootName(t) === 'worker-fix');
+    assert(
+      fixTrees.length === 2,
+      `要审批的工单应产生两棵 trace（挂起段 + 恢复段），实际 ${fixTrees.length}`,
+    );
+    assert(
+      fixTrees.some((t) => hops.get(t.traceId) === 1),
+      '挂起段应一跳回到 Router',
+    );
+    const resumeHops = fixTrees.map((t) => hops.get(t.traceId) ?? 0).find((h) => h > 1);
+    assert(
+      resumeHops === 2,
+      `恢复段应在两跳上（link → 挂起段 → Router），实际 ${JSON.stringify(fixTrees.map((t) => hops.get(t.traceId)))}`,
+    );
+
+    assert(
+      stdout.includes('✅ demo 通过'),
+      `demo 自己的断言应全过，实际 stdout 尾部：\n${stdout.slice(-500)}`,
+    );
+    const demoAsserts = Number(/(\d+) 条断言全中/.exec(stdout)?.[1] ?? 0);
+    assert(
+      demoAsserts > 0,
+      `应能从 stdout 读到 demo 的断言条数，实际尾部：\n${stdout.slice(-300)}`,
+    );
+
+    return {
+      buildExit: built.code,
+      demoAsserts,
+      tickets: `${artifact.outcomes.map((o) => o.id).join('+')}`,
+      taskStatuses: artifact.outcomes.map((o) => o.status).join(','),
+      traces: traces.length,
+      hops: traces.map((t) => `${rootName(t)}@${hops.get(t.traceId)}`).sort(),
+      approvedWriteLanded: true,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const fake = await startFakeProvider();
 let example: Awaited<ReturnType<typeof startExample>> | undefined;
 try {
@@ -708,6 +896,8 @@ try {
 
   // —— 10) observability-mcp 示例：起真 server + 出厂 MCP 客户端连回去（见 verifyObservabilityMcp）——
   const obsMcp = verifyObservabilityMcp();
+  // —— 11) super-agent 示例：离线 demo + 自己算一遍 trace 图（见 verifySuperAgent）——
+  const superAgent = verifySuperAgent();
 
   console.log('E2E-EXAMPLES PASS');
   console.log(
@@ -725,6 +915,7 @@ try {
         codeReview,
         evalGate,
         obsMcp,
+        superAgent,
       },
       null,
       2,

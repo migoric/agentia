@@ -10,6 +10,7 @@
 | [`agent-endpoint/`](./agent-endpoint/) | **存量改造**：在一个已在跑的 REST 服务上**增量**加 `/run` + `/tasks` 端点，老代码一行不动、复用同一份鉴权与业务函数（约 30 行胶水） | 想给现有服务加一个 agent 端点、又不想重写时 |
 | [`complete/`](./complete/) | **完整**示例：四类能力 + 三种触发 + 鉴权 + 全观测栈（上面四个 sink 接成一条链）+ Docker | 想知道「一个真实服务长什么样」时 |
 | [`patrol/`](./patrol/) | **真干活**的服务：对真目录做只读巡检、产出真报告，改动文件系统的动作走人工审批（挂起 → 人批 → 恢复）；附 `npm run drill` 上线演练，逐条验 `docs/deployment.md` | 想拿一个真任务对拍上线清单，或想看审批挂起/恢复、崩溃续跑怎么接时 |
+| [`super-agent/`](./super-agent/) | **多工单编排**：Router 把一句话目标拆成可并行工单，Worker 走 `AsyncRunner` 的 **task**（不是 `@SubAgent`）、各自独立上下文，改数据的动作挂起等人批，四棵 trace 用 link 串成一串；离线 demo 零网络自检 | 想做一个「一个目标 → 多个 agent 分头干 → 汇总」的编排层时 |
 | [`code-review/`](./code-review/) | **产品验证**示例：代码评审 agent 服务 —— 四类能力编排 + 结构化报告 + trace/成本数字，离线确定性 demo 与真模型两种跑法 | 想看「拿它做一个真业务长什么样、跑一轮花多少钱」时 |
 | [`eval-gate/`](./eval-gate/) | **评测即发布闸门**：把 `defineEval` 的结论对上一版基线收成「这一版能不能发」的判据（补 `EvalReport.ok` 答不了的两件事：比上一版好还是坏 / 「删掉失败用例」这种过闸门方式） | 想把评测接进发布流程时 |
 | [`grpc-host/`](./grpc-host/) | **第 4 个宿主**：gRPC 服务定义 → `RunInput` → `app.run` / `runner.submit`（一元 / 服务端流 / 异步投递 / 查任务；deadline→signal、metadata traceparent→link） | 想给已有服务加一个 gRPC 入口、又不想把语义写歪时 |
