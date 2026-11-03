@@ -557,6 +557,49 @@ run 内取上下文（黑板 / `@Skill` 第二参）、把装饰器装配成 app
 | `model` | 本次技能的缺省模型 |
 | `llm` | 受限子运行：`await ctx.llm({ prompt })` / `{ messages, system, model, maxTokens, maxIterations }` |
 
+#### `runCapabilityLoop(ctx, opts)` —— 代码控制顺序的子循环（2026-11-04）
+
+四类能力之外还有一格：**顺序由你的代码定、但活不过这次请求**。`@SubAgent` / `@Skill` 的流程由
+模型或方法体驱动、子循环里的审批挂不起整条 run；`AsyncRunner` 的 task 能挂起能续跑，但要为它
+造一条任务记录。中间这一格就是本原语（它把 `runAgentScoped` 包成「旋钮不可漏」的形状 ——
+`ToolRunContext` 上那七个必须原样下交的键一次取自单源，使用方接触不到）。
+
+| 选哪个 | 判据 |
+|---|---|
+| `@SubAgent` | 流程交给**模型**决定，子 agent 自己挑工具 |
+| `@Skill` + `ctx.llm()` | 流程由方法体定，但**不要**结构化结果 / 裁剪 / 人批 |
+| **`runCapabilityLoop`** | 流程由方法体定，且需要 `contextPolicy`（长跑不撞上限）/ `resultSchema` / 同一棵树 |
+| `AsyncRunner.submit` | 这件事会**活过这次请求**（耐久、崩溃续跑、审批原生） |
+
+```ts
+@Tool({
+  name: 'approve_invoice',
+  description: '核对并批准一张发票（会改账，需人工批准）',
+  inputSchema: INVOICE_SCHEMA,
+  approval: 'required', // 审批落在**这个工具调用**上 ⇒ 整条 run 可挂起等人批
+})
+class InvoiceTool {
+  constructor(private readonly client: ModelClient) {}
+
+  async run(input: { id: string }, ctx: ToolRunContext) {
+    const ledger = await runCapabilityLoop(ctx, {
+      name: 'invoice-review', // trace 里那个 capability span 的名字
+      input: `核对发票 ${input.id}：先查合同，再比对金额`,
+      tools: [contractTool, ledgerTool], // 子循环自己的菜单（不继承主菜单）
+      contextPolicy: createBudgetPolicy({ maxTokens: 40_000 }), // 长跑子循环不撞上限
+      resultSchema: VERDICT_SCHEMA,
+    });
+    // 成败自己判（框架不替它抛）：非正常收尾时 stopReason 会告诉你为什么
+    if (!isSuccessStopReason(ledger.stopReason)) throw new Error(`核对失败：${ledger.stopReason}`);
+    return ledger.typed;
+  }
+}
+```
+
+三条边界（都是刻意）：**不自开 run 根**（`llm.turn` 挂在本条 run 的树里，`runId` 不会多一个）；
+**不继承主 run 的 `fallbacks` 链**（同 `runAgentScoped` 的有意边界）；**挂起不穿透** ——
+子循环里触发 `deferUntil` / 审批挂起时，语义同其它嵌套能力（以 `is_error` 交回，整条 run 不挂起）。
+
 #### 装配与执行
 
 | API | 说明 |
@@ -713,7 +756,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | 端点 | 请求 | 响应 |
 |---|---|---|
 | `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
-| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 是 `RunInvocationOptions` | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
+| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 只接受**白名单**：`traceContext` / `maxCostUsd` / `maxTotalTokens`（多一个键 → 400，含 `blackboard` / `tools` / `model`）。**身份与租户不走 body** —— 由宿主的 `resolveRunOptions` 按请求注入 | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；`decisions` 里有不在该任务 `pendingApprovals` 里的 id → **400（整批拒，记录一字不动）**；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
@@ -774,7 +817,8 @@ const handler = createHttpHandler(callable, { runner });
 
 | 选项 | 说明 |
 |---|---|
-| `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过，**返回值作为 `principal` 交给 `resolveRunOptions`**；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
+| `resolveRunOptions` | `(req, { route, principal }) => { blackboard?, labels?, maxCostUsd?, maxTotalTokens? }` —— **身份 / 租户 / 配额封顶的唯一可信通道**（`/run` 与 `/tasks` 都生效）。`blackboard` **整体替换**、`labels` 按键盘合并（服务端胜）、预算与客户端值取**更严者**（上限不能由叫价方抬高）。抛 `HttpException` 按其状态码回。为什么必须有它：`POST /tasks` 的 `body.options` 走白名单之后，客户端已经**设不了** `blackboard` —— 身份不从这里进就没有地方进了（见 §6.6「多租户配额」） |
 | `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB。构造期校验：必须 > 0 或 `Infinity` —— 0 会让**每个带 body 的请求**都 413（`POST /run` / `POST /tasks` / 审批全废），故直接抛错。⚠️ 还挡 `Number('') === 0`：从**空的环境变量**读出来的配置会静默变成「拒绝一切」 |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限）。构造期校验：必须 > 0 或 Infinity —— NaN 会让闸门静默失效、0/负数会全部 503，故直接抛错 |
@@ -809,6 +853,13 @@ const handler = createHttpHandler(app, {
   // 只给缝：token/JWT/签名策略由你的宿主或反代实现
   authenticate: (req) => {
     if (req.headers['x-api-key'] !== expected) throw new HttpException(401, { error: '无效凭据' });
+    // 返回值不是白抛的：它就是 principal，下一步交给 resolveRunOptions
+    return { userId: String(req.headers['x-user-id'] ?? '') };
+  },
+  // 身份 / 租户进 run 的唯一可信通道（客户端在 body 里填不了黑板）
+  resolveRunOptions: (_req, { principal }) => {
+    const { userId } = principal as { userId: string };
+    return { blackboard: { tenant: tenantOf(userId) }, labels: { user: userId } };
   },
 });
 
@@ -1679,6 +1730,9 @@ createApp({ system, providers: [...], middleware: [quota], sinks: [billing] });
 
 - 拦下来的那次 run **仍然要记账**（模型的钱已经花了）—— 记账在 sink 里、拦截在 middleware 里，两者独立。
 - 被拦下的能力**不会执行**（副作用不发生），但 run 继续跑（模型可以换路）。
+- ⚠️ **`tenant` 从哪来**（2026-11-04 起）：只能由宿主注入 —— `createHttpHandler({ authenticate, resolveRunOptions })` 里
+  `resolveRunOptions` 返回 `{ blackboard: { tenant } }`。客户端在 `POST /tasks` 的 `options` 里**填不了黑板**
+  （白名单外即 400）：这条配方此前照着抄会被绕过 —— 谁能调 `/tasks` 谁就能自填 `tenant`，额度记到别人头上。
 
 #### 人工审批
 
@@ -1971,13 +2025,13 @@ const callable = {
 | 审批是 at-least-once | 崩溃发生在「批准后、恢复执行中」时，副作用工具会重执行（与 `resumePending` 续跑同口径）—— 副作用工具自己保证幂等 |
 | 挂起/恢复间预算重新起算 | `maxTotalTokens` / `maxCostUsd` 在恢复段从 0 重新计（新树新账，与 `resumePending` 续跑同口径） |
 | 恢复段的会话回写是进程内快照 | 带 `sessionId` 的任务挂起时，「本轮用户输入」快照只存进程内存（恢复段由 AsyncRunner 自己补写「用户输入 + 最终回复」，不再经 run 层重复拼历史）—— 进程崩在「挂起 → 重启 → approve」之间会**丢这一次会话回写**（会话少一轮，但绝不写进坏历史；审批决定本身已落库） |
-| 嵌套能力内的审批不支持挂起 | @SubAgent / @Skill 子循环里的 `approval: 'required'` 工具无法把整个 run 挂起 —— 子循环挂起会以 `is_error` 交回主 agent（要审批的能力请放主菜单） |
+| 嵌套能力内的审批不支持挂起 | @SubAgent / @Skill 子循环里的 `approval: 'required'` 工具无法把整个 run 挂起 —— 子循环挂起会以 `is_error` 交回主 agent（要审批的能力请放主菜单）。要「代码定顺序 + 人批」两样都要：把 `runCapabilityLoop` 放进一个 `@Tool({ approval: 'required' })` —— 审批落在**外层工具调用**上，于是照样能挂起等人批 |
 | 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'suspended'` 收尾返回 —— 但响应体（`toHttpBody`）**不含** `suspendedMessages`，也没有任务记录可审批（待决清单只能去 trace 的 `approval.requested` 事件里看）。**要审批请走 `POST /tasks` 异步宿主** |
 | Scheduler 调度表不落库 | `every` / `at` 的调度本身只在内存：已 submit 的任务记录能经 `resumePending` 续跑，但「未来某刻再触发」的调度在重启后不存在（远期单发由宿主自己的 cron 驱动）。另：`drain()` 不停 Scheduler —— 停机窗口内到点的 tick 会打一条触发失败日志（无害但吵），介意就 `scheduler.stop()` 先行 |
 | file store 的撕裂写只在启动时自愈 | 写入中途失败（磁盘满等）留下的残行由 `healTail` 在**构造期**修复；同进程内继续 append 会把新记录粘在残行尾部、下次启动时一起丢弃 —— 磁盘满告警后先恢复写入能力再继续依赖它 |
 | 终态落库失败 ⇒ 重启会重跑 | AsyncRunner 终态 `save` 失败**不遮罩主流程**（「不击穿业务」的代价）：store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**（副作用已发生）的任务 —— 所以副作用工具必须自身幂等。**但失败本身不再静默**：`new AsyncRunner(app, { onPersistError })` 会收到 `{ record, error, phase }`（`phase: 'initial' \| 'outcome'`，后者就是这条）。⚠️ 框架**修不了**它（写不进去就是写不进去）—— 出口的职责是让你能对账、让「记录无声丢失」不再是默认行为（与 `createOtlpExporter({ onExportError })` 同因同形） |
 | 缺省**不裁剪**上下文（长跑每回合重发全量历史 ⇒ 成本随回合数平方增长） | `contextPolicy` 不注入就一个回合都不裁：每回合把**整段历史**重发给模型，于是回合数翻倍、总输入约翻两番。框架给了缝与一份参考实现（`createBudgetPolicy`），但**不替你决定** —— 裁剪有损（截在哪、留什么会影响答案），是宿主的策略。长任务（几十回合以上）请在 `createApp` 里显式注入 `contextPolicy` |
-| `contextPolicy` 不进子循环 | 应用级 `contextPolicy` / `onText` 只对主循环生效：@SubAgent / @Skill 的子运行不做上下文裁剪（长跑子 agent 撞上下文上限会以 api 错误收尾）。预算护栏（`maxTotalTokens` / `maxCostUsd`）正常透传 |
+| `contextPolicy` 不进子循环 | 应用级 `contextPolicy` / `onText` 只对主循环生效：@SubAgent / @Skill 的子运行不做上下文裁剪（长跑子 agent 撞上下文上限会以 api 错误收尾）。预算护栏（`maxTotalTokens` / `maxCostUsd`）正常透传。要裁剪就显式给：`runCapabilityLoop(ctx, { contextPolicy })`（不继承应用级 —— 子循环的策略是调用点的决策） |
 | 记忆没有删除语义 | `MemoryStore` 只有 load/save：run 内 `ctx.delete` 掉的键回写时不会从 store 移除（下一轮水合会复活）。要真删请直接操作 store 实现 |
 | 同 keys 的并发回写不合并 | CAS（`loadWithRev` + `saveIfRev`）只做到「冲突时**不写 + 出声**」：框架**不合并、不重试**（合并语义是 store 与宿主的决定，配方见 §6.5）。只有 `load` / `save` 的 store 连冲突都**看不见** —— 版本号是唯一依据，没有它就检测不了覆盖；`InMemoryMemoryStore` 的版本粒度是**整店一个计数**（宁可多报冲突，不漏报真实覆盖） |
 | 内容护栏不给实现 | 同「配额」：只给缝（入参包 `app.run` / 工具前 `middleware` / 出参包返回值或 `sinks`），策略（正则 / 分类器 / 外部 API）是你的 |

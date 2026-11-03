@@ -7417,6 +7417,68 @@ tsc/Biome；默认与 minimal 都要真建工程过类型检查。E2E 必须按�
 `dev` / `typecheck` / `build` / `start`，并在 pack → 离线安装后再建一个 minimal，防止
 「文档说简单、产物却缺文件或跑不起来」。框架公共 API、依赖与包版本均不变。
 
+### 2026-11-04 ① ref-run-options-trust-boundary：**客户端能设哪些 run 选项，是一件安全事实** —— `POST /tasks` 的 `options` 白名单化 + 宿主 `resolveRunOptions` 缝
+
+**事实**（实测，不是推断）：`POST /tasks` 把 `body.options` 整体透传给 `runner.submit`，而
+`RunInvocationOptions` 是引擎的**全套旋钮**。于是任何能调这个端点的人都能写
+`{ blackboard: { tenant: '别人的租户' } }` —— 而 usage-guide §6.6 的多租户配额配方第一步
+正是「用黑板存 tenant」⇒ 照抄就记到别人头上。同一件事在 `POST /run` 上是**死路**（body 是
+`RunInput`，压根没有 options 入口）：需要身份的那条拿不到，拿得到的那条不可信。
+
+**决定**：
+
+1. **白名单**（`pickClientRunOptions`）：客户端只可设 `traceContext` / `maxCostUsd` / `maxTotalTokens`，
+   其余键（含 `blackboard` / `tools` / `model` / `fallbacks` / `priceOverrides`）**一律 400**，
+   且错误里点名那个键。加到白名单的判据是「这个键被设错时，损失只落在他自己这一单上」。
+2. **可信注入**（`HttpHandlerOptions.resolveRunOptions`）：宿主按请求返回
+   `{ blackboard?, labels?, maxCostUsd?, maxTotalTokens? }`；`authenticate` 的返回值从此不再被
+   丢弃，作为 `principal` 传进该钩子 —— 身份只走这一条。`/run` 与 `/tasks` 都过它。
+3. **合并语义各不相同**：`blackboard` **整体替换**（身份载体不允许与客户端键「合并」）；
+   `labels` 按键盘合并、服务端胜（归因是多维度的）；预算与客户端值取**更严者** ——
+   「上限」不能由叫价方抬高，这不是策略而是这个词的定义。
+
+**为什么不只补示例**：`examples/` 里教人怎么接，改不了**内置 handler 的默认行为**。把
+「客户端能自填黑板」留在公开面上，等于承认内置 HTTP 宿主不适合多租户 —— 而 usage-guide 正是
+照着它写配方的。修在入口是唯一能同时解决两条路的位置。
+
+**边界（刻意不做）**：不做鉴权策略、不读 header 的租户语义、不查租户库、不做配额 —— 这些仍是
+`authenticate` / middleware / sink 的事；框架只保证「身份有一个可信入口、客户端不能冒充」。
+
+**破坏性**：通过 HTTP 在 `options` 里传上述白名单之外的键，此前被静默接受、现在 400；
+`TaskSubmitBody.options` 的类型从 `RunInvocationOptions` 收窄为 `ClientRunOptions`（TS 侧当场报错，
+而不是上线后才发现）。两处都在 CHANGELOG 的迁移小节里写了。
+
+**验证**：`tests/transport/http-run-options.test.ts`（9 例）+ `tests/transport/run-options.test.ts`（9 例）。
+反向变异 4 条全部咬住：① 白名单放行未知键 ⇒ 3 例红（含 `blackboard` 那条）；
+② 上限取更宽者（`Math.min`→`Math.max`）⇒ 2 例红；③ 钩子被调但结果不生效 ⇒ 3 例红；
+④ `principal` 不转交 ⇒ 1 例红。
+
+### 2026-11-04 ② ref-run-capability-loop：**把已经写好的子循环拿出来** —— 公共原语 `runCapabilityLoop(ctx, opts)`
+
+**事实**：四类能力与 `AsyncRunner` 之间有一格是空的 ——「顺序由**我的代码**定（不是模型）、
+生命周期**不超出**这次请求（不进 task 状态机）、但要能挂到同一棵 trace、要能裁剪上下文、
+要能被外层工具的 `approval` 拦住」。做这件事的唯一路子是手写 `runAgentScoped` +
+自己逐个转发 `ToolRunContext` 的旋钮；而 `runAgentScoped` 在 `src/engine/loop.ts` 有定义，
+`src/index.ts` **一次都没导出**，配套的 `forwardToolContext` 同样没有 —— 于是业务侧只剩两条
+都不对的退路：退化成 task（多一棵树、多一套状态机），或让模型自己记得别写。
+
+**决定**：导出 `runCapabilityLoop(ctx, opts)`（`src/toolkit/capability-loop.ts`）——
+**包装**而不是暴露 `runAgentScoped`。内部 `...forwardToolContext(ctx)` 是七个旋钮的唯一取值点
+（`engine/forwarded.ts` 记录的事故就是「漏一个 `toolTimeoutMs` 是静默的」），另加
+`combineSignals`（超时放弃等待能掐掉子循环）与一个 `capability` span（同树、`runId` 不多一个）。
+它接受 `contextPolicy` / `resultSchema` / 自己的工具菜单 —— 正是 `@SubAgent` / `@Skill` 给不了的两样。
+
+**为什么不导出 `runAgentScoped`**：它把「哪些旋钮必须下交」的责任交给调用方，而 TS 对漏写
+可选字段**不报错**。公开面只该有「不可能漏」的那个形状。
+
+**边界**：不自开 run 根；不继承主 run 的 `fallbacks` 链（同 `runAgentScoped` 的有意边界）；
+挂起不穿透（子循环里的 `deferUntil` / 审批触发仍以 `is_error` 交回 —— 要挂起请用 task）。
+usage-guide §7 的两条边界（「嵌套能力内的审批不支持挂起」「`contextPolicy` 不进子循环」）随之各补了
+一条出路，而不是被删掉：`@SubAgent` / `@Skill` 的行为一个字没变。
+
+**验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
+预算护栏透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
+
 ## 11. 开放项
 
 

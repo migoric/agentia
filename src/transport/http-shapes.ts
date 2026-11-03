@@ -2,8 +2,8 @@ import type { Trace, SpanError } from '../core/trace.js';
 import type { RunStatus } from '../core/run.js';
 import type { TaskEvent } from '../core/run.js';
 import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
-import type { RunInvocationOptions } from '../engine/spec.js';
 import type { ApprovalDecisions } from './async.js';
+import type { ClientRunOptions } from './run-options.js';
 
 /**
  * Agentia —— HTTP 宿主的**出入站形状口径**（transport/http.ts 的拆分第一步）。
@@ -36,7 +36,13 @@ export interface RunHttpResponse {
 export interface TaskSubmitBody {
   input: unknown;
   idempotencyKey?: string;
-  options?: RunInvocationOptions;
+  /**
+   * 客户端选项 —— **只接受白名单键**（`traceContext` / `maxCostUsd` / `maxTotalTokens`，
+   * 见 `run-options.ts`）。身份 / 租户走宿主的 `resolveRunOptions` 钩子，不从 body 来：
+   * 此前这里是 `RunInvocationOptions`（整套引擎旋钮）⇒ 任何能调它的人都能自填
+   * `blackboard.tenant`。未知键一律 400（不静默丢弃）。
+   */
+  options?: ClientRunOptions;
 }
 
 /** 把 app.run 的产物收成 HTTP 响应体（JSON 与 SSE 的 run.end 共用同一形状） */

@@ -7,6 +7,58 @@
 
 ## [Unreleased]
 
+### ⚠️ 行为变更（安全修）：`POST /tasks` 的 `options` 白名单化 + 宿主 `resolveRunOptions` 缝（2026-11-04 ref-run-options-trust-boundary）
+
+- **修的是什么**：`POST /tasks` 此前把 `body.options` **整体透传**给引擎，而它是
+  `RunInvocationOptions` 的全套旋钮。任何能调这个端点的人都能写
+  `{ blackboard: { tenant: '别人的租户' } }`，而 usage-guide §6.6 的多租户配额配方第一步正是
+  「用黑板存 tenant」⇒ 额度记到别人头上。同一件事在 `POST /run` 上却是**死路**（body 是 `RunInput`，
+  没有 options 入口）：需要身份的那条拿不到，拿得到的那条不可信。
+- **现在**：客户端只能设 `traceContext` / `maxCostUsd` / `maxTotalTokens`，**其余键一律 400 并点名**
+  （`blackboard` / `tools` / `model` / `fallbacks` / `priceOverrides` …）。身份 / 租户由新增的
+  `HttpHandlerOptions.resolveRunOptions(req, { route, principal })` 按请求注入 —— `authenticate`
+  的返回值从此**不再被丢弃**，作为 `principal` 传进该钩子（此前注释建议「存在钩子自己的闭包里」，
+  但闭包与 run 之间没有任何关联手段）。`/run` 与 `/tasks` 都过这条缝。
+- **合并语义（三条各不相同）**：`blackboard` **整体替换**（身份载体不允许与客户端键合并）；
+  `labels` 按键盘合并、服务端胜；预算与客户端值取**更严者** —— 上限不能由叫价方抬高。
+- **迁移**：若你在 HTTP 的 `options` 里传了上述按键之外的字段（例如 `maxIterations` / `model` /
+  `blackboard`），请求现在会 400。这些旋钮请改成应用级配置（`createApp` / `RunnerOptions`），
+  或由宿主在 `resolveRunOptions` 里注入。TS 侧 `TaskSubmitBody.options` 从 `RunInvocationOptions`
+  收窄为 `ClientRunOptions`，这类写法会**当场编译报错**。
+- **验证**：`tests/transport/http-run-options.test.ts`（9 例）+ `tests/transport/run-options.test.ts`（9 例）。
+  反向变异 4/4 咬住（放行未知键 / 上限取更宽 / 钩子结果不生效 / `principal` 不转交）；
+  实测读数：`options.blackboard` → 400 且任务表为空；宿主注入后工具方法体里读到的是
+  `tenant-of-u-42`（来自 `authenticate`）。决策：`docs/spec.md` §10 ref-run-options-trust-boundary。
+
+### 新增：`runCapabilityLoop(ctx, opts)` —— 代码控制顺序的子循环（2026-11-04 ref-run-capability-loop）
+
+- **补的是哪一格**：顺序由**代码**定、但活**不过**这次请求 —— `@SubAgent` / `@Skill` 的子循环审批挂不起
+  整条 run、`contextPolicy` 也不进子循环；`AsyncRunner` 的 task 能挂起能续跑，但要为它造一条任务记录。
+  中间这一格此前只能手写 `runAgentScoped` + 自己转发 `ToolRunContext` 的七个旋钮（漏一个是**静默**的）。
+- **形状**：`runCapabilityLoop(ctx, { name?, input, system?, tools?, model?, contextPolicy?, resultSchema?, onText? })`
+  → `{ text, typed, stopReason, iterations, spanId, error? }`。内部 `...forwardToolContext(ctx)` 取自唯一单源、
+  会 combine「放弃等待」信号、自建一个 `capability` span（**同树**，`runId` 不多一个）。
+- **配 `@Tool({ approval: 'required' })` 就能挂起等人批**：审批落在**外层工具调用**上，于是
+  「代码定顺序 + 子循环可裁剪 + 人批可挂起 + 同一棵树」四样可以同时要。
+- **刻意不导出 `runAgentScoped`**：它把「哪些旋钮必须下交」的责任交给调用方，而 TS 对漏写可选字段
+  不报错。公共面只给「不可能漏」的那个形状。`@SubAgent` / `@Skill` 的行为一个字没变。
+- **验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
+  预算护栏经 ctx 透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
+
+### 新增：`examples/super-agent` 多工单编排示例，并纳入 e2e 门禁（2026-11-03）
+
+- **示例形状**：Router 把一句目标拆成可并行工单，Worker 走 `AsyncRunner` 的 **task**（不是 `@SubAgent`）、
+  各自独立上下文；改数据的动作标 `approval: 'required'`，挂起等人批后恢复；四棵 trace 靠 `traceContext`
+  连成一条链。`npm run demo` 零网络、零 key、约 30ms 自检。
+- **门禁**：`scripts/e2e-examples.ts` 第 11 步（`verifySuperAgent`）按示例自己的 `npm run build` 构建，
+  再跑 dist 形态的 demo，然后**从它落的产物自己复算一遍 trace 图**（唯一的根 / 每条树几跳回家 /
+  哪条是恢复段），不转发 demo 的 `hopsTo` 结论。产物只在 `SUPERAGENT_DEMO_OUT` 指向文件时写，
+  交互式 demo 保持零副作用。`examples/super-agent/src` 同时进了 `tsconfig.tests.json`（类型层面也纳入门禁）。
+- **反向验证（三个变异 + 一个反方向探针）**：中和 demo 全部断言后 —— 去掉 Worker 的 `traceContext`
+  ⇒ 门禁红「每条 trace 都要沿 links 回得到 Router，断了的是 […]」；摘掉 `write_file` 的 `approval`
+  ⇒ 门禁红「要审批的工单应产生两棵 trace（挂起段 + 恢复段），实际 1」。反方向：实现不动、只让 demo 的
+  `hopsTo` 谎报一跳 ⇒ 门禁**仍绿**且自己算出 `worker-fix@2` —— 它算的是产物，不是文案。还原后 `sha256` 逐字节一致。
+
 ## [0.10.4] - 2026-10-28
 
 ### 变更

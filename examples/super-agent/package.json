@@ -1,0 +1,21 @@
+{
+  "name": "agentia-super-agent-example",
+  "private": true,
+  "type": "module",
+  "description": "Agentia 多工单编排示例：Router 拆单 + Worker 走 task（不是子 agent）+ 不可逆动作走审批 + 多棵树用 link 串起来",
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/main.js"
+  },
+  "dependencies": {
+    "@migor/agentia": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}

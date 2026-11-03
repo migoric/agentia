@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseTraceparent } from '../core/trace.js';
+import type { RunInvocationOptions } from '../engine/spec.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
 import {
@@ -25,6 +26,8 @@ import {
 } from './http-io.js';
 import type { HttpRoute } from './http-route.js';
 import { parseApproveBody, parseEventBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
+import { mergeRunOptions, pickClientRunOptions } from './run-options.js';
+import type { ResolveRunOptionsHook } from './run-options.js';
 import { sseWriter } from './sse.js';
 
 /**
@@ -156,6 +159,30 @@ export interface HttpCtx {
   readonly exposeErrors: boolean;
   readonly startedAt: number;
   readonly metrics: MetricsProvider | undefined;
+  /**
+   * `authenticate` 的返回值（身份）。除免鉴权组外每条请求都有；
+   * 它只交给 `resolveRunOptions`，**不进**任何响应体、也不落库。
+   */
+  readonly principal: unknown;
+  /** 宿主给的 per-request run 选项来源（见 `HttpHandlerOptions.resolveRunOptions`） */
+  readonly resolveRunOptions: ResolveRunOptionsHook | undefined;
+}
+
+/**
+ * 取本请求的 run 选项：宿主注入（可信）叠加在客户端选项（**已过白名单**）之上。
+ *
+ * 抛出的 `HttpException` 刻意**不在这里**认领 —— 状态码与响应体的语义属于宿主契约，
+ * 认领点在 `http.ts` 的 handler 出口（本模块不 import 宿主的值，依赖方向单向）。
+ */
+async function withHostRunOptions(
+  ctx: HttpCtx,
+  route: 'run' | 'tasks',
+  clientOptions: RunInvocationOptions,
+): Promise<RunInvocationOptions> {
+  const hook = ctx.resolveRunOptions;
+  if (!hook) return clientOptions;
+  const overrides = await hook(ctx.req, { route, principal: ctx.principal });
+  return mergeRunOptions(clientOptions, overrides);
 }
 
 /**
@@ -300,6 +327,9 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
   // 链路是观测行为，不该因为一个坏头把业务请求打成 400。
   const traceContext = parseTraceparent(headerValue(req, 'traceparent'));
   try {
+    // 身份 / 租户 / 配额封顶：`/run` 此前**没有任何口子**（body 是 RunInput，不是 options），
+    // 于是「需要身份」的那条路反而是死路。现在它与 `/tasks` 共用同一个可信来源。
+    const runOptions = await withHostRunOptions(ctx, 'run', {});
     if (wantsSse) {
       const sse = sseWriter(res, {
         maxBufferedBytes: sseMaxBufferedBytes,
@@ -324,6 +354,7 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
       try {
         // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 run.end 下发（status/error 字段）
         const out = await app.run(messages, {
+          ...runOptions,
           rethrow: false,
           signal: runAc.signal,
           onText: (delta) => sse.event('text.delta', { text: delta }),
@@ -347,6 +378,7 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
     }
     // rethrow:false —— 与 AsyncRunner 对齐：硬失败也以 status/error 字段返回 200
     const out = await app.run(messages, {
+      ...runOptions,
       rethrow: false,
       signal: runAc.signal,
       ...(traceContext !== undefined ? { traceContext } : {}),
@@ -376,23 +408,34 @@ async function handleSubmit(ctx: HttpCtx): Promise<void> {
     sendJson(res, 400, { error: 'body 需为 { input, idempotencyKey?, options? }' });
     return;
   }
+  // 客户端选项先过**白名单**：`options` 是引擎的全套旋钮（blackboard / tools / fallbacks /
+  // priceOverrides …），整体透传等于把「我是谁」交给调它的人填。未知键直接 400 ——
+  // 拼错的 maxCostUSD 被静默忽略，会让人以为花销已封顶（见 transport/run-options.ts）。
+  const picked = pickClientRunOptions(submitBody.options);
+  if (!picked.ok) {
+    sendJson(res, 400, { error: picked.error });
+    return;
+  }
   // 入站链路（spec §9.2）：body 显式给的 `options.traceContext` 优先，否则取
   // `traceparent` 头。它随 `spec.options` 落进 TaskRecord —— 所以**跨进程续跑**
   // 的那次 run（另一个进程 `resumePending` 接着跑）也带得上，关联不断链。
   const submitTrace = parseTraceparent(headerValue(req, 'traceparent'));
+  // 宿主注入（身份 / 租户 / 配额封顶）：**覆盖**客户端能决定的那部分，见 run-options.ts
+  const clientOptions = await withHostRunOptions(ctx, 'tasks', picked.options);
+  const options: RunInvocationOptions =
+    clientOptions.traceContext !== undefined
+      ? clientOptions
+      : {
+          ...clientOptions,
+          ...(submitTrace !== undefined ? { traceContext: submitTrace } : {}),
+        };
   let rec: TaskRecord;
   try {
     rec = runner.submit(submitBody.input, {
       ...(submitBody.idempotencyKey !== undefined
         ? { idempotencyKey: submitBody.idempotencyKey }
         : {}),
-      options:
-        submitBody.options?.traceContext !== undefined
-          ? submitBody.options
-          : {
-              ...submitBody.options,
-              ...(submitTrace !== undefined ? { traceContext: submitTrace } : {}),
-            },
+      options,
       source: 'http',
     });
   } catch (e) {

@@ -5,6 +5,7 @@ import { handleRoute } from './http-endpoints.js';
 import type { HttpCtx, HttpState } from './http-endpoints.js';
 import { errMessage, sendInternalError, sendJson } from './http-io.js';
 import { isPreAuthRoute, routeRequest } from './http-route.js';
+import type { ResolveRunOptionsHook } from './run-options.js';
 import { zeroClauseOf } from '../core/limits.js';
 
 /**
@@ -70,8 +71,10 @@ export interface HttpHandlerOptions {
   /**
    * 入口鉴权钩子。请求进入时调用，**除 /healthz 与 /metrics 外所有路径**都过它，且**在读 body 之前**
    * （未通过就不接收 body，省资源）。/metrics 与 /healthz 同档不鉴权（见 `metrics` 选项）。
-   * - 正常返回（任意值）→ 视为通过。返回值框架不转交：要 per-request 上下文请在钩子自己的
-   *   闭包里存（避免为「暂时没有消费点」的东西发明传递通道）；
+   * - 正常返回 → 视为通过。**返回值不再丢弃**：它作为 `principal` 交给
+   *   `resolveRunOptions(req, { route, principal })`（2026-11-04 起；此前注释写的是
+   *   「返回值框架不转交，请存在钩子自己的闭包里」—— 那条路走不通：闭包与 run 之间
+   *   没有任何关联手段，runId 是 run 开始后才有的。身份入 run 的唯一可信通道就是这一条）。
    * - 抛出 `HttpException` → 按其 `status` / `body` 回响应（想回 403 就抛 `status: 403`）；
    * - 抛出其它错误 → 回 401 `{ error: '未通过鉴权' }`，原文只进服务端日志
    *   （与 `exposeErrors` 同理：不把内部拓扑回给未鉴权的调用方）。
@@ -81,6 +84,19 @@ export interface HttpHandlerOptions {
    * 而鉴权要拦的是 **run 入口**，且必须早于 body 读取。
    */
   authenticate?: (req: IncomingMessage) => unknown | Promise<unknown>;
+  /**
+   * 按请求给 run 选项（**身份 / 租户 / 配额封顶的唯一可信通道**）。与 `authenticate` 配对使用：
+   * 后者的返回值会作为 `principal` 传进来。
+   *
+   * 为什么需要它：`POST /tasks` 的 `body.options` 此前整体透传给引擎 —— 任何能调它的人都能
+   * 自填 `blackboard: { tenant: '别人的租户' }`（而 usage-guide §6.6 的多租户配方正是
+   * 「用黑板存 tenant」），于是配额记到别人头上。现在客户端选项走**白名单**
+   * （见 `run-options.ts`），身份只能从这里进，且服务端值**覆盖**客户端值。
+   *
+   * 两条口径：`blackboard` 整体替换、`labels` 按键盘合并（服务端胜）、预算与客户端值
+   * 取**更严者**（上限不能由叫价方抬高）。抛 `HttpException` 按其状态码回。
+   */
+  resolveRunOptions?: ResolveRunOptionsHook;
   /**
    * 指标出口（G4）：提供后 `GET /metrics` 输出其 `render()` 的文本。
    * 通常直接传 `metricsSink()`（它有 `render()`）。
@@ -211,6 +227,7 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
   const exposeErrors = opts.exposeErrors ?? false;
   const sseMaxBufferedBytes = opts.sseMaxBufferedBytes;
   const authenticate = opts.authenticate;
+  const resolveRunOptions = opts.resolveRunOptions;
   const metrics = opts.metrics;
   const startedAt = Date.now();
 
@@ -296,40 +313,52 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     // 顺序陷阱写在那边的头注里，最要命的一条：免鉴权组（/healthz、/metrics）
     // 连同它们自己的 405 都在鉴权**之前**回，其余一律**先鉴权再判方法/路径**。
     const route = routeRequest(pathname, method, metrics !== undefined);
-    // 一个请求一份 ctx：`state` 按引用共享，其余是构造期已解析好的值（不再有 `?? 缺省`）
-    const ctx: HttpCtx = {
-      req,
-      res,
-      pathname,
-      method,
-      route,
-      app,
-      runner,
-      state,
-      maxBodyBytes,
-      maxConcurrentRuns,
-      sseMaxBufferedBytes,
-      exposeErrors,
-      startedAt,
-      metrics,
-    };
-
     try {
       // 鉴权缝：必须在读 body 之前（未通过即断开，body 一个字节都不收）。
       // 写成**否定条件**（「不是免鉴权组才过闸」）而不是「先 if (免鉴权组) { 一大段应答 }」：
       // 这样 `handler` 里只剩「谁被豁免」这一处判据可读，而被豁免者**回什么**在端点表里 ——
       // 豁免名单只有一份真源（`http-route.ts` 的 `isPreAuthRoute`）。
+      let principal: unknown;
       if (!isPreAuthRoute(route) && authenticate) {
         try {
-          await authenticate(req);
+          // 返回值**不再是丢弃的**：它就是 `principal`，交给 `resolveRunOptions`。
+          // 身份 → run 只该有这一条路（见 `HttpHandlerOptions.authenticate` 的注释）。
+          principal = await authenticate(req);
         } catch (e) {
           sendUnauthorized(req, res, e, exposeErrors);
           return;
         }
       }
+      // 一个请求一份 ctx：`state` 按引用共享，其余是构造期已解析好的值（不再有 `?? 缺省`）。
+      // 放在鉴权之后建，是因为 `principal` 是 ctx 的字段（身份随请求走，不存闭包）。
+      const ctx: HttpCtx = {
+        req,
+        res,
+        pathname,
+        method,
+        route,
+        app,
+        runner,
+        state,
+        maxBodyBytes,
+        maxConcurrentRuns,
+        sseMaxBufferedBytes,
+        exposeErrors,
+        startedAt,
+        metrics,
+        principal,
+        resolveRunOptions,
+      };
       // 至此路由已定、鉴权已过 —— 剩下的全是「走到这条路上做什么」，在 http-endpoints.ts
       await handleRoute(route, ctx);
     } catch (e) {
+      // 端点（或 `resolveRunOptions` 钩子）抛 `HttpException` ⇒ 它自带状态码与响应体。
+      // 认领点刻意放在**宿主**这一层：端点模块不 import 宿主的值（依赖方向单向，
+      // 见 http-endpoints.ts 文件头），而钩子的错误语义属于宿主契约。
+      if (e instanceof HttpException) {
+        sendJson(res, e.status, e.body);
+        return;
+      }
       sendInternalError(res, e, exposeErrors);
     }
   };

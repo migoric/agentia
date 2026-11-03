@@ -1,0 +1,11 @@
+# lockfile 不入库 —— 与 ../patrol/ 同款：Dockerfile 用 `npm install --install-links`
+# （把 file: 依赖按包**拷贝**而非软链），而 lockfile 会记下 `link: true`，两者语义冲突。
+package-lock.json
+
+# 本地运行产物
+dist/
+*.db
+*.db-shm
+*.db-wal
+.agentia/
+.env

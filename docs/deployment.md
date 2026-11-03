@@ -40,6 +40,10 @@
 
 - **鉴权是缝**：`createHttpHandler({ authenticate })`——除 `/healthz` 与 `/metrics` 外所有路径
   都过它、且在读 body 之前。框架不实现策略（token / JWT / 签名由你的宿主或反代实现）。
+- **身份怎么进 run**：`authenticate` 的返回值作为 `principal` 交给 `resolveRunOptions(req, { route, principal })`，
+  由它返回 `{ blackboard, labels, maxCostUsd? }`。这是唯一可信通道 —— `POST /tasks` 的 `body.options`
+  只有白名单（`traceContext` / `maxCostUsd` / `maxTotalTokens`），客户端**填不了** `blackboard`
+  （多租户配额把 `tenant` 放黑板时，别指望从 body 来）。漏了这一步的症状是「每个租户看到的都一样」。
 - ⚠️ **`/healthz` 与 `/metrics` 不鉴权**：生产请由反代限制 `/metrics` 的可达性（指标里有能力名、
   成本等敏感读数）。
 - TLS / 限流 / WAF：交给网关，框架不内置。
@@ -121,6 +125,7 @@ gracefulShutdown({
 - [ ] store 选型定了；`resumePending()` 已接进启动序列；做过一次**崩溃演练**（SIGKILL 后同库重启，
       `e2e-deploy` 的做法可以照抄）（§2）
 - [ ] `authenticate` 已实现，或**明确决定**只有反代可达、并写进运维文档（§3）
+- [ ] `resolveRunOptions` 已接（多租户 / 按用户配额**必须**接）—— 它是身份进 run 的唯一可信通道（§3）
 - [ ] `/metrics` 的可达性已由反代限制（§3）
 - [ ] `SIGTERM → drain` 已接线（手写的请逐条对 §5 那四个静默错）；停机宽限 > `timeoutMs`；
      store `close()` 排在 drain 后（§5）

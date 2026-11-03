@@ -136,6 +136,9 @@ export type {
 } from './toolkit/skill.js';
 export { Prompt, collectPrompts } from './toolkit/prompt.js';
 export type { PromptSpec } from './toolkit/prompt.js';
+// 代码控制顺序的子循环（中间那一格：不交给模型定流程，也不占一条 task）
+export { runCapabilityLoop } from './toolkit/capability-loop.js';
+export type { CapabilityLoopOptions, CapabilityLoopResult } from './toolkit/capability-loop.js';
 export { createApp, AgentApp, registerDefaultTraceSink } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 export { defineModule } from './toolkit/module.js';
@@ -169,6 +172,14 @@ export type {
   RunHttpResponse,
   TaskSubmitBody,
 } from './transport/http.js';
+// run 选项的可信边界（2026-11-04）：客户端能设什么（白名单）+ 宿主按请求注入什么
+export { CLIENT_RUN_OPTION_KEYS } from './transport/run-options.js';
+export type {
+  ClientRunOptions,
+  ClientRunOptionKey,
+  ResolveRunOptionsHook,
+  RunOptionOverrides,
+} from './transport/run-options.js';
 // 起服务 + 优雅停机：两个正交的宿主原语（都要宿主显式调用；不传 signals 就不订阅信号）
 // 设计稿 `docs/plans/2026-10-22-serve-graceful-shutdown.md`；决策 2026-10-22 ref-serve-graceful-shutdown
 export { serve, gracefulShutdown } from './transport/serve.js';
