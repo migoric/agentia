@@ -7453,6 +7453,32 @@ tsc/Biome；默认与 minimal 都要真建工程过类型检查。E2E 必须按�
 ② 上限取更宽者（`Math.min`→`Math.max`）⇒ 2 例红；③ 钩子被调但结果不生效 ⇒ 3 例红；
 ④ `principal` 不转交 ⇒ 1 例红。
 
+### 2026-11-04 ② ref-run-capability-loop：**把已经写好的子循环拿出来** —— 公共原语 `runCapabilityLoop(ctx, opts)`
+
+**事实**：四类能力与 `AsyncRunner` 之间有一格是空的 ——「顺序由**我的代码**定（不是模型）、
+生命周期**不超出**这次请求（不进 task 状态机）、但要能挂到同一棵 trace、要能裁剪上下文、
+要能被外层工具的 `approval` 拦住」。做这件事的唯一路子是手写 `runAgentScoped` +
+自己逐个转发 `ToolRunContext` 的旋钮；而 `runAgentScoped` 在 `src/engine/loop.ts` 有定义，
+`src/index.ts` **一次都没导出**，配套的 `forwardToolContext` 同样没有 —— 于是业务侧只剩两条
+都不对的退路：退化成 task（多一棵树、多一套状态机），或让模型自己记得别写。
+
+**决定**：导出 `runCapabilityLoop(ctx, opts)`（`src/toolkit/capability-loop.ts`）——
+**包装**而不是暴露 `runAgentScoped`。内部 `...forwardToolContext(ctx)` 是七个旋钮的唯一取值点
+（`engine/forwarded.ts` 记录的事故就是「漏一个 `toolTimeoutMs` 是静默的」），另加
+`combineSignals`（超时放弃等待能掐掉子循环）与一个 `capability` span（同树、`runId` 不多一个）。
+它接受 `contextPolicy` / `resultSchema` / 自己的工具菜单 —— 正是 `@SubAgent` / `@Skill` 给不了的两样。
+
+**为什么不导出 `runAgentScoped`**：它把「哪些旋钮必须下交」的责任交给调用方，而 TS 对漏写
+可选字段**不报错**。公开面只该有「不可能漏」的那个形状。
+
+**边界**：不自开 run 根；不继承主 run 的 `fallbacks` 链（同 `runAgentScoped` 的有意边界）；
+挂起不穿透（子循环里的 `deferUntil` / 审批触发仍以 `is_error` 交回 —— 要挂起请用 task）。
+usage-guide §7 的两条边界（「嵌套能力内的审批不支持挂起」「`contextPolicy` 不进子循环」）随之各补了
+一条出路，而不是被删掉：`@SubAgent` / `@Skill` 的行为一个字没变。
+
+**验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
+预算护栏透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
+
 ## 11. 开放项
 
 

@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>238</b> 个导出</span>
+          <span class="api-chip"><b>241</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -338,6 +338,9 @@
             <tr><td>SubAgentSpec</td><td><code>{ name?; description; schema; system; tools?; model?; maxTokens?; maxIterations?; resultSchema? }</code></td><td>system 支持 string / SystemPrompt / <code>(task) =&gt; SystemParam</code>（动态拼，框架不附加）；tools 为 provider token 列表。<strong>引用成环在装配期即抛错</strong>（直接自引用，或经另一个 provider 绕回来都算）：引用的解析是延迟求值的，环只在运行期成立，而 <code>maxIterations</code> 只限一回合的宽度、深度没有任何闸 ⇒ 一次自我调用就是无限递归。抛错信息给出环上的节点序列。</td></tr>
             <tr><td>collectSubAgents / subagentToTool</td><td><code>(instance) → SubAgentCapability[]</code> / <code>(capability, resolveTools) → AgentTool</code></td><td>扫描 @SubAgent 方法 / 编译成 AgentTool（子循环复用 ctx.client 与 recorder）。</td></tr>
             <tr><td>SubAgentCapability</td><td><code>{ name; description; inputSchema; spec }</code></td><td>子代理能力元数据。</td></tr>
+            <tr><td>runCapabilityLoop</td><td><code>(ctx: ToolRunContext, opts) → Promise&lt;CapabilityLoopResult&gt;</code></td><td><strong>代码控制顺序的子循环</strong>：顺序由你的方法体定、但活不过这次请求（不进 task 状态机）。子循环挂在本条 run 的树里（自建 <code>capability</code> span），<code>ToolRunContext</code> 上那七个必须下交的旋钮取自唯一单源。配 <code>@Tool({ approval: 'required' })</code> 即可让「代码定顺序 + 子循环可裁剪 + 人批可挂起」三者同时成立（<code>@SubAgent</code> / <code>@Skill</code> 的审批挂不起整条 run）。</td></tr>
+            <tr><td>CapabilityLoopOptions</td><td><code>{ name?; input: string | MessageParam[]; system?; tools?; model?; maxTokens?; maxIterations?; contextPolicy?; resultSchema?; onText? }</code></td><td><code>contextPolicy</code> 是显式给的（不继承应用级）；<code>resultSchema</code> 存在时结构化结果落在 <code>typed</code>。</td></tr>
+            <tr><td>CapabilityLoopResult</td><td><code>{ text; typed; stopReason; iterations; spanId; error? }</code></td><td>成败自己判（<code>isSuccessStopReason</code>）—— 框架不替它抛；<code>spanId</code> 是那个 capability span，要补事件 / 属性时用。</td></tr>
             <tr><td>Prompt</td><td><code>@Prompt(spec: PromptSpec)</code> 方法装饰器</td><td>纯文本资产编译成无副作用的拉取型工具；每次调用重算（volatile 语义）。</td></tr>
             <tr><td>PromptSpec</td><td><code>{ name?; description; schema?; version? }</code></td><td>description 写清何时该拉取，模型据此决定调用；schema 缺省空对象（无参资产）；version 是资产版本号 —— 装配期随能力名收集，每次 run 落 run 根 <code>prompts.versions</code> attribute。</td></tr>
             <tr><td>collectPrompts</td><td><code>(instance: object) → AgentTool[]</code></td><td>扫描 @Prompt 方法（static 方法亦可）。</td></tr>

@@ -178,6 +178,10 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   capability-cycles.ts = **能力引用图的成环检测**（装配期纯件，2026-09-28 ref-deep-review-p1-rest）：
 │   │                        #   环只在运行期成立（引用是延迟求值 thunk）、`maxIterations` 限不了深度 ⇒
 │   │                        #   装配期即拒（刻意不走「递归深度上限」那条路，理由见文件头注）
+│   │                        #   capability-loop.ts = **代码控制顺序的子循环**（2026-11-04 run-capability-loop）：
+│   │                        #   `runCapabilityLoop(ctx, opts)` 把 runAgentScoped 包成「旋钮不可漏」的形状
+│   │                        #   （`...forwardToolContext(ctx)` 是唯一取值点）—— 补的是「顺序由我的代码定、
+│   │                        #   但活不过这次请求」那一格；外层 `@Tool({ approval: 'required' })` 即可挂起等人批
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
 │   │                        #   **叶子消费模块**，只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）

@@ -30,6 +30,21 @@
   实测读数：`options.blackboard` → 400 且任务表为空；宿主注入后工具方法体里读到的是
   `tenant-of-u-42`（来自 `authenticate`）。决策：`docs/spec.md` §10 ref-run-options-trust-boundary。
 
+### 新增：`runCapabilityLoop(ctx, opts)` —— 代码控制顺序的子循环（2026-11-04 ref-run-capability-loop）
+
+- **补的是哪一格**：顺序由**代码**定、但活**不过**这次请求 —— `@SubAgent` / `@Skill` 的子循环审批挂不起
+  整条 run、`contextPolicy` 也不进子循环；`AsyncRunner` 的 task 能挂起能续跑，但要为它造一条任务记录。
+  中间这一格此前只能手写 `runAgentScoped` + 自己转发 `ToolRunContext` 的七个旋钮（漏一个是**静默**的）。
+- **形状**：`runCapabilityLoop(ctx, { name?, input, system?, tools?, model?, contextPolicy?, resultSchema?, onText? })`
+  → `{ text, typed, stopReason, iterations, spanId, error? }`。内部 `...forwardToolContext(ctx)` 取自唯一单源、
+  会 combine「放弃等待」信号、自建一个 `capability` span（**同树**，`runId` 不多一个）。
+- **配 `@Tool({ approval: 'required' })` 就能挂起等人批**：审批落在**外层工具调用**上，于是
+  「代码定顺序 + 子循环可裁剪 + 人批可挂起 + 同一棵树」四样可以同时要。
+- **刻意不导出 `runAgentScoped`**：它把「哪些旋钮必须下交」的责任交给调用方，而 TS 对漏写可选字段
+  不报错。公共面只给「不可能漏」的那个形状。`@SubAgent` / `@Skill` 的行为一个字没变。
+- **验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
+  预算护栏经 ctx 透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
+
 ## [0.10.4] - 2026-10-28
 
 ### 变更

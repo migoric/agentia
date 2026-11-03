@@ -136,6 +136,9 @@ export type {
 } from './toolkit/skill.js';
 export { Prompt, collectPrompts } from './toolkit/prompt.js';
 export type { PromptSpec } from './toolkit/prompt.js';
+// 代码控制顺序的子循环（中间那一格：不交给模型定流程，也不占一条 task）
+export { runCapabilityLoop } from './toolkit/capability-loop.js';
+export type { CapabilityLoopOptions, CapabilityLoopResult } from './toolkit/capability-loop.js';
 export { createApp, AgentApp, registerDefaultTraceSink } from './toolkit/module.js';
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 export { defineModule } from './toolkit/module.js';
