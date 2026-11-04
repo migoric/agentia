@@ -5,7 +5,7 @@ import {
   isScannableInstance,
 } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
-import type { AgentTool, JsonSchema } from '../core/tool.js';
+import type { AgentTool, CapabilityMetadata, JsonSchema } from '../core/tool.js';
 
 /**
  * Agentia —— Prompt 能力（spec §3：纯文本资产 —— 模板/宏/playbook，被选中时注入上下文）。
@@ -33,6 +33,8 @@ export interface PromptSpec {
    * 回答「质量退化是不是换了这个 prompt 资产导致的」。缺省（无版本）则该能力不进表。
    */
   version?: string;
+  /** 团队协作元数据；metadata.version 缺省时回落上面的 version */
+  metadata?: CapabilityMetadata;
 }
 
 const promptSpecs = new WeakMap<Function, PromptSpec>();
@@ -78,10 +80,20 @@ export function collectPromptEntries(instance: object): CollectedPrompts {
     key: string | symbol,
     spec: PromptSpec,
   ): void => {
+    const version = spec.metadata?.version ?? spec.version;
     tools.push({
       name: spec.name ?? name,
       description: spec.description,
       inputSchema: spec.schema ?? EMPTY_SCHEMA,
+      capability: 'prompt',
+      ...(spec.metadata || version !== undefined
+        ? {
+            metadata: {
+              ...spec.metadata,
+              ...(version !== undefined ? { version } : {}),
+            },
+          }
+        : {}),
       run: (input: unknown) => Reflect.apply(target[key] as Function, target, [input]),
     });
     // 版本表以最终菜单名（capabilityName 校验后的 name）为键；缺省无版本不进表

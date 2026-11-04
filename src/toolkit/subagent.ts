@@ -1,7 +1,7 @@
 import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
-import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, CapabilityMetadata, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { SystemParam, SystemTextBlock } from '../engine/types.js';
 import { isSuccessStopReason } from '../engine/types.js';
@@ -51,6 +51,8 @@ export interface SubAgentSpec {
    * { report: 最终文本报告, result: 结构化结果 }（模型未提交则以 result_missing 失败回主 agent）。
    */
   resultSchema?: JsonSchema;
+  /** 团队协作元数据：owner / 契约版本 / 风险 / 副作用幂等性 */
+  metadata?: CapabilityMetadata;
 }
 
 export interface SubAgentCapability {
@@ -111,6 +113,8 @@ export function subagentToTool(
     name: capability.name,
     description: capability.description,
     inputSchema: capability.inputSchema,
+    capability: 'subagent',
+    ...(spec.metadata ? { metadata: spec.metadata } : {}),
     run: async (input: unknown, ctx?: ToolRunContext): Promise<unknown> => {
       if (!ctx) {
         throw new Error(

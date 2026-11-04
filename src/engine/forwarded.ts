@@ -43,9 +43,12 @@ export const FORWARDED_TOOL_CONTEXT_KEYS = [
   'onUnpricedModel',
   /** 正文截断口径（漏了 ⇒ 同一棵树上主/子 agent 的可见性不一致） */
   'maxEventChars',
+  /** 工具结果回模型的上限（漏了 ⇒ 子循环可以把上下文重新撑爆） */
+  'maxToolResultChars',
   /** assistant 文本记录口径（漏了 ⇒ 同一棵树上主 agent 有 output.text、子 agent 没有） */
   'traceContent',
   /** 成本护栏（漏了 ⇒ 护栏在子循环期间离线） */
+  'usageOffset',
   'maxTotalTokens',
   'maxCostUsd',
   /** 超时裁判权（漏了 ⇒ 永不超时 + 桥另起计时器，见文件头） */
@@ -107,7 +110,9 @@ export function forwardToolContext(ctx: ToolRunContext): ForwardedToolContext {
     priceOverrides: ctx.priceOverrides,
     onUnpricedModel: ctx.onUnpricedModel,
     maxEventChars: ctx.maxEventChars,
+    maxToolResultChars: ctx.maxToolResultChars,
     traceContent: ctx.traceContent,
+    usageOffset: ctx.usageOffset,
     maxTotalTokens: ctx.maxTotalTokens,
     maxCostUsd: ctx.maxCostUsd,
     toolTimeoutMs: ctx.toolTimeoutMs,

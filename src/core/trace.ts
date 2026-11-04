@@ -215,6 +215,21 @@ export interface Trace {
   totalUsage: Usage; // run 汇总 = 各 llm.turn span 求和（不含 capability 聚合，避免重复计数）
 }
 
+/** 跨 run 段累加账单；任一段有成本读数才保留 costEstimate，口径与 TraceRecorder.usage 一致。 */
+export function addUsage(before: Usage | undefined, current: Usage): Usage {
+  const out: Usage = {
+    inputTokens: (before?.inputTokens ?? 0) + current.inputTokens,
+    outputTokens: (before?.outputTokens ?? 0) + current.outputTokens,
+    cacheReadTokens: (before?.cacheReadTokens ?? 0) + current.cacheReadTokens,
+    cacheCreationTokens: (before?.cacheCreationTokens ?? 0) + current.cacheCreationTokens,
+  };
+  if (before?.costEstimate != null || current.costEstimate != null) {
+    out.costEstimate =
+      Math.round(((before?.costEstimate ?? 0) + (current.costEstimate ?? 0)) * 1e6) / 1e6;
+  }
+  return out;
+}
+
 /**
  * 质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上，
  * 让「这条 run 好不好」与「这条 run 发生了什么」同处一份数据。

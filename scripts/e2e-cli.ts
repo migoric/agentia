@@ -244,6 +244,21 @@ try {
   // 而不是测试自己复刻一遍脚本里的命令。
   linkProjectDeps(proj);
 
+  // 能力契约必须真走「CLI → 用户 src/app.ts → createAgentApp」，不是静态猜目录。
+  const manifest = JSON.parse(cli(['manifest'], proj)) as {
+    app: string;
+    hash: string;
+    capabilities: Array<{ name: string; kind: string }>;
+  };
+  assert(manifest.app === 'demo-app', `manifest 应用名错误：${manifest.app}`);
+  assert(manifest.hash.length === 16, 'manifest 必须有稳定契约 hash');
+  for (const name of ['hello', 'echo_back', 'doc_reviewer', 'note_writer', 'style_guide']) {
+    assert(
+      manifest.capabilities.some((c) => c.name === name),
+      `manifest 漏了能力 ${name}`,
+    );
+  }
+
   // —— 4b) .env 真的会被读到（跑一遍脚手架入口的同一句，而不是只看文件在不在）——
   // 这里最危险的是**静默失败**：文件生成得漂漂亮亮、key 却没进 process.env，用户只会看到
   // 「没配 key」的报错，然后去怀疑框架。所以按行为验，不按存在性验。

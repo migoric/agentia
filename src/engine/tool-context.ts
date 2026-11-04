@@ -2,7 +2,7 @@
  * 单工具执行的**上下文装配**（纯）：把引擎侧的取值摊成交给工具的 `ToolRunContext`。
  *
  * 从 turn.ts 的 executeOneTool 里外移（2026-09-20，turn 拆分第三步）。这段全部是搬运，但它
- * **不是无害的样板**：十处条件展开里每一处都对应一个「漏了就静默降级」的守卫 ——
+ * **不是无害的样板**：这些条件展开各自对应一个「漏了就静默降级」的守卫 ——
  * 价格覆盖漏了 ⇒ 子 agent 用同一模型退化成「未定价」、`maxCostUsd` 静默失效；预算/超时上限
  * 漏了 ⇒ 护栏在子循环里离线；`abandoned` 漏了 ⇒ 超时后没人通知工具「别等了」；
  * `deferUntil` 漏了 ⇒ 工具调用它当场 TypeError（工具契约里它有值，不是可选装饰）。
@@ -29,7 +29,9 @@ export function buildToolRunContext(opts: {
   priceOverrides?: ToolRunContext['priceOverrides'];
   onUnpricedModel?: ToolRunContext['onUnpricedModel'];
   maxEventChars?: ToolRunContext['maxEventChars'];
+  maxToolResultChars?: ToolRunContext['maxToolResultChars'];
   traceContent?: ToolRunContext['traceContent'];
+  usageOffset?: ToolRunContext['usageOffset'];
   maxTotalTokens?: ToolRunContext['maxTotalTokens'];
   maxCostUsd?: ToolRunContext['maxCostUsd'];
   toolTimeoutMs?: ToolRunContext['toolTimeoutMs'];
@@ -45,7 +47,9 @@ export function buildToolRunContext(opts: {
     priceOverrides,
     onUnpricedModel,
     maxEventChars,
+    maxToolResultChars,
     traceContent,
+    usageOffset,
     maxTotalTokens,
     maxCostUsd,
     toolTimeoutMs,
@@ -61,7 +65,9 @@ export function buildToolRunContext(opts: {
     ...(priceOverrides ? { priceOverrides } : {}),
     ...(onUnpricedModel ? { onUnpricedModel } : {}),
     ...(maxEventChars != null ? { maxEventChars } : {}),
+    ...(maxToolResultChars != null ? { maxToolResultChars } : {}),
     ...(traceContent != null ? { traceContent } : {}),
+    ...(usageOffset !== undefined ? { usageOffset } : {}),
     ...(maxTotalTokens != null ? { maxTotalTokens } : {}),
     ...(maxCostUsd != null ? { maxCostUsd } : {}),
     ...(toolTimeoutMs != null ? { toolTimeoutMs } : {}),

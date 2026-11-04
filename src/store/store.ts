@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
-import type { SpanError } from '../core/trace.js';
+import type { SpanError, Usage } from '../core/trace.js';
+import type { MessageParam } from '../core/message.js';
 import type { RunStatus, SuspendedReason, TaskEvent } from '../core/run.js';
 import type { ApprovalDecision } from '../core/tool.js';
 import type { RunSpec } from '../engine/spec.js';
@@ -94,6 +95,10 @@ export interface TaskRecord {
    * 簿记有界，恰好一次的承诺也就有界）。
    */
   deliveredEventIds?: string[] | undefined;
+  /** 首个挂起段的本轮用户输入；随记录落库，恢复成功后补写会话，终态清除 */
+  sessionInput?: MessageParam[] | undefined;
+  /** 本任务所有已收尾 run 段的累计用量；恢复段把它作为预算 offset */
+  usageTotal?: Usage | undefined;
 }
 
 export interface TaskStore {

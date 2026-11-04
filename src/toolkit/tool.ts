@@ -1,4 +1,4 @@
-import type { AgentTool, JsonSchema, SchemaInput } from '../core/tool.js';
+import type { AgentTool, CapabilityMetadata, JsonSchema, SchemaInput } from '../core/tool.js';
 import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './collect.js';
 import type { CapabilityDecoratorContext } from './collect.js';
 
@@ -35,6 +35,8 @@ export interface ToolSpec<S extends JsonSchema = JsonSchema> {
    * `AsyncRunner.approve` / `POST /tasks/<id>/approve` 到达。
    */
   approval?: 'required';
+  /** 团队协作元数据：owner / 契约版本 / 风险 / 副作用幂等性 */
+  metadata?: CapabilityMetadata;
 }
 
 /** 方法函数 → spec。WeakMap 不阻碍 GC，也不要求 globalThis 注册表。 */
@@ -75,6 +77,8 @@ function buildTool(instance: object, key: string | symbol, spec: ToolSpec): Agen
     name: capabilityName(spec, key, '@Tool'),
     description: spec.description,
     inputSchema: spec.schema,
+    capability: 'tool',
+    ...(spec.metadata ? { metadata: spec.metadata } : {}),
     ...(spec.strict ? { strict: true } : {}),
     ...(spec.approval ? { approval: spec.approval } : {}),
     run: (input: unknown) =>

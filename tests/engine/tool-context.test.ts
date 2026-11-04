@@ -16,6 +16,8 @@ const OPTIONAL = [
   'priceOverrides',
   'onUnpricedModel',
   'maxEventChars',
+  'maxToolResultChars',
+  'usageOffset',
   'maxTotalTokens',
   'maxCostUsd',
   'toolTimeoutMs',

@@ -143,7 +143,10 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   命令本体在 view.ts —— 与既有 report / harvest / diff / export 同款分工。
     //   基线 = ceil(216 × 1.05) = 227（口径见 §10 2026-10-17 ref-ratchet-headroom）；
     //   前值 213 = ceil(202 × 1.05)，故本笔基线 +14。
-    'cli.ts': 227,
+    // 2026-11-05（agentia manifest）：真实装配 + 契约 JSON；cli 233 行，基线 245。
+    'cli.ts': 245,
+    'manifest.ts': 27,
+    'manifest-runner.ts': 30,
     'native-pick.ts': 208,
     // 2026-10-12（**G6 会话 / 任务维度 —— 新功能**，设计稿
     //   `docs/plans/2026-10-12-observability-g6-g7-g8.md` §2）：194 → 339（+145）。
@@ -380,7 +383,8 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //    +27   harvest.ts   实测 390 → 416；基线 410 → 437
   //   ─────
   //    +79   两笔基线增量，与新的基线之和一致（现算 10653，见下方断言）
-  const TOTAL_BUDGET = 10653;
+  // 2026-11-05：manifest 两个新件 + cli 接线，基线增量 27+30+18=75。
+  const TOTAL_BUDGET = 10728;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

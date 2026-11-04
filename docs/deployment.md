@@ -44,6 +44,10 @@
   由它返回 `{ blackboard, labels, maxCostUsd? }`。这是唯一可信通道 —— `POST /tasks` 的 `body.options`
   只有白名单（`traceContext` / `maxCostUsd` / `maxTotalTokens`），客户端**填不了** `blackboard`
   （多租户配额把 `tenant` 放黑板时，别指望从 body 来）。漏了这一步的症状是「每个租户看到的都一样」。
+- **任务还要对象级授权**：`authorizeTask(req, { action, task, principal })` 覆盖 poll/approve/cancel/event/stream；
+  审批人由 `resolveApprovalActor(req, principal)` 从认证结果生成，别信请求体里的 decidedBy。
+- **公网响应用 `responseMode:'public'`**：去掉 trace、任务消息、挂起历史与内部 ownerId，并默认关 SSE trace 帧；
+  完整数据仍留 TaskStore/sinks。若确需给前端 trace，单独做权限与脱敏，别把 sink 脱敏误当响应脱敏。
 - ⚠️ **`/healthz` 与 `/metrics` 不鉴权**：生产请由反代限制 `/metrics` 的可达性（指标里有能力名、
   成本等敏感读数）。
 - TLS / 限流 / WAF：交给网关，框架不内置。
@@ -126,6 +130,7 @@ gracefulShutdown({
       `e2e-deploy` 的做法可以照抄）（§2）
 - [ ] `authenticate` 已实现，或**明确决定**只有反代可达、并写进运维文档（§3）
 - [ ] `resolveRunOptions` 已接（多租户 / 按用户配额**必须**接）—— 它是身份进 run 的唯一可信通道（§3）
+- [ ] 任务对象级授权已接；审批人来自认证 principal；公网响应使用 public 模式（§3）
 - [ ] `/metrics` 的可达性已由反代限制（§3）
 - [ ] `SIGTERM → drain` 已接线（手写的请逐条对 §5 那四个静默错）；停机宽限 > `timeoutMs`；
      store `close()` 排在 drain 后（§5）

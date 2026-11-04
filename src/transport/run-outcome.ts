@@ -113,6 +113,8 @@ export function applySuspendedOutcome(
     !ctx.isResume && rec.spec.options?.sessionId !== undefined && ctx.hasSessionStore
       ? rec.spec.messages
       : undefined;
+  // 快照同时进记录：内存 Map 只是本进程快路，重启后由它接着补写会话。
+  if (snapshot !== undefined) rec.sessionInput = snapshot;
   // 扩展后的消息历史（末尾是含未决 tool_use 的 assistant 消息）与待决清单、挂起时刻一起落库
   // —— approve / 惰性超时 / 重启后都靠它们。
   rec.spec = { ...rec.spec, messages: suspendedMessages };

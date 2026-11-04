@@ -2,7 +2,7 @@ import type { MessageParam } from '../core/message.js';
 import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
 import type { TaskEvent } from '../core/run.js';
-import type { TraceContext, TraceRecordEvent } from '../core/trace.js';
+import type { TraceContext, TraceRecordEvent, Usage } from '../core/trace.js';
 import type { ContextPolicy, ModelFallbackLink } from './types.js';
 import type { RetryOptions } from './retry.js';
 import type { TraceLimits } from './tracer.js';
@@ -75,6 +75,8 @@ export interface RunInvocationOptions {
   tools?: AgentTool[];
   /** 成本硬管控：整条 run 累计 token 上限；超限以 stopReason='budget_exceeded' 收尾（算失败） */
   maxTotalTokens?: number;
+  /** 本任务此前 run 段的累计用量；由 AsyncRunner 在恢复段注入，HTTP 客户端不可自填 */
+  usageOffset?: Usage;
   /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
   maxCostUsd?: number;
   /**
@@ -110,6 +112,8 @@ export interface RunInvocationOptions {
    * 截断只影响记账，回给模型的 tool_result 永远完整。见 `RunAgentOptions.maxEventChars`。
    */
   maxEventChars?: number | false;
+  /** 单条工具结果回模型的字符上限；缺省 / false = 不截断，0 = 截到零长度 */
+  maxToolResultChars?: number | false;
   /**
    * 挂起期间投递的事件（2026-09-28 ref-run-event-input，run 事件投入口）：随 `TaskRecord.pendingEvents`
    * 落库（纯数据、可序列化，重启不丢），续跑段由引擎在**未决 tool_use 解决之后**

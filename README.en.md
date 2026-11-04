@@ -8,7 +8,7 @@
 with decorators + DI and a main agent orchestrates them; every run yields structured output and an
 observable call tree (trace, cost, metrics).
 
-**1 package · ≈2 MB · 0 runtime dependencies · 90+ guards** — recomputed by
+**1 package · ≈3 MB · 0 runtime dependencies · 90+ guards** — recomputed by
 `tests/docs/scoreboard.test.ts` on every run.
 
 > This is a **summary**, kept short on purpose (a hand-maintained full translation drifts). The

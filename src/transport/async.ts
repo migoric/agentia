@@ -14,7 +14,7 @@ import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { abortedError } from '../engine/turn.js';
 import { assertTimerDelay, TimeoutError } from '../core/timeout.js';
 import { zeroClauseOf } from '../core/limits.js';
-import { composeTraceEvents } from '../core/trace.js';
+import { addUsage, composeTraceEvents } from '../core/trace.js';
 import type { TraceRecordEvent } from '../core/trace.js';
 import { SlotPool } from './slot-pool.js';
 import { ApprovalSupervisor } from './approval-supervisor.js';
@@ -434,10 +434,8 @@ export class AsyncRunner {
    * （恢复段不把 session 交给 run 层，见 #executeInner 的 callOpts 注释）。
    * 只在首个挂起段快照；任务达终态时清掉（#execute 的出口）。
    *
-   * **刻意只放内存**：进程崩在「挂起 → 重启 → approve」之间会丢这一次会话回写 ——
-   * 会话少一轮，但绝写不进坏历史（孤立 tool_use / 历史翻倍），审批决定本身已落库、
-   * 不受影响。快照若落库就要动 TaskRecord 的序列化 schema（sqlite / redis），
-   * 而它相对审批决定只是锦上添花 —— 这个取舍是有意的。
+   * 这张 Map 只是本进程快路；同一份快照也由 applySuspendedOutcome 写进
+   * TaskRecord.sessionInput，挂起期间重启后仍能补写。终态两条路径一起清。
    */
   private readonly sessionInputs = new Map<string, MessageParam[]>();
 
@@ -1322,6 +1320,10 @@ export class AsyncRunner {
             );
             rec.runId = out.run.runId;
             rec.result = out.result;
+            // 每段一棵 trace，但任务预算是一笔总账：先把本段落进累计，再供下一次恢复作 offset。
+            // 自定义 AppCallable 若没交 trace（历史测试/薄宿主），跳过累计而不是把业务任务判失败。
+            const segmentUsage = (out.result as Partial<AgentRunResult>).trace?.totalUsage;
+            if (segmentUsage) rec.usageTotal = addUsage(rec.usageTotal, segmentUsage);
             rec.error = out.result.error;
             if (out.result.stopReason === 'suspended' && out.result.suspendedMessages) {
               // HITL 挂起：记录怎么改、事件簿记按 `eventsDelivered` 分档、以及「用户输入快照
@@ -1381,6 +1383,8 @@ export class AsyncRunner {
           }
         }
       } finally {
+        // 所有终态出口都清补写快照（含异常/取消）；挂起则必须留下。
+        if (isTerminalTask(rec)) rec.sessionInput = undefined;
         // HITL：挂起不是「完成」—— finishedAt 不置（等待中的任务没有结束时刻）
         if (rec.status !== 'suspended') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
@@ -1468,11 +1472,12 @@ export class AsyncRunner {
    * 只写「本轮用户输入 + 最终回复」（run 内部 tool 往返不进历史）、历史以 assistant
    * 结尾（无文本补占位）。回写失败吞掉 —— 辅助动作不得击穿任务（同 memory 回写防护）。
    *
-   * 无快照（进程在挂起期间重启过）时**跳过**：宁可少一轮历史，也不凭猜测写。
+   * 本进程优先读内存快路；重启后读 TaskRecord.sessionInput。只有旧版本留下的挂起记录
+   * 才可能两边都没有，那时跳过，不凭猜测写。
    */
   async #appendResumedSession(rec: TaskRecord, finalText: string): Promise<void> {
     const sessionId = rec.spec.options?.sessionId;
-    const input = this.sessionInputs.get(rec.taskId);
+    const input = this.sessionInputs.get(rec.taskId) ?? rec.sessionInput;
     if (sessionId === undefined || this.sessionStore === undefined || input === undefined) return;
     try {
       await this.sessionStore.append(sessionId, [

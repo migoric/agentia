@@ -182,6 +182,8 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   `runCapabilityLoop(ctx, opts)` 把 runAgentScoped 包成「旋钮不可漏」的形状
 │   │                        #   （`...forwardToolContext(ctx)` 是唯一取值点）—— 补的是「顺序由我的代码定、
 │   │                        #   但活不过这次请求」那一格；外层 `@Tool({ approval: 'required' })` 即可挂起等人批
+│   │                        #   manifest.ts = 最终菜单 → 多人协作契约（owner/version/risk/sideEffect + schema/审批），
+│   │                        #   稳定 hash 与输入顺序无关；CLI `agentia manifest` 真装配，不调用模型
 │   ├── eval/                # evals（D2）：scriptedClient + defineEval + harvest(trace → eval 用例骨架) ——
 │   │                        #   **叶子消费模块**，只依赖公共面、零反向依赖（谁都不 import 它）
 │   └── index.ts             # 公共 API 唯一出口（新增导出必须在此登记）
@@ -286,7 +288,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │                            #   / `tag <x.y.z>`（核对 registry 产物 ↔ 仓库树后打 **annotated** tag
 │                            #   + 建 Release）/ `retag <x.y.z>`（lightweight → annotated，默认只演练）
 ├── packages/
-│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/report/harvest/diff/export/add），零运行时依赖
+│   ├── cli/                 # npm 包 @migor/cli（agentia create/g/dev/doctor/manifest/report/harvest/diff/export/add），零运行时依赖
 │   │                        #   report = trace.jsonl → 调优报告；harvest = trace.jsonl → eval 用例骨架
 │   │                        #   （harvest 的用例生成器是框架 src/eval/harvest.ts 的去类型移植副本，
 │   │                        #   packages/cli/test 有逐字对拍守护，改生成格式必须两边同步）；
