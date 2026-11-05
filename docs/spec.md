@@ -7655,7 +7655,18 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
   → v0.10.4（**渐进式上手与契约收口**：`agentia create --minimal` 让单文件裸工具成为第一条路径，
     默认完整服务模板不变；`resultSchema` 未提交改以 `result_missing` 失败（行为变更，需显式处理），
     另含停机总预算、sink 超时与任务副本特殊键修复；无新增运行时依赖）；
-  `AGENTIA_VERSION = '0.10.4'`。决策均见 §10。
+  → v0.10.5（**把「能跑」推进到「能对外、能授权、能比较」**：`POST /tasks` 的 `options` 白名单化 +
+    宿主 `resolveRunOptions(req,{route,principal})` 注入身份（**行为变更**：未知键一律 400，
+    `authenticate` 的返回值不再被丢弃，迁移见 CHANGELOG）+ 三件套把「认证 — 授权 — 暴露面」拆开
+    （任务对象级授权 `authorizeTask` / 可信审批人 `resolveApprovalActor` / `responseMode:'public'`
+    与 `exposeTraceEvents`，存储面与 HTTP 暴露面分离）+ `runCapabilityLoop` 补上「顺序由代码定、
+    活不过一次请求」那一格（配 `approval:'required'` 可挂起等人批，同树）+ 能力契约
+    `agentia manifest` 与四类能力的 `metadata.{owner,version,risk,sideEffect}`（hash 与顺序无关）+
+    恢复段预算按任务累计（`usageTotal` / `usageOffset` / `sessionInput`）与 `maxToolResultChars`
+    （回模型截断与记账截断两条闸）+ `docs/multi-replica.md` 与 `examples/super-agent`；
+    公共导出全部为**增量**（`runCapabilityLoop` / `buildCapabilityManifest` / `parseTaskRecord` /
+    `CLIENT_RUN_OPTION_KEYS` 及若干类型），既有使用者只需处理上面那条迁移）；
+  `AGENTIA_VERSION = '0.10.5'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
