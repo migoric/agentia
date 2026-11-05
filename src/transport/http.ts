@@ -42,6 +42,24 @@ export type { RunHttpResponse, TaskSubmitBody } from './http-shapes.js';
  */
 export type { HealthResponse } from './http-endpoints.js';
 
+export type HttpResponseMode = 'full' | 'public';
+export type TaskControlAction = 'poll' | 'approve' | 'cancel' | 'event' | 'stream';
+
+export type TaskAuthorizationHook = (
+  req: IncomingMessage,
+  info: {
+    action: TaskControlAction;
+    taskId: string;
+    task: import('../store/store.js').TaskRecord;
+    principal: unknown;
+  },
+) => unknown | Promise<unknown>;
+
+export type ApprovalActorHook = (
+  req: IncomingMessage,
+  principal: unknown,
+) => string | undefined | Promise<string | undefined>;
+
 export interface HttpHandlerOptions {
   /** 异步任务宿主；缺省 new AsyncRunner(app)（InMemoryTaskStore） */
   runner?: AsyncRunner;
@@ -97,6 +115,25 @@ export interface HttpHandlerOptions {
    * 取**更严者**（上限不能由叫价方抬高）。抛 `HttpException` 按其状态码回。
    */
   resolveRunOptions?: ResolveRunOptionsHook;
+  /**
+   * 任务控制面的对象级授权。`authenticate` 只回答「你是谁」，本钩子回答
+   * 「你能不能对这个 task 做这件事」。在读取审批/事件 body 之前执行；
+   * 返回 `false` 回 403，抛 `HttpException` 按其状态码回，其余异常走 500。
+   */
+  authorizeTask?: TaskAuthorizationHook;
+  /**
+   * 从认证结果生成可信审批人。配置后其返回值覆盖审批 body 的 `decidedBy`；
+   * 返回 `undefined` 表示不记审批人。空字符串是宿主配置错误，按 500 处理。
+   */
+  resolveApprovalActor?: ApprovalActorHook;
+  /**
+   * HTTP 响应暴露面。`full`（缺省）保留历史形状；`public` 去掉 run/task 响应里的
+   * trace、任务消息、挂起历史和内部 ownerId，并默认关闭 SSE 的 trace.event 帧。
+   * 它只影响 HTTP 输出，不影响 TaskStore 与 TraceSink 的完整记录。
+   */
+  responseMode?: HttpResponseMode;
+  /** 是否开放 `/run` 与 `/tasks/:id/stream` 的 trace 事件；缺省 = responseMode 为 full */
+  exposeTraceEvents?: boolean;
   /**
    * 指标出口（G4）：提供后 `GET /metrics` 输出其 `render()` 的文本。
    * 通常直接传 `metricsSink()`（它有 `render()`）。
@@ -225,9 +262,16 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
     );
   }
   const exposeErrors = opts.exposeErrors ?? false;
+  const responseMode = opts.responseMode ?? 'full';
+  if (responseMode !== 'full' && responseMode !== 'public') {
+    throw new TypeError(`responseMode 只接受 'full' | 'public'，收到 ${String(opts.responseMode)}`);
+  }
+  const exposeTraceEvents = opts.exposeTraceEvents ?? responseMode === 'full';
   const sseMaxBufferedBytes = opts.sseMaxBufferedBytes;
   const authenticate = opts.authenticate;
   const resolveRunOptions = opts.resolveRunOptions;
+  const authorizeTask = opts.authorizeTask;
+  const resolveApprovalActor = opts.resolveApprovalActor;
   const metrics = opts.metrics;
   const startedAt = Date.now();
 
@@ -348,6 +392,10 @@ export function createHttpHandler(app: AppCallable, opts: HttpHandlerOptions = {
         metrics,
         principal,
         resolveRunOptions,
+        authorizeTask,
+        resolveApprovalActor,
+        responseMode,
+        exposeTraceEvents,
       };
       // 至此路由已定、鉴权已过 —— 剩下的全是「走到这条路上做什么」，在 http-endpoints.ts
       await handleRoute(route, ctx);

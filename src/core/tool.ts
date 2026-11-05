@@ -179,6 +179,8 @@ export interface ToolRunContext {
    * 不设（undefined）= 子循环用各自缺省（不是"不截断"）。
    */
   maxEventChars?: number | false;
+  /** 单条工具结果回模型的字符上限；嵌套能力必须原样转发，缺省 / false = 不截断 */
+  maxToolResultChars?: number | false;
   /**
    * 本 run 是否记录 assistant 文本进 llm.turn span（`RunAgentOptions.traceContent`，R8-P3a）。
    * 嵌套能力（@SubAgent / @Skill）拉起自己的 llm 循环时必须原样传下去 —— 否则同一棵
@@ -193,6 +195,8 @@ export interface ToolRunContext {
    * **整条 run（含各级子 agent）** 的口径，子循环不拿到它就等于护栏在子循环期间离线
    * （最坏可超一整个子 run 的用量）。各级循环共享同一 recorder，按同一份累计账单判断。
    */
+  /** 本任务此前 run 段的账单；嵌套循环的预算判定也要把它算进去 */
+  usageOffset?: Usage;
   maxTotalTokens?: number;
   /** 成本硬管控（C1）透传：累计成本（美元）上限；同 maxTotalTokens 的透传语义 */
   maxCostUsd?: number;
@@ -252,11 +256,26 @@ export interface ApprovalDecision {
   requestedAt?: number;
 }
 
+export interface CapabilityMetadata {
+  /** 责任团队 / CODEOWNERS 对应的稳定标识 */
+  owner?: string;
+  /** 能力契约版本（prompt 的旧 version 字段可与它二选一） */
+  version?: string;
+  /** 主要风险面：读业务数据 / 写业务状态 / 调外部系统 */
+  risk?: 'read' | 'write' | 'external';
+  /** 副作用是否可安全重放；非幂等能力必须有业务侧幂等/对账 */
+  sideEffect?: 'none' | 'idempotent' | 'non-idempotent';
+}
+
 export interface AgentTool<I = unknown, O = unknown> {
   /** 模型可见的唯一名（建议 snake_case） */
   name: string;
   description: string;
   inputSchema: JsonSchema;
+  /** 能力类别；裸工具缺省按 tool，装饰器/MCP 装配时显式填入 */
+  capability?: import('./trace.js').CapabilityType;
+  /** 团队协作与变更审查元数据；不改变运行行为 */
+  metadata?: CapabilityMetadata;
   /** 开启严格参数校验（schema 需 additionalProperties:false + required） */
   strict?: boolean;
   /**

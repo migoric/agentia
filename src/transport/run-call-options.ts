@@ -88,6 +88,8 @@ export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions 
       : client !== undefined
         ? { client }
         : {}),
+    // 恢复段预算按整任务累计：此前各段的 trace 已在挂起/终态出口折进 usageTotal。
+    ...(isResume && rec.usageTotal !== undefined ? { usageOffset: rec.usageTotal } : {}),
     // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
     ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
     // 事件投入口（2026-09-28 ref-run-event-input）：挂起期间投递的事件随记录进引擎，由它在
@@ -126,6 +128,7 @@ export function adoptSucceededOutcome(rec: TaskRecord, existing: TaskRecord | un
   rec.status = 'succeeded';
   rec.runId = existing.runId;
   rec.result = existing.result;
+  rec.usageTotal = existing.usageTotal;
   rec.error = existing.error;
   rec.finishedAt = Date.now();
   return true;

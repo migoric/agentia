@@ -22,6 +22,7 @@ export { attachScore, parseTraceparent } from './core/trace.js';
 export type {
   AgentTool,
   ApprovalDecision,
+  CapabilityMetadata,
   JsonSchema,
   ModelClient,
   RecorderBackend,
@@ -143,6 +144,8 @@ export { createApp, AgentApp, registerDefaultTraceSink } from './toolkit/module.
 export type { AppOptions, RunAppOptions, AgentRunOutput } from './toolkit/module.js';
 export { defineModule } from './toolkit/module.js';
 export type { AgentModule } from './toolkit/module.js';
+export { buildCapabilityManifest } from './toolkit/manifest.js';
+export type { CapabilityManifest, CapabilityManifestEntry } from './toolkit/manifest.js';
 export { fromZod } from './toolkit/zod.js';
 
 // run：触发传输 + run 存储
@@ -151,6 +154,7 @@ export type { RunInput, RunSpec, RunInvocationOptions } from './engine/spec.js';
 export { InMemoryTaskStore } from './store/store.js';
 export type { TaskRecord, TaskStore } from './store/store.js';
 export { FileTaskStore } from './store/fsStore.js';
+export { parseTaskRecord } from './store/record.js';
 export { AsyncRunner } from './transport/async.js';
 export type {
   AppCallable,
@@ -171,7 +175,12 @@ export type {
   HealthResponse,
   RunHttpResponse,
   TaskSubmitBody,
+  TaskControlAction,
+  TaskAuthorizationHook,
+  ApprovalActorHook,
+  HttpResponseMode,
 } from './transport/http.js';
+export type { TaskHttpResponse } from './transport/http-shapes.js';
 // run 选项的可信边界（2026-11-04）：客户端能设什么（白名单）+ 宿主按请求注入什么
 export { CLIENT_RUN_OPTION_KEYS } from './transport/run-options.js';
 export type {

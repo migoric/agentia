@@ -580,14 +580,18 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/transport/approval.test.ts',
   },
   {
-    key: '挂起/恢复间预算重新起算',
-    gap: '「恢复段从 0 重新计」没有用例钉住',
-    candidate: 'tests/transport/async.test.ts',
+    key: '恢复预算按任务累计，但崩溃未落账段不可追回',
+    pin: {
+      file: 'tests/transport/approval.test.ts',
+      marker: '恢复段继承此前 run 段的 usage：累计超限即停，usageTotal 留全账',
+    },
   },
   {
-    key: '恢复段的会话回写是进程内快照',
-    gap: '「崩在挂起与 approve 之间会丢一次会话回写」没有用例钉住',
-    candidate: 'tests/transport/async.test.ts',
+    key: '恢复段的会话输入随任务落库',
+    pin: {
+      file: 'tests/transport/approval.test.ts',
+      marker: 'FileTaskStore 重启后，恢复成功仍补写「原始输入 + 最终回复」且终态清快照',
+    },
   },
   {
     key: '嵌套能力内的审批不支持挂起',
@@ -711,13 +715,10 @@ const REGISTRY: ReadonlyArray<Entry> = [
     candidate: 'tests/engine/run-config.test.ts',
   },
   {
-    // 这条有真 pin：eventChars.test.ts 那条用例是**专门**为「这个开关会不会悄悄改变 agent
-    // 行为」立的门禁（把 trace 侧 content 截成 7 字符，断言回给模型的 tool_result 仍完整）。
-    // 与 traceLimits / maxEventChars 那两条（记账侧）正交 —— 记账侧有闸，模型侧没有。
-    key: '回给模型的 `tool_result` **不截断、也没有大小闸**',
+    key: '工具结果缺省不截断；上限要显式开',
     pin: {
-      file: 'tests/engine/eventChars.test.ts',
-      marker: '回给模型的 tool_result 不受截断影响（截断只在记账侧）',
+      file: 'tests/engine/tool-result-limit.test.ts',
+      marker: '裁的是回给模型的 tool_result；trace 记账仍由 maxEventChars 独立决定',
     },
   },
 ];

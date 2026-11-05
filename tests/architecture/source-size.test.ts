@@ -29,8 +29,8 @@ import { join, relative } from 'node:path';
  *
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
- * | `transport/async.ts` | **680** | 抽走三个监督件（审批 / 事件投递 / 恢复扫描）+ run-outcome 之后（2026-10-14 复算） |
- * | `engine/turn.ts` | 524 | 全仓第二 |
+ * | `transport/async.ts` | **683** | 2026-11-05：恢复段累计 usage + 耐久会话快照接线 |
+ * | `engine/turn.ts` | 537 | 2026-11-05：工具结果上限与历史用量透传 |
  * | `integrations/openai.ts` | 493 | |
  *
  * 680 与第二名 524 之间隔着一大截 —— 750 是「单文件明显异常」的线：它给 `async.ts`

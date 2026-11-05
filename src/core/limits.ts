@@ -185,6 +185,15 @@ export const LIMIT_SEMANTICS = [
     note: '两个「关掉」的写法语义不同：`false` 才是「不截断」（调试期看全文），`0` 是把正文截成空串。⚠️ 靠 `!= null` 判定透传（真值判定会吃掉 `false`）。',
   },
   {
+    knob: 'maxToolResultChars',
+    where: 'engine/tool-events.ts（toolResultBlock / validateMaxToolResultChars）',
+    unit: 'chars',
+    zero: 'disabled',
+    zeroClause: '0 = 截到零长度；false = 不截断',
+    badValue: 'throws',
+    note: '与 maxEventChars 同读法但不同保护面：这个裁回模型的 tool_result，那个裁 trace。NaN/负数/小数在第一次模型调用前拒，否则上限可能静默失效或行为不定。',
+  },
+  {
     knob: 'runAgent.maxIterations',
     where: 'engine/loop.ts',
     unit: 'count',

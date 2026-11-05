@@ -11,6 +11,7 @@
  * 纯的边界：只拼装数据，不读 ctx、不碰 recorder、不执行工具。
  */
 import { stringifySafe, truncateWithMark } from '../core/json.js';
+import { zeroClauseOf } from '../core/limits.js';
 import type { ToolResultBlockParam, ToolUseBlock } from '../core/message.js';
 
 /**
@@ -90,16 +91,33 @@ export function toolOutputPayload(opts: {
   };
 }
 
-/** 回给模型的 tool_result 块：`is_error` 与 `ok` 互为反，content 一律走 stringifySafe */
+export function validateMaxToolResultChars(value: number | false | undefined): void {
+  if (value === undefined || value === false) return;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(
+      `maxToolResultChars 必须是非负安全整数或 false（不截断；${zeroClauseOf('maxToolResultChars')}），收到 ${String(value)}`,
+    );
+  }
+}
+
+/**
+ * 回给模型的 tool_result 块。`maxToolResultChars` 与 trace 的 maxEventChars 正交：
+ * 前者保护下一次模型请求，后者只保护记账体积；缺省/false 都是不截断。
+ */
 export function toolResultBlock(
   use: ToolUseBlock,
   ok: boolean,
   content: unknown,
+  maxToolResultChars?: number | false,
 ): ToolResultBlockParam {
+  const text = stringifySafe(content);
   return {
     type: 'tool_result',
     tool_use_id: use.id,
-    content: stringifySafe(content),
+    content:
+      maxToolResultChars === undefined || maxToolResultChars === false
+        ? text
+        : truncateWithMark(text, maxToolResultChars),
     is_error: !ok,
   };
 }

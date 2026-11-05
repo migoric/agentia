@@ -30,8 +30,13 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import { validateJsonSchema } from '../core/schema.js';
-import type { SpanError, SpanId } from '../core/trace.js';
-import { CONTEXT_BUDGET_EVENT, TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
+import type { SpanError, SpanId, Usage } from '../core/trace.js';
+import {
+  addUsage,
+  CONTEXT_BUDGET_EVENT,
+  TOOL_INPUT_EVENT,
+  TOOL_OUTPUT_EVENT,
+} from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
 import { isTimeoutError } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
@@ -50,6 +55,7 @@ import {
   toolInputPayload,
   toolOutputPayload,
   toolResultBlock,
+  validateMaxToolResultChars,
 } from './tool-events.js';
 import type { ToolErrorKind } from './tool-events.js';
 import { textOf } from './text.js';
@@ -118,6 +124,8 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
    * 之前它只挂在内层 ctx 上，于是那条出口只能硬写 `false`，把「已注入」报成「未注入」。
    */
   progress?: { iterations: number; eventsDelivered?: boolean } | undefined;
+  /** 本段之前已落账的用量；预算按累计任务账单判断，trace.totalUsage 仍只代表本段 */
+  usageOffset?: Usage | undefined;
   /** 成本硬管控（C1）：整条 run 累计 token 上限；记账后判断，超限即停 */
   maxTotalTokens?: number | undefined;
   /** 成本硬管控（C1）：累计成本（美元）上限；依赖价格表，见 createBudgetGuard */
@@ -128,6 +136,8 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars（三类事件共用同一个值） */
   maxEventChars?: number | false | undefined;
+  /** 单条工具结果回模型的字符上限；同 RunAgentOptions.maxToolResultChars */
+  maxToolResultChars?: number | false | undefined;
   /**
    * opt-in 记录 assistant 文本（R8-P3a）：'full' = 每回合模型文本落 llm.turn span 的
    * `output.text` 属性（过 maxEventChars 同一道截断闸）。缺省不记（现状逐字不变）。
@@ -178,6 +188,7 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
  * 装配冲突（同名 submit_result）与非法单价在这里抛错。
  */
 export function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): LoopContext<S> {
+  validateMaxToolResultChars(args.maxToolResultChars);
   // resultSchema 模式：追加隐藏 submit_result 工具 + system 末尾指令。
   // 该工具由 engine 内部注入，不属开发者菜单；菜单已有同名工具视为装配冲突。
   let apiTools = args.tools.map(toApiTool);
@@ -281,7 +292,9 @@ export async function checkTurnEntry<S extends JsonSchema>(
   // 请求前拦住：不再发请求 = 不再花钱。与「模型自然收尾不改判」不冲突：自然收尾在
   // 上一回合就 break 了，走不到这里。
   if (ctx.budget) {
-    const over = ctx.budget.check({ totalUsage: args.recorder.usage() });
+    const over = ctx.budget.check({
+      totalUsage: addUsage(args.usageOffset, args.recorder.usage()),
+    });
     if (over) {
       return { stopReason: 'budget_exceeded', error: budgetError(args, over) };
     }
@@ -658,7 +671,9 @@ async function executeOneTool<S extends JsonSchema>(
     priceOverrides: args.priceOverrides,
     onUnpricedModel: args.onUnpricedModel,
     maxEventChars: args.maxEventChars,
+    maxToolResultChars: args.maxToolResultChars,
     traceContent: args.traceContent,
+    usageOffset: args.usageOffset,
     maxTotalTokens: args.maxTotalTokens,
     maxCostUsd: args.maxCostUsd,
     toolTimeoutMs: args.toolTimeoutMs,
@@ -770,7 +785,7 @@ async function executeOneTool<S extends JsonSchema>(
     }),
   );
 
-  return toolResultBlock(use, ok, content);
+  return toolResultBlock(use, ok, content, args.maxToolResultChars);
 }
 
 function toApiTool(t: AgentTool): ToolParam {

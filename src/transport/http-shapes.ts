@@ -3,6 +3,7 @@ import type { RunStatus } from '../core/run.js';
 import type { TaskEvent } from '../core/run.js';
 import type { AgentRunResult, AgentStopReason } from '../engine/types.js';
 import type { ApprovalDecisions } from './async.js';
+import type { TaskRecord } from '../store/store.js';
 import type { ClientRunOptions } from './run-options.js';
 
 /**
@@ -28,9 +29,22 @@ export interface RunHttpResponse {
   finalText: string;
   /** 结构化结果（R2 起应用可携带；无则为 undefined，字段在场） */
   typed: unknown;
-  trace: Trace;
+  /** `responseMode:'public'` 时不出现在响应里 */
+  trace?: Trace;
   error: SpanError | undefined;
 }
+
+export type TaskHttpResponse = Omit<TaskRecord, 'result' | 'spec' | 'ownerId' | 'pendingEvents'> & {
+  spec?: TaskRecord['spec'] | undefined;
+  ownerId?: string | undefined;
+  pendingEvents?: TaskRecord['pendingEvents'] | undefined;
+  result?:
+    | (Omit<AgentRunResult, 'trace' | 'suspendedMessages'> & {
+        trace?: Trace;
+        suspendedMessages?: AgentRunResult['suspendedMessages'];
+      })
+    | undefined;
+};
 
 /** POST /tasks 的请求体形态 */
 export interface TaskSubmitBody {
@@ -46,10 +60,13 @@ export interface TaskSubmitBody {
 }
 
 /** 把 app.run 的产物收成 HTTP 响应体（JSON 与 SSE 的 run.end 共用同一形状） */
-export function toHttpBody(out: {
-  run: { runId: string; status: RunStatus };
-  result: AgentRunResult;
-}): RunHttpResponse {
+export function toHttpBody(
+  out: {
+    run: { runId: string; status: RunStatus };
+    result: AgentRunResult;
+  },
+  opts: { public?: boolean } = {},
+): RunHttpResponse {
   return {
     runId: out.run.runId,
     // status 取 **run 状态机**的口径（它才知道 suspended 不是终态），
@@ -58,9 +75,18 @@ export function toHttpBody(out: {
     stopReason: out.result.stopReason,
     finalText: out.result.finalText,
     typed: (out.result as { typed?: unknown }).typed,
-    trace: out.result.trace,
+    ...(opts.public ? {} : { trace: out.result.trace }),
     error: out.result.error,
   };
+}
+
+/** 任务记录的公共投影：不删状态/结果，只去掉消息正文、trace 与内部归属。 */
+export function toTaskHttpBody(rec: TaskRecord, opts: { public?: boolean } = {}): TaskHttpResponse {
+  if (!opts.public) return rec;
+  const { spec: _spec, ownerId: _ownerId, pendingEvents: _pendingEvents, ...rest } = rec;
+  if (!rec.result) return rest;
+  const { trace: _trace, suspendedMessages: _suspendedMessages, ...result } = rec.result;
+  return { ...rest, result };
 }
 
 /**

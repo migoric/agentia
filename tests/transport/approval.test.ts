@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AsyncRunner, FileTaskStore, InMemoryTaskStore, executeRun } from '../../src/index.js';
+import {
+  AsyncRunner,
+  FileTaskStore,
+  InMemorySessionStore,
+  InMemoryTaskStore,
+  executeRun,
+} from '../../src/index.js';
 import type {
   AgentRunResult,
   AgentTool,
@@ -25,6 +31,33 @@ const OBJ = { type: 'object', properties: {} } as const;
 
 interface Spy {
   calls: Array<{ input: unknown; approval: unknown }>;
+}
+
+function successfulResult(runId: string): AgentRunResult {
+  return {
+    trace: {
+      traceId: runId,
+      rootSpanId: 'root',
+      spans: [],
+      status: 'ok',
+      totalUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    },
+    stopReason: 'end_turn',
+    finalText: '',
+    iterations: 0,
+    error: undefined,
+    typed: undefined,
+    suspendedMessages: undefined,
+    pendingApprovals: undefined,
+    suspendedReason: undefined,
+    wakeAt: undefined,
+    eventsDelivered: false,
+  };
 }
 
 /** 真路径 app：executeRun + mockClient；spy 记录每次工具执行与它的审批决定 */
@@ -472,7 +505,7 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
         runs++;
         return {
           run: { runId: `r-${runs}`, status: 'succeeded' as const },
-          result: {} as AgentRunResult,
+          result: successfulResult(`r-${runs}`),
         };
       },
     };
@@ -508,7 +541,7 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
         runs++;
         return {
           run: { runId: `r-${runs}`, status: 'succeeded' as const },
-          result: {} as AgentRunResult,
+          result: successfulResult(`r-${runs}`),
         };
       },
     };
@@ -541,5 +574,64 @@ describe('惰性审批超时的重入闸（#expireAndResume 与 approve 同一�
       true,
       '挂起时刻不动（超时基准不能被这次调用重置）',
     );
+  });
+});
+
+describe('挂起恢复的累计预算与耐久会话快照', () => {
+  it('恢复段继承此前 run 段的 usage：累计超限即停，usageTotal 留全账', async () => {
+    const spy: Spy = { calls: [] };
+    const { app, seen } = hitlApp(
+      [toolUseMsg('danger', {}, 'tu1'), toolUseMsg('danger', {}, 'tu2')],
+      spy,
+    );
+    const runner = new AsyncRunner(app);
+    const task = runner.submit('活', { options: { maxTotalTokens: 20 } });
+    const suspended = await waitStatus(runner, task.taskId, 'suspended');
+    assert.equal(suspended.usageTotal?.inputTokens, 10);
+    assert.equal(suspended.usageTotal?.outputTokens, 5);
+
+    await runner.approve(task.taskId, { tu1: { approved: true } });
+    const done = await runner.awaitTask(task.taskId);
+    assert.equal(done.status, 'failed');
+    assert.equal(done.result?.stopReason, 'budget_exceeded');
+    assert.equal(done.result?.error?.type, 'budget_exceeded');
+    assert.equal(seen.length, 2, '挂起段与恢复段各一次模型调用');
+    assert.equal(done.usageTotal?.inputTokens, 20);
+    assert.equal(done.usageTotal?.outputTokens, 10);
+  });
+
+  it('FileTaskStore 重启后，恢复成功仍补写「原始输入 + 最终回复」且终态清快照', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-hitl-session-'));
+    const sessionStore = new InMemorySessionStore();
+    try {
+      const file = join(dir, 'tasks.jsonl');
+      const spy1: Spy = { calls: [] };
+      const { app: app1 } = hitlApp([toolUseMsg('danger', {}, 'tu1')], spy1);
+      const runner1 = new AsyncRunner(app1, {
+        store: new FileTaskStore(file),
+        sessionStore,
+      });
+      const task = runner1.submit('新指令', { options: { sessionId: 's1' } });
+      const suspended = await waitStatus(runner1, task.taskId, 'suspended');
+      assert.deepEqual(suspended.sessionInput, [{ role: 'user', content: '新指令' }]);
+      assert.deepEqual(sessionStore.load('s1'), [], '挂起段不写会话');
+
+      const spy2: Spy = { calls: [] };
+      const { app: app2 } = hitlApp([endTurnMsg('重启后完成')], spy2);
+      const runner2 = new AsyncRunner(app2, {
+        store: new FileTaskStore(file),
+        sessionStore,
+      });
+      await runner2.approve(task.taskId, { tu1: { approved: true } });
+      const done = await runner2.awaitTask(task.taskId);
+      assert.equal(done.status, 'succeeded');
+      assert.deepEqual(sessionStore.load('s1'), [
+        { role: 'user', content: '新指令' },
+        { role: 'assistant', content: '重启后完成' },
+      ]);
+      assert.equal(done.sessionInput, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

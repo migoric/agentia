@@ -2,9 +2,9 @@
  * `forwardToolContext`（穷尽转发的单源）的**运行期**用例。
  *
  * 类型层的那半在 `tests/types/forwarding.types.ts`（只编译不运行）：守「归类穷尽」与
- * 「七个键全必填」。这里守运行期才看得见的两件事：
+ * 「全部键必填」。这里守运行期才看得见的两件事：
  *
- * 1. **取的键正好是清单里那七个** —— 不多（引擎自装配的键不许漏进来）、不少。
+ * 1. **取的键正好是清单里的全部键** —— 不多（引擎自装配的键不许漏进来）、不少。
  * 2. **不做真值判定** —— `false` / `0` 是有意义的值，判空会把它们吃成「没设」。
  *    这条与 `engine/tool-context.ts` 的三档判定同因，是本仓踩过的那类静默降级。
  *
@@ -33,8 +33,15 @@ function fullCtx(): ToolRunContext {
     priceOverrides: { 'my-model': { in: 1, out: 2 } },
     onUnpricedModel: () => undefined,
     maxEventChars: 1234,
+    maxToolResultChars: 4321,
     maxTotalTokens: 5678,
     maxCostUsd: 0.5,
+    usageOffset: {
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
     toolTimeoutMs: 9000,
   };
 }
@@ -69,8 +76,10 @@ describe('forwardToolContext：穷尽转发的取值单源', () => {
     const ctx = fullCtx();
     const out = forwardToolContext(ctx);
     assert.equal(out.maxEventChars, 1234);
+    assert.equal(out.maxToolResultChars, 4321);
     assert.equal(out.maxTotalTokens, 5678);
     assert.equal(out.maxCostUsd, 0.5);
+    assert.equal(out.usageOffset, ctx.usageOffset);
     assert.equal(out.toolTimeoutMs, 9000);
     assert.equal(out.signal, ctx.signal);
 

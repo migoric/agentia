@@ -231,3 +231,29 @@ describe('POST /tasks/:id/approve（HITL）', () => {
     }
   });
 });
+
+describe('可信审批人', () => {
+  it('resolveApprovalActor 从 principal 生成 decidedBy，并覆盖请求体自报身份', async () => {
+    const spy = { calls: 0 };
+    const app = hitlApp([toolUseMsg('danger', {}, 'tu1'), endTurnMsg('完成')], spy);
+    const { server, base } = await start(app, {
+      authenticate: (req) => ({ userId: String(req.headers['x-user'] ?? '') }),
+      resolveApprovalActor: (_req, principal) => (principal as { userId: string }).userId,
+    });
+    try {
+      const taskId = await submitAndSuspend(base, { 'x-user': 'alice' });
+      const res = await post(
+        base,
+        `/tasks/${taskId}/approve`,
+        { decisions: { tu1: { approved: true } }, decidedBy: 'mallory' },
+        { 'x-user': 'alice' },
+      );
+      assert.equal(res.status, 200);
+      const rec = await readJson(res);
+      assert.equal(rec.approvals.tu1.decidedBy, 'alice');
+      assert.notEqual(rec.approvals.tu1.decidedBy, 'mallory');
+    } finally {
+      await close(server);
+    }
+  });
+});
