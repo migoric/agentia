@@ -25,9 +25,21 @@ import {
   sendShuttingDown,
 } from './http-io.js';
 import type { HttpRoute } from './http-route.js';
-import { parseApproveBody, parseEventBody, toHttpBody, toTaskSubmitBody } from './http-shapes.js';
+import {
+  parseApproveBody,
+  parseEventBody,
+  toHttpBody,
+  toTaskHttpBody,
+  toTaskSubmitBody,
+} from './http-shapes.js';
 import { mergeRunOptions, pickClientRunOptions } from './run-options.js';
 import type { ResolveRunOptionsHook } from './run-options.js';
+import type {
+  ApprovalActorHook,
+  HttpResponseMode,
+  TaskAuthorizationHook,
+  TaskControlAction,
+} from './http.js';
 import { sseWriter } from './sse.js';
 
 /**
@@ -166,6 +178,10 @@ export interface HttpCtx {
   readonly principal: unknown;
   /** 宿主给的 per-request run 选项来源（见 `HttpHandlerOptions.resolveRunOptions`） */
   readonly resolveRunOptions: ResolveRunOptionsHook | undefined;
+  readonly authorizeTask: TaskAuthorizationHook | undefined;
+  readonly resolveApprovalActor: ApprovalActorHook | undefined;
+  readonly responseMode: HttpResponseMode;
+  readonly exposeTraceEvents: boolean;
 }
 
 /**
@@ -183,6 +199,39 @@ async function withHostRunOptions(
   if (!hook) return clientOptions;
   const overrides = await hook(ctx.req, { route, principal: ctx.principal });
   return mergeRunOptions(clientOptions, overrides);
+}
+
+/**
+ * 任务控制面的统一准入：先读快照，再做对象级授权。直接读 store 而不走 poll，
+ * 免得「看一眼有没有权」意外触发审批超时/到期唤醒这些 poll 的惰性推进语义。
+ */
+async function authorizedTask(
+  ctx: HttpCtx,
+  taskId: string,
+  action: TaskControlAction,
+): Promise<TaskRecord | undefined> {
+  const task = await ctx.runner.store.get(taskId);
+  if (!task) {
+    sendJson(ctx.res, 404, { error: `task 不存在: ${taskId}` });
+    return undefined;
+  }
+  if (ctx.authorizeTask) {
+    const allowed = await ctx.authorizeTask(ctx.req, {
+      action,
+      taskId,
+      task,
+      principal: ctx.principal,
+    });
+    if (allowed === false) {
+      sendJson(ctx.res, 403, { error: '无权操作该任务' });
+      return undefined;
+    }
+  }
+  return task;
+}
+
+function taskBody(ctx: HttpCtx, rec: TaskRecord) {
+  return toTaskHttpBody(rec, { public: ctx.responseMode === 'public' });
 }
 
 /**
@@ -358,15 +407,16 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
           rethrow: false,
           signal: runAc.signal,
           onText: (delta) => sse.event('text.delta', { text: delta }),
-          // 增量记账出口（F3 当初判「架构代价大、后置」的那半）：既有三帧
-          //（text.delta / run.end / error）逐字不变，这里只**追加**一族帧 ——
-          // 不认识 `trace.event` 的老客户端行为零变化。
-          // 帧名取一族（body 里的 type 区分）而不是每类型一帧：将来加新事件类型时，
-          // 老客户端只是漏掉一种 type，而不是漏掉一种**帧名**（后者更隐蔽）。
-          onTraceEvent: (e) => sse.event('trace.event', e),
+          // trace 帧是独立的暴露面：public 模式默认不下发，但应用级订阅和 sinks 不受影响。
+          ...(ctx.exposeTraceEvents
+            ? {
+                onTraceEvent: (e: import('../core/trace.js').TraceRecordEvent) =>
+                  sse.event('trace.event', e),
+              }
+            : {}),
           ...(traceContext !== undefined ? { traceContext } : {}),
         });
-        sse.event('run.end', toHttpBody(out));
+        sse.event('run.end', toHttpBody(out, { public: ctx.responseMode === 'public' }));
       } catch (e) {
         // 流已开（200 与头已发出）→ 只能以 error 事件收尾，不能再改 HTTP 状态码
         sse.event('error', { message: errMessage(e) });
@@ -383,7 +433,7 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
       signal: runAc.signal,
       ...(traceContext !== undefined ? { traceContext } : {}),
     });
-    sendJson(res, 200, toHttpBody(out));
+    sendJson(res, 200, toHttpBody(out, { public: ctx.responseMode === 'public' }));
   } finally {
     res.off('close', onClose);
     state.inFlightRuns--;
@@ -467,7 +517,7 @@ async function handleSubmit(ctx: HttpCtx): Promise<void> {
     sendInternalError(res, e, ctx.exposeErrors);
     return;
   }
-  sendJson(res, 202, rec);
+  sendJson(res, 202, taskBody(ctx, rec));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -485,6 +535,7 @@ async function handleSubmit(ctx: HttpCtx): Promise<void> {
  */
 async function handleApprove(taskId: string, ctx: HttpCtx): Promise<void> {
   const { req, res, runner } = ctx;
+  if (ctx.authorizeTask && !(await authorizedTask(ctx, taskId, 'approve'))) return;
   const body = await parseJsonBody(req, res, ctx.maxBodyBytes);
   if (body === PARSE_FAILED) return;
   const parsed = parseApproveBody(body);
@@ -495,13 +546,20 @@ async function handleApprove(taskId: string, ctx: HttpCtx): Promise<void> {
     });
     return;
   }
+  // 宿主钩子的 HttpException 不交下面的任务错误 catch，交给宿主统一映射状态码。
+  const actor = ctx.resolveApprovalActor
+    ? await ctx.resolveApprovalActor(req, ctx.principal)
+    : parsed.decidedBy;
+  if (actor !== undefined && (typeof actor !== 'string' || actor.trim() === '')) {
+    throw new TypeError('resolveApprovalActor 必须返回非空字符串或 undefined');
+  }
   try {
     const rec = await runner.approve(
       taskId,
       parsed.decisions,
-      parsed.decidedBy !== undefined ? { decidedBy: parsed.decidedBy } : {},
+      actor !== undefined ? { decidedBy: actor } : {},
     );
-    sendJson(res, 200, rec);
+    sendJson(res, 200, taskBody(ctx, rec));
   } catch (e) {
     // 404（任务不存在）/ 409（状态不对）是调用方语义；其余按内部错误处理
     if (e instanceof TaskApproveError) {
@@ -514,12 +572,13 @@ async function handleApprove(taskId: string, ctx: HttpCtx): Promise<void> {
 
 /** GET /tasks/<id>：轮询任务记录 → 200 `TaskRecord`；不存在 → 404。停机中照常可轮询 */
 async function handlePoll(taskId: string, ctx: HttpCtx): Promise<void> {
-  const rec = await ctx.runner.poll(taskId); // MaybePromise：异步 store 下必须 await
+  if (!(await authorizedTask(ctx, taskId, 'poll'))) return;
+  const rec = await ctx.runner.poll(taskId); // 保留 poll 的惰性超时/到期唤醒语义
   if (!rec) {
     sendJson(ctx.res, 404, { error: `task 不存在: ${taskId}` });
     return;
   }
-  sendJson(ctx.res, 200, rec);
+  sendJson(ctx.res, 200, taskBody(ctx, rec));
 }
 
 /**
@@ -527,9 +586,10 @@ async function handlePoll(taskId: string, ctx: HttpCtx): Promise<void> {
  * 无 body。不存在 → 404；已终态、或在跑的 run 不在本进程 → 409。
  */
 async function handleCancel(taskId: string, ctx: HttpCtx): Promise<void> {
+  if (!(await authorizedTask(ctx, taskId, 'cancel'))) return;
   try {
     const rec = await ctx.runner.cancel(taskId); // MaybePromise：异步 store 下必须 await
-    sendJson(ctx.res, 200, rec);
+    sendJson(ctx.res, 200, taskBody(ctx, rec));
   } catch (e) {
     // 404（不存在）/ 409（已终态、或在跑的 run 不在本进程）是调用方语义
     if (e instanceof TaskCancelError) {
@@ -548,6 +608,7 @@ async function handleCancel(taskId: string, ctx: HttpCtx): Promise<void> {
  */
 async function handleTaskEvent(taskId: string, ctx: HttpCtx): Promise<void> {
   const { req, res, runner } = ctx;
+  if (ctx.authorizeTask && !(await authorizedTask(ctx, taskId, 'event'))) return;
   const body = await parseJsonBody(req, res, ctx.maxBodyBytes);
   if (body === PARSE_FAILED) return;
   const event = parseEventBody(body);
@@ -560,7 +621,7 @@ async function handleTaskEvent(taskId: string, ctx: HttpCtx): Promise<void> {
   }
   try {
     const rec = await runner.signalTask(taskId, event);
-    sendJson(res, 200, rec);
+    sendJson(res, 200, taskBody(ctx, rec));
   } catch (e) {
     // 404（不存在）/ 409（不在挂起态、同 eventId 重复投递）是调用方语义
     if (e instanceof TaskEventError) {
@@ -582,11 +643,11 @@ async function handleTaskEvent(taskId: string, ctx: HttpCtx): Promise<void> {
  */
 async function handleTaskStream(taskId: string, ctx: HttpCtx): Promise<void> {
   const { req, res, runner, state, sseMaxBufferedBytes } = ctx;
-  // 先查一次记录：任务不存在要回 **404**，而 SSE 一旦写出响应头状态码就定死 200 了
-  //（见 sse.ts 的语义约束），所以「存不存在」必须在建流之前问。
-  const known = await runner.poll(taskId);
-  if (!known) {
-    sendJson(res, 404, { error: `task 不存在: ${taskId}` });
+  // 先查记录并做对象级授权：SSE 一旦写出响应头状态码就定死 200 了，
+  // 所以「存不存在 / 能不能看」都必须在建流之前判完。
+  if (!(await authorizedTask(ctx, taskId, 'stream'))) return;
+  if (!ctx.exposeTraceEvents) {
+    sendJson(res, 404, { error: '任务进度流未开放' });
     return;
   }
   // 续订锚点：SSE 标准头 `Last-Event-ID` 优先，其次 `?from=`（非 EventSource 的客户端用）
@@ -645,7 +706,7 @@ async function handleTaskStream(taskId: string, ctx: HttpCtx): Promise<void> {
         closeStream();
         return;
       case 'end':
-        sse.event('task.end', frame.record);
+        sse.event('task.end', taskBody(ctx, frame.record));
         closeStream();
         return;
       default: {

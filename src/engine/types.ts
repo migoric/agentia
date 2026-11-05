@@ -6,7 +6,7 @@ import type {
   ModelClient,
   ModelPricing,
 } from '../core/tool.js';
-import type { SpanError, Trace, TraceContext } from '../core/trace.js';
+import type { SpanError, Trace, TraceContext, Usage } from '../core/trace.js';
 import type { RetryOptions } from './retry.js';
 import type { SuspendedReason, TaskEvent } from '../core/run.js';
 
@@ -244,6 +244,8 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 回合入口判断，不会发出新请求）。
    */
   maxTotalTokens?: number;
+  /** 本段之前已落账的用量（异步挂起恢复由宿主注入）；预算按它 + 本段 recorder.usage 判定 */
+  usageOffset?: Usage;
   /**
    * 成本硬管控（C1）：累计成本（美元）上限。**依赖模型在价格表内**
    * （`engine/usage.ts` 的 DEFAULT_PRICING，或本 run 的 `priceOverrides`）——
@@ -299,6 +301,12 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 截断只在**记账**时发生，不影响回给模型的 tool_result（那条永远完整）。
    */
   maxEventChars?: number | false;
+  /**
+   * 单条工具结果回给模型前的字符上限；缺省 / `false` = 不截断（兼容旧行为），0 = 截到零长度。
+   * 与 `maxEventChars` 正交：这个保护下一次模型请求，那个只保护 trace 记账。
+   * 截断文本带 `…(+N)` 标记，工具副作用与 trace 默认记录不受它影响。
+   */
+  maxToolResultChars?: number | false;
   /**
    * 提示词版本号（D4）：写进 run 根 span 的 `system.version` attribute，
    * trace 里据此可查「哪个版本的提示词产出的结果」。

@@ -12,6 +12,7 @@ import { harvestCommand, USAGE as HARVEST_USAGE } from './harvest.js';
 import { diffCommand, USAGE as DIFF_USAGE } from './diff.js';
 import { exportCommand, USAGE as EXPORT_USAGE } from './export.js';
 import { viewCommand, USAGE as VIEW_USAGE } from './view.js';
+import { manifestCommand } from './manifest.js';
 import { readCliVersion } from './version.js';
 
 const USAGE = `agentia —— Agentia 框架命令行工具
@@ -25,6 +26,7 @@ const USAGE = `agentia —— Agentia 框架命令行工具
                                            在面板里选能力/工作目录、输入 prompt 驱动一次 run，
                                            并看它的调用树；改代码或 .md 自动重启）
   agentia doctor [--json]                  装配体检（未登记/悬空能力/命名规范/重复条目）
+  agentia manifest                         真实装配 app → 能力契约 JSON（schema/owner/风险/审批/hash）
 
 观测与调优：
   agentia view <trace.jsonl>               落盘 trace → 单文件自包含 HTML（离线可开、可转发）
@@ -62,6 +64,7 @@ const SUB_USAGE: Record<string, string | undefined> = {
   generate: G_USAGE,
   dev: '用法：agentia dev [-- "首次 run 的 prompt"]',
   doctor: '用法：agentia doctor [--json]',
+  manifest: '用法：agentia manifest（真实装配 src/app.ts，不调用模型）',
   report: REPORT_USAGE,
   harvest: HARVEST_USAGE,
   diff: DIFF_USAGE,
@@ -156,6 +159,11 @@ function main(argv: string[]): number {
     const extra = rest.filter((a) => a !== '--json');
     if (extra.length > 0) return fail(`未知参数：${extra[0]}`);
     return doctor({ json: rest.includes('--json') });
+  }
+
+  if (command === 'manifest') {
+    if (rest.length > 0) return fail(`未知参数：${rest[0]}`);
+    return manifestCommand();
   }
 
   if (command === 'report') {

@@ -121,6 +121,9 @@ export function runConfigSnapshot(
   // 容易被读成「上限为 0」，'off' 一句话说清是**没有上限**
   if (options.maxEventChars != null)
     out['config.maxEventChars'] = options.maxEventChars === false ? 'off' : options.maxEventChars;
+  if (options.maxToolResultChars != null)
+    out['config.maxToolResultChars'] =
+      options.maxToolResultChars === false ? 'off' : options.maxToolResultChars;
   // 记账数量闸：与 maxEventChars（管「多长」）正交，这个管「多少」。键名镜像选项路径
   //（同 config.retry.maxAttempts / config.contextPolicy.budgetTokens 的口径）。
   // 0 = 「一条都不记」是有意义的值，原样记 0 —— 不记成 'off'（本文件里 'off' = 不设上限，

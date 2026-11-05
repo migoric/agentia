@@ -155,6 +155,11 @@ describe('applySuspendedOutcome —— 挂起出口的记录映射', () => {
     );
     assert.equal(rec.spec.messages, extended, 'rec.spec.messages 换成扩展历史');
     assert.notEqual(snapshot, rec.spec.messages, '快照若与挂起历史同一个引用，等于没在覆盖前取');
+    assert.equal(
+      rec.sessionInput,
+      original,
+      '同一快照必须随 TaskRecord 落库，重启后才有恢复回写依据',
+    );
   });
 
   it('保存快照的三条判据各缺一条都拿不到快照（逐条反向）', () => {

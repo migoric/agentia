@@ -123,6 +123,7 @@ cd my-service && npm install
 npm run dev                      # = agentia dev：本地 inspector 面板（输入 prompt / 选能力 / 选工作目录）
 npx agentia g tool fetch-weather # 生成到 src/tools/fetch-weather/（skill/prompt/subagent 同理）
 npx agentia doctor               # 静态体检（未登记/悬空/命名/重复）
+npx agentia manifest             # 真实装配 → 能力契约 JSON（不调用模型）
 npx agentia --version            # CLI 版本（= -v）
 ```
 
@@ -326,6 +327,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `name` | 模型可见的工具名，缺省取方法名（建议 snake_case） |
 | `strict` | 透传给 Anthropic 的 strict 模式（**框架不校验 schema 合规性**） |
 | `approval` | `'required'` = 每次调用先挂起等人工审批（HITL，见 §6.6「人工审批」） |
+| `metadata` | 可选 `{ owner?, version?, risk?: 'read'\|'write'\|'external', sideEffect?: 'none'\|'idempotent'\|'non-idempotent' }`；进能力 manifest，供 owner 分工与变更审查 |
 
 ### `@Skill(spec: SkillSpec)`
 
@@ -338,6 +340,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `maxTokens` | 同上 |
 | `maxIterations` | 同上 |
 | `tools` | `ctx.llm()` 可调工具：**provider token 列表**（复用该 provider 的能力菜单），或 `'<token>/<能力名>'` 能力级路径（只引菜单里的单个能力） |
+| `metadata` | 同 `@Tool`：owner / 版本 / 风险 / 副作用幂等性，进能力 manifest |
 
 技能方法体拿到的第二参是 `SkillContext`：`ctx.llm({ prompt })` 才会真正调模型（脚本式，调几次由你写死）。
 
@@ -354,6 +357,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `maxTokens` | 同上 |
 | `maxIterations` | 同上 |
 | `resultSchema` | 给出后子 agent 用隐藏 `submit_result` 提交结构化结果 |
+| `metadata` | 同 `@Tool`：owner / 版本 / 风险 / 副作用幂等性，进能力 manifest |
 
 子 agent 是**独立循环 + 裁剪上下文**：主 agent 的历史它看不到，只有最终文本（或 `{ report, result }`）以 tool_result 回流。
 
@@ -365,6 +369,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `name` | 缺省取方法名 |
 | `schema` | 模板化入参 schema；缺省空对象（无参资产） |
 | `version` | 资产版本号（git hash / `'v3'` 等）；装配期随能力名收集，每次 run 落 run 根 span 的 `prompts.versions` attribute —— 见 §6「提示词版本化」。缺省（无版本）则该能力不进表 |
+| `metadata` | 同 `@Tool`；`metadata.version` 缺省回落 `version`，两项都给时以 metadata 为准 |
 
 `@Prompt` **只支持方法形态**（标准装饰器下字段拿不到值/类引用）。实例方法与静态方法都**沿继承链**收集（父类的 `@Prompt` 资产子类自动带上）。方法体内用 `asset(import.meta.url, './x.md')` 读同目录长文本。
 
@@ -401,6 +406,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `toolTimeoutMs` | 缺省单工具超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run |
 | `maxToolConcurrency` | 缺省同回合并行工具上限；不设 = 不限（全并行） |
 | `maxEventChars` | 缺省 trace 事件正文截断上限（可被单次 run 覆盖）：数字 = 入参/出参统一用该上限，`false` = **不截断**（完整正文进 trace，面板里能展开看全文）；不设 = 框架缺省 |
+| `maxToolResultChars` | 缺省单条工具结果**回模型**的字符上限：非负安全整数；`false` / 不设 = 不截断，0 = 截到零长度并留 `…(+N)`。与 maxEventChars 正交，会透传子循环 |
 | `traceLimits` | **记账的数量上限** `{ maxEvents? }`（可被单次 run 覆盖）：整条 trace 的事件总数闸。超限即停止记账，并在 run 根留**两笔** `trace.truncated` —— **起点标记** `{limit}`（断点在这里）＋ **收尾摘要** `{droppedEvents, limit}`（丢了多少），两笔**同时**进交付的 trace 与 `onTraceEvent` 增量流。缺口位置可预测（尾巴）且**有计数**。与管**长度**的 `maxEventChars` 正交（一个管「多长」、一个管「多少」）；不设 = 不限（全量记账是本框架的承诺）。坏值（NaN / 负数 / 小数）在 run 入口抛 `TypeError` |
 
 ### `app.run(messages, opts?: RunAppOptions)`
@@ -433,7 +439,9 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `onUnpricedModel` | 单次覆盖未定价回调（**是函数，因此不在 transport 的 `RunInvocationOptions` 里** —— 异步宿主不会替你传） |
 | `toolTimeoutMs` | 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，run 继续 |
 | `maxToolConcurrency` | 同回合并行工具上限；缺省不限 |
-| `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**，回给模型的 tool_result 永远完整 |
+| `maxEventChars` | trace 事件正文截断上限（字符）：数字 = 入参/出参统一用该上限，`false` = **不截断**；缺省按类型收敛（入参/成功出参 2000、失败出参 1000）。**透传给子 agent/skill 的子循环** —— 同一棵调用树上口径一致。只影响**记账**；回模型上限另看 `maxToolResultChars` |
+| `maxToolResultChars` | 单次覆盖工具结果回模型的字符上限；缺省 / false = 不截断，0 = 截到零长度 |
+| `usageOffset` | 本段之前已落账的 `Usage`；通常只由 AsyncRunner 在挂起恢复时注入，让预算按整任务累计。HTTP 客户端不能自填 |
 | `session` | 会话持久化 `{ store, id }`：run 前拼历史、成功收尾追加本轮（见 `SessionStore`） |
 | `sessionId` | 会话**引用**（可序列化）：**只被异步宿主消费** —— 「`sessionId` + runner 的 `sessionStore`」那条路（任务里只落 id，store 实例不可序列化；runner 没配 `sessionStore` 而任务带了它 ⇒ submit 当场报错）。⚠️ 直接 `app.run` 传它**不生效**（不建 `session.id`、不接历史），入口会 `console.warn` 一次指出改用上一行的 `session: { store, id }`；只要 run 根的 `session.id` 标记而不要历史，直连 `executeRun` / `runAgent` 的引擎级 `sessionId`（见 §6.4「提示词版本化与会话标记」） |
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
@@ -605,7 +613,8 @@ class InvoiceTool {
 | API | 说明 |
 |---|---|
 | `createApp` | 装配应用（同步；带 `discover` 时为 `Promise<AgentApp>`） |
-| `AgentApp` | `run` / `tools` / `container` / `name` |
+| `AgentApp` | `run` / `tools` / `container` / `name` / `getCapabilityManifest()` |
+| `buildCapabilityManifest` | 从最终菜单生成 `{ app, hash, capabilities }`；hash 覆盖描述/schema/审批/元数据且与顺序无关，适合 PR 留档比较 |
 | `defineModule` | 定义能力包 |
 | `executeRun` | 低层 run 入口（自己管 `Run`/trace sink/记忆） |
 | `runAgent` | 更底层：只要一个循环 + trace，不管 run 生命周期 |
@@ -664,6 +673,7 @@ const app = await createApp({ ... });
 | `FileTaskStore` | JSONL 耐久存储（`compact()` 可压实日志） |
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
+| `parseTaskRecord` | 自定义 store 的公共读回入口：JSON 解析 + 形状守卫 + 旧版本归一；坏 JSON 抛错，非记录返回 undefined |
 
 **`compact()` / `close()` 是接口上的可选能力，但由宿主按需调**：`FileTaskStore.compact()`
 （压实 JSONL：一 task 一行、丢掉历史覆写行）与 `SqliteTaskStore.close()` 此前只活在具体类上 ——
@@ -768,6 +778,10 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 方法不符 → 405（带 `Allow` 头）；路径不符 → 404；body 非法 JSON → 400；body 超 `maxBodyBytes` → 413；
 `POST /run` 超 `maxConcurrentRuns` → 503 + `Retry-After`；停机中 `POST /run`、`POST /tasks` → 503。
 
+上表是缺省 `responseMode:'full'` 的兼容形状。对外多租户服务建议 `responseMode:'public'`：
+run/task 响应不再携带 trace、spec.messages、suspendedMessages 与 ownerId，SSE 的 trace 帧也默认关；
+它不改变任务库和 sinks 的完整记录。对象级授权由 `authorizeTask` 另行决定，两者不能互相替代。
+
 #### 本地怎么调（可直接复制的命令）
 
 ⚠️ 先认下这条，否则会照着别的框架的经验找错东西：**没有「一个业务一个 URL」的接口层**。
@@ -819,6 +833,10 @@ const handler = createHttpHandler(callable, { runner });
 |---|---|
 | `authenticate` | 入口鉴权钩子：**除 `/healthz` 与 `/metrics` 外所有路径**都过它，且在**读 body 之前**（未通过就不收 body）。正常返回即通过，**返回值作为 `principal` 交给 `resolveRunOptions`**；抛 `HttpException` 按其 `status`/`body` 回；抛别的错误回 401，原文只进服务端日志。框架**不实现策略**（不读 env、不碰凭据） |
 | `resolveRunOptions` | `(req, { route, principal }) => { blackboard?, labels?, maxCostUsd?, maxTotalTokens? }` —— **身份 / 租户 / 配额封顶的唯一可信通道**（`/run` 与 `/tasks` 都生效）。`blackboard` **整体替换**、`labels` 按键盘合并（服务端胜）、预算与客户端值取**更严者**（上限不能由叫价方抬高）。抛 `HttpException` 按其状态码回。为什么必须有它：`POST /tasks` 的 `body.options` 走白名单之后，客户端已经**设不了** `blackboard` —— 身份不从这里进就没有地方进了（见 §6.6「多租户配额」） |
+| `authorizeTask` | `(req, { action, taskId, task, principal })`：任务控制面的**对象级授权**，action 为 `poll/approve/cancel/event/stream`；返回 false → 403，抛 HttpException 按状态码回。审批/事件在读 body 之前判；缺省不拦（旧行为） |
+| `resolveApprovalActor` | `(req, principal) => string\|undefined`：从认证结果生成可信审批人；配置后**覆盖**审批 body 的自报 `decidedBy`。空字符串按宿主配置错误 500 |
+| `responseMode` | `'full'`（缺省，旧形状）/ `'public'`：公共模式去掉 run/task 响应的 trace、任务 spec、挂起历史与 ownerId；TaskStore/sinks 仍保留完整记录 |
+| `exposeTraceEvents` | 是否开放 `/run` 与 `/tasks/:id/stream` 的 trace 事件；缺省 = `responseMode==='full'`。公共模式下显式 true 可单独开放，但不会把完整 trace 加回 run.end |
 | `metrics` | 指标出口：给 `metricsSink()`（或任意 `{ render() }` / 返回字符串的闭包）后，`GET /metrics` 回它的 Prometheus 文本。**不鉴权**（拉取端在集群内网）；要保护请放反代后面。不给则该路径 404。⚠️ 这只管**渲染** —— 数字要真的累计，必须把**同一个** sink 注册进 `createApp({ sinks: [metrics] })`（它靠 run 收尾投递，不自己埋点），否则 `/metrics` 恒为 0 **且不报错** |
 | `maxBodyBytes` | 请求 body 上限（字节），超限回 413；缺省 1 MiB。构造期校验：必须 > 0 或 `Infinity` —— 0 会让**每个带 body 的请求**都 413（`POST /run` / `POST /tasks` / 审批全废），故直接抛错。⚠️ 还挡 `Number('') === 0`：从**空的环境变量**读出来的配置会静默变成「拒绝一切」 |
 | `maxConcurrentRuns` | 同时在跑的 `POST /run` 上限，超限回 503 + `Retry-After`；缺省 32（传 `Infinity` 恢复无上限）。构造期校验：必须 > 0 或 Infinity —— NaN 会让闸门静默失效、0/负数会全部 503，故直接抛错 |
@@ -1787,7 +1805,9 @@ class DeployTools {
    `{ decisions: { '<tool_use_id>': { approved: true } }, decidedBy: 'alice' }`
    （或直接 `runner.approve(taskId, decisions, { decidedBy })`）。**逐 tool_use_id 幂等**
    （第一次决定赢，重复提交不推翻）。决定**随任务落库**（`TaskRecord.approvals`，
-   进程重启不丢）；待决集合齐了任务自动恢复执行。
+   进程重启不丢）；待决集合齐了任务自动恢复执行。生产 HTTP 端建议同时配置
+   `authorizeTask`（谁能批这个任务）与 `resolveApprovalActor`（从 principal 生成 decidedBy，
+   覆盖请求体自报身份）；否则 `decidedBy` 只是调用方填写的审计字段，不是可信身份。
 4. 恢复时：**批准**的工具正常执行（工具体内经 `ToolRunContext.approval` 读到自己的决定 —
    谁批的、什么时候、什么理由）；**拒绝**的工具得到 `tool_result(is_error: true,
    content: '审批被拒绝：…')` —— 理由回给模型，可自行换路。恢复后再遇未决审批 ⇒
@@ -1955,7 +1975,7 @@ const callable = {
 | 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调，须为正整数，坏值构造期抛错），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**没跑完**的流另有一道**缓冲配额**（`streamNonTerminalBuffers`，缺省 32 条流；`0` = 不留）：超出即从最旧、**没有订阅者**的流开始回收**回放历史** —— 表项与序号都留着，连上来的读者先收一帧 `stream.truncated` 再转实时（**不会**变成 `stream.unavailable`，那是对别的进程说的话）；正在被订阅的流不受配额约束（不抽走正在读的数据）。**跨进程**（队列消费者在别的进程）时没有实时流：发一帧 `stream.unavailable` 后**立即收口** —— 任务已终态则补 `task.end`（随后关连接）；**非终态**则补一帧 `stream.closed`（流级收尾，不是伪造终态）并关连接，客户端此后应转去轮询 `GET /tasks/:id`。要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
 | 异步任务的**排队段**边界（内存） | `concurrency` 管「同时在跑几个」，**不管**「跑不上、排在后面」那一段 —— 缺省**排队段无上限**：`submit` 总是收单、`POST /tasks` 总是 202，灌多少就在内存里排多少（每条 = 一条记录 + 一棵悬挂的 `#execute` promise + 一个槽位等待者）。要背压就配 `AsyncRunner({ maxQueued })`：超限 `submit` 抛 `TaskQueueFullError`、HTTP 回 **503 + `Retry-After`**（**只在 `submit` 判** —— 恢复路径推进的是已受理任务，拦下来等于把它搁死在 store 里；幂等键命中的重复提交也不吃 503）。`runner.queued` 是实时读数（与闸同一判据）。⚠️ 进程内拒单**不等于**集群级背压：多副本各算各的，要全局就得上队列 |
 | `traceLimits` 与 `maxEventChars` 各管一头 | `maxEventChars` 管**单个事件正文多长**（既有），`traceLimits.maxEvents` 管**整条 trace 记多少条记录事件**（本版）。两者正交、都「不设 = 不限」；超限即**停止记账**，并在 run 根留**两笔** `trace.truncated`：**起点标记** `{limit}`（断点在这里）+ **收尾摘要** `{droppedEvents, limit}`（丢了多少）—— 两笔**同时**进交付的 trace 与 `onTraceEvent` 增量流（⇒ 按 `seq` 折回仍逐字等于收尾那份；两笔簿记**不占** `maxEvents` 配额）。⚠️ 实测 `maxEventChars: false` + 大出参会让 trace 放大 **13.7×**（`npm run bench:trace` 可复现）—— 先收长度再谈采样，收益顺序比反过来大 |
-| 回给模型的 `tool_result` **不截断、也没有大小闸** | `maxEventChars` / `traceContent` 管的是**记账侧**（trace 记多长、记不记正文）—— 回给模型的工具结果**永远完整**，框架里没有「单条工具结果超过多大就裁」的那条缝。一次 `cat` 大文件、一次刷屏回显就能让**下一回合**的输入爆掉上下文窗口，以 api 错误收尾（长跑里尤其容易撞）。要设输出上限请在**工具实现内部**做（按行数 / 字节截断并附「已截断」标记）—— 框架不替你兜 |
+| 工具结果缺省不截断；上限要显式开 | `maxEventChars` / `traceContent` 管**记账侧**；`maxToolResultChars` 管回模型的单条结果，缺省/false = 不截断，给非负整数即截并附 `…(+N)`。它按字符而非 token/业务行数计费；要语义化摘要仍在工具内做 |
 | **采样是导出决策，不是记账决策** | 采样在 `sink` 外做（配方见 `docs/observability.md` 2.3）：被采样掉的 trace 在框架内**仍然完整记账**，只是没发给下游。所以别拿「有采样」当「可以少记账」；也正因如此，出站 `traceparent` 的 flags 恒 `00`（记录/导出决策发生在收尾之后，运行期不可知——不替下游声明） |
 | 菜单漂移只**标记**、不判失败 | 续跑时未决 tool_use 的工具不在当前菜单 ⇒ 三处信号（`menu.drift` 事件 / 父 span attribute / `console.warn`），run **照常收尾**（那些 tool_use 以 `unknown tool` 回给模型）。**射程如实标注**：判据只看**名字** —— 「工具还在、schema 变了」能被 `tools.menuHash` 比出来，但**不会**在续跑时报 `menu.drift`；**只改 `description`** 连签名都不变（有意：润色文案不算漂移）。严格模式（带具名 error 的收尾）与「结果级字段」记在 spec §11 开放项 |
 | `approve` 只收**待决的** id（多一个 → 400 整批拒） | `decisions` 的键必须都在该任务的 `pendingApprovals` 里（调用方从记录的 `pendingApprovals` 读）。多出任何一个 ⇒ **400 + 整批拒 + 记录一字不动**。不校验的代价（已修，2026-09-28 外部深评）：多出来的键会写进 `TaskRecord.approvals`，随每次 `save` 全文重写、且终态也不清 ⇒ 一个**认证调用方**单次请求就能把记录撑大（实证：一次 5000 个无关键 = +419 KB），反复调用可无限叠加 |
@@ -2023,8 +2043,8 @@ const callable = {
 | 审批超时是**惰性**判定 | `approvalTimeoutMs` 不起定时器：`approve` / `poll` / `resumePending` 读到过期挂起任务时才自动全拒并重派 —— 没人读的任务不会自己超时（要定期扫就调 `resumePending()`） |
 | 挂起段与恢复段是两棵 trace | 每段执行一棵独立的树（`traceId == runId`），恢复段经根 span 的 `links` 挂到上一段；指标按段计（挂起段算一次 ok 的 run —— 「等人」不算失败，区分看 `stop_reason` attribute） |
 | 审批是 at-least-once | 崩溃发生在「批准后、恢复执行中」时，副作用工具会重执行（与 `resumePending` 续跑同口径）—— 副作用工具自己保证幂等 |
-| 挂起/恢复间预算重新起算 | `maxTotalTokens` / `maxCostUsd` 在恢复段从 0 重新计（新树新账，与 `resumePending` 续跑同口径） |
-| 恢复段的会话回写是进程内快照 | 带 `sessionId` 的任务挂起时，「本轮用户输入」快照只存进程内存（恢复段由 AsyncRunner 自己补写「用户输入 + 最终回复」，不再经 run 层重复拼历史）—— 进程崩在「挂起 → 重启 → approve」之间会**丢这一次会话回写**（会话少一轮，但绝不写进坏历史；审批决定本身已落库） |
+| 恢复预算按任务累计，但崩溃未落账段不可追回 | 每个已收尾段折进 `TaskRecord.usageTotal`；恢复段经 `usageOffset` 参与 maxTotalTokens/maxCostUsd，trace 仍每段一棵。进程崩在「模型已花、结果未落库」窗口时那笔无从恢复，不能把它当全局精确账单 |
+| 恢复段的会话输入随任务落库 | 首个挂起段把本轮输入写进 `TaskRecord.sessionInput`，恢复成功后由 AsyncRunner 补写并终态清除；挂起期间重启不再丢这一轮。旧版本留下的挂起记录没有该字段，仍只能跳过补写 |
 | 嵌套能力内的审批不支持挂起 | @SubAgent / @Skill 子循环里的 `approval: 'required'` 工具无法把整个 run 挂起 —— 子循环挂起会以 `is_error` 交回主 agent（要审批的能力请放主菜单）。要「代码定顺序 + 人批」两样都要：把 `runCapabilityLoop` 放进一个 `@Tool({ approval: 'required' })` —— 审批落在**外层工具调用**上，于是照样能挂起等人批 |
 | 同步 `/run` 撞上审批没人可批 | 同步 RPC 会带着 `stopReason: 'suspended'` 收尾返回 —— 但响应体（`toHttpBody`）**不含** `suspendedMessages`，也没有任务记录可审批（待决清单只能去 trace 的 `approval.requested` 事件里看）。**要审批请走 `POST /tasks` 异步宿主** |
 | Scheduler 调度表不落库 | `every` / `at` 的调度本身只在内存：已 submit 的任务记录能经 `resumePending` 续跑，但「未来某刻再触发」的调度在重启后不存在（远期单发由宿主自己的 cron 驱动）。另：`drain()` 不停 Scheduler —— 停机窗口内到点的 tick 会打一条触发失败日志（无害但吵），介意就 `scheduler.stop()` 先行 |

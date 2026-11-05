@@ -127,6 +127,15 @@ describe('maxEventChars —— false 与 0 是两回事', () => {
   });
 });
 
+describe('maxToolResultChars —— 回模型上限与 trace 上限分记', () => {
+  it('0 / 正数原样记，false 记 off，未传不在场', () => {
+    assert.equal(snap({ maxToolResultChars: 0 })['config.maxToolResultChars'], 0);
+    assert.equal(snap({ maxToolResultChars: 500 })['config.maxToolResultChars'], 500);
+    assert.equal(snap({ maxToolResultChars: false })['config.maxToolResultChars'], 'off');
+    assert.equal('config.maxToolResultChars' in snap(), false);
+  });
+});
+
 describe('traceLimits.maxEvents —— 0 是「一条都不记」，不是「不限」', () => {
   it('传入原样记（含 0 —— 不记成 off：off 的口径是「不设上限」）', () => {
     assert.equal(snap({ traceLimits: { maxEvents: 500 } })['config.traceLimits.maxEvents'], 500);

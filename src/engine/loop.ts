@@ -9,7 +9,8 @@ import type {
   RecorderBackend,
   SchemaType,
 } from '../core/tool.js';
-import type { SpanError, SpanId } from '../core/trace.js';
+import type { SpanError, SpanId, Usage } from '../core/trace.js';
+import { addUsage } from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
 import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
@@ -252,7 +253,9 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     // - 模型本回合自然收尾 → 不因「最后一回合把额度用超了」把已成功的 run 改判失败
     //   （只留 budget.exceeded 事件，可观测）；
     // - 循环还要继续（模型要求调工具）→ 停在这里，不再发下一个请求 = 不再花钱。
-    const overBudget = ctx.budget ? ctx.budget.check({ totalUsage: args.recorder.usage() }) : null;
+    const overBudget = ctx.budget
+      ? ctx.budget.check({ totalUsage: addUsage(args.usageOffset, args.recorder.usage()) })
+      : null;
 
     ctx.messages.push({ role: 'assistant', content: message.content });
 
@@ -467,11 +470,13 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
           contextPolicy: forkPolicyPerRun(options.contextPolicy),
           resultSchema: options.resultSchema,
           progress,
+          usageOffset: options.usageOffset,
           maxTotalTokens: options.maxTotalTokens,
           maxCostUsd: options.maxCostUsd,
           toolTimeoutMs: options.toolTimeoutMs,
           maxToolConcurrency: options.maxToolConcurrency,
           maxEventChars: options.maxEventChars,
+          maxToolResultChars: options.maxToolResultChars,
           traceContent: options.traceContent,
           priceOverrides: options.priceOverrides,
           onUnpricedModel: options.onUnpricedModel,
@@ -536,6 +541,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   maxToolConcurrency?: number | undefined;
   /** 事件正文截断上限；同 RunAgentOptions.maxEventChars */
   maxEventChars?: number | false | undefined;
+  /** 单条工具结果回模型的字符上限；同 RunAgentOptions.maxToolResultChars */
+  maxToolResultChars?: number | false | undefined;
   /** opt-in 记录 assistant 文本（R8-P3a）；同 RunAgentOptions.traceContent（由转发机制透传下来） */
   traceContent?: 'full' | undefined;
   /** 价格表覆盖（F1）：由发起它的能力从 ToolRunContext.priceOverrides 透传 */
@@ -548,6 +555,8 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
    * 子循环超限以 stopReason='budget_exceeded' 收尾，由能力层包成 is_error 回主循环，
    * 主循环回合入口的预算检查随即将整条 run 停掉。
    */
+  /** 本任务此前 run 段的用量；由 ToolRunContext 透传给嵌套循环 */
+  usageOffset?: Usage | undefined;
   maxTotalTokens?: number | undefined;
   /** 成本硬管控（C1）：累计成本（美元）上限；同 maxTotalTokens */
   maxCostUsd?: number | undefined;
@@ -572,9 +581,11 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
     toolTimeoutMs: opts.toolTimeoutMs,
     maxToolConcurrency: opts.maxToolConcurrency,
     maxEventChars: opts.maxEventChars,
+    maxToolResultChars: opts.maxToolResultChars,
     traceContent: opts.traceContent,
     priceOverrides: opts.priceOverrides,
     onUnpricedModel: opts.onUnpricedModel,
+    usageOffset: opts.usageOffset,
     maxTotalTokens: opts.maxTotalTokens,
     maxCostUsd: opts.maxCostUsd,
   });

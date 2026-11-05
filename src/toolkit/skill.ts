@@ -2,7 +2,7 @@ import { assertMethodTarget, scanDecoratedMethods, capabilityName } from './coll
 import type { CapabilityDecoratorContext } from './collect.js';
 import type { MessageParam } from '../core/message.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
-import type { AgentTool, JsonSchema, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, CapabilityMetadata, JsonSchema, ToolRunContext } from '../core/tool.js';
 import type { SpanError } from '../core/trace.js';
 import type { AgentStopReason } from '../engine/types.js';
 import { isSuccessStopReason } from '../engine/types.js';
@@ -37,6 +37,8 @@ export interface SkillSpec {
   maxIterations?: number;
   /** skill 内 ctx.llm() 可调工具：容器 provider token 列表，或 `<token>/<能力名>` 能力级路径（只引该 provider 菜单里的单个能力）；缺省 = 无工具纯文本 */
   tools?: string[];
+  /** 团队协作元数据：owner / 契约版本 / 风险 / 副作用幂等性 */
+  metadata?: CapabilityMetadata;
 }
 
 export interface SkillLlmOptions {
@@ -120,6 +122,8 @@ export function skillToTool(
     name,
     description: spec.description,
     inputSchema: capability.inputSchema,
+    capability: 'skill',
+    ...(spec.metadata ? { metadata: spec.metadata } : {}),
     run: async (input: unknown, ctx?: ToolRunContext): Promise<unknown> => {
       if (!ctx) {
         throw new Error(

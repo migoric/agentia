@@ -10,7 +10,7 @@ observable call tree (trace, cost, metrics).
 
 面向应用开发的声明式 agent 服务开发框架：装饰器 + DI 声明四类能力，主 agent 编排执行；每次 run 产出结构化结果与可观测调用树（trace、成本、指标），交付可直接上线的服务。
 
-**1 个包 · ≈2 MB · 0 运行时依赖 · 90+ 条守卫** —— 由 `tests/docs/scoreboard.test.ts` 每次现场复算。
+**1 个包 · ≈3 MB · 0 运行时依赖 · 90+ 条守卫** —— 由 `tests/docs/scoreboard.test.ts` 每次现场复算。
 
 - [安装与配置](#安装与配置)
 - [快速开始](#快速开始)

@@ -7479,6 +7479,50 @@ usage-guide §7 的两条边界（「嵌套能力内的审批不支持挂起」�
 **验证**：`tests/toolkit/capability-loop.test.ts`（5 例：同树 / `typed` / `contextPolicy` 生效 /
 预算护栏透传 / 工具菜单不继承）。反向变异：去掉 `...forwardToolContext(ctx)` ⇒ 预算用例红。
 
+### 2026-11-05 ① ref-http-task-authorization：**认证与任务对象级授权分开，审批人由宿主认证链生成**
+
+**决定**：`createHttpHandler` 新增 `authorizeTask` 与 `resolveApprovalActor`。前者对 poll/approve/cancel/event/stream
+拿到任务快照后判定，返回 false → 403、HttpException 原样映射；审批与事件在读 body 之前判。后者配置后覆盖
+body.decidedBy，空字符串属于宿主配置错。缺省不配置两钩子时保持旧行为。
+
+授权读快照走 `runner.store.get`，不走 poll，避免「查权限」触发惰性超时/到期推进；poll 本身随后仍走原路径。
+验证：`tests/transport/http-authorization.test.ts`、`httpApproval.test.ts` 的可信审批人用例。
+
+### 2026-11-05 ② ref-public-response-mode：**trace 的存储面与 HTTP 暴露面分开**
+
+**决定**：新增 `responseMode:'full'|'public'`（缺省 full）与 `exposeTraceEvents`。public 的 run/task 投影去掉
+trace、spec、suspendedMessages、ownerId/pendingEvents，并默认关闭 `/run` 与任务流的 trace 帧；显式
+`exposeTraceEvents:true` 可单独开帧。TaskStore 和 sinks 始终保留完整记录。公共投影在 http-shapes.ts 单源，
+所有任务响应与 task.end 共用，避免某条路由漏脱敏。
+
+### 2026-11-05 ③ ref-tool-result-limit：**trace 截断与模型输入截断是两条独立的闸**
+
+**决定**：新增 `maxToolResultChars?: number | false`（缺省/false = 不截断，0 = 截到零长度并留 `…(+N)`）。
+它只裁回模型的 tool_result，不影响副作用，也不改变 maxEventChars 的记账口径；经 ToolRunContext 与
+forwardToolContext 透传嵌套循环。非负安全整数之外的值在第一次模型调用前失败。生效值写
+`config.maxToolResultChars`。验证：`tests/engine/tool-result-limit.test.ts` 真穿两回合，断言模型看到截断、
+trace 仍完整。
+
+### 2026-11-05 ④ ref-durable-resume-accounting：**挂起恢复累计预算与会话输入都随任务落库**
+
+**决定**：TaskRecord 新增 `usageTotal` 与 `sessionInput`。每个已收尾 run 段折进 usageTotal；恢复段经
+`usageOffset` 把它叠加到本段 recorder.usage，主/子循环同口径。trace.totalUsage 仍只代表本段。
+sessionInput 只在首个挂起段取原始输入，恢复成功后补写会话并终态清除；内存 Map 降级为快路。
+崩溃在「模型已花/已执行、结果尚未落库」的窗口仍无法追回用量，这不是精确的全局账单。
+
+### 2026-11-05 ⑤ ref-capability-manifest：**多人协作需要可比较的装配契约，不只是目录体检**
+
+**决定**：AgentTool 与四类 spec 增加可选 `metadata:{owner,version,risk,sideEffect}` 与 capability 类别；
+`app.getCapabilityManifest()` / `buildCapabilityManifest` 从最终菜单产出稳定 JSON，hash 覆盖名称、类别、
+description、schema、strict、审批与元数据，与输入顺序无关。Prompt 的 version 与 metadata.version 合并，
+后者优先。CLI `agentia manifest` 真装配 src/app.ts，不调用模型；scripts/e2e-cli.ts 真跑这条产物路径。
+它是留档/比较基座，不替代 code review，也不执行安全策略。
+
+### 2026-11-05 ⑥ ref-task-record-parser-public：**自定义 TaskStore 共用记录迁移入口**
+
+**决定**：公共导出 `parseTaskRecord(raw)`。外部 store 不再用 `JSON.parse(raw) as TaskRecord` 绕开旧形状归一；
+坏 JSON 是否吞掉仍由各 store 决定。docs/database.md 的 MySQL 骨架改走该入口，代码围栏真编译。
+
 ## 11. 开放项
 
 

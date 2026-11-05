@@ -124,7 +124,7 @@ MariaDB / PlanetScale HTTP / 连接池语义的差异，全得核心替你选）
 ### 3.2 骨架
 
 ```ts
-import type { TaskRecord, TaskStore } from '@migor/agentia';
+import { parseTaskRecord, type TaskRecord, type TaskStore } from '@migor/agentia';
 
 /** 只依赖 execute / query —— 换驱动不改下面的逻辑 */
 interface SqlPool {
@@ -217,18 +217,9 @@ class MySQLTaskStore implements TaskStore {
     });
   }
 
-  /**
-   * JSON 往返天然是副本 ⇒ 「存副本返副本」契约自动满足（单进程内无需 cloneTaskRecord）。
-   *
-   * ⚠️ 与仓内三个 store 差一层：它们走 `src/store/record.ts` 的 `parseTaskRecord`
-   * （JSON.parse + 形状守卫 + **旧形状归一**，如 status 从旧值搬到 `suspended` 并补
-   * `suspendedReason`）。那个函数**没有导出**（见 §6），所以从老库升级上来时，
-   * 归一逻辑要自己补在这里 —— 否则旧记录会被当成「状态不认识」的孤儿：事件流早关、
-   * 续跑不捡、审批也批不了。
-   */
+  /** 公共入口负责 JSON 解析、形状守卫与旧形状归一；JSON 往返也天然满足副本契约。 */
   private parse(raw: string): TaskRecord | undefined {
-    const rec = JSON.parse(raw) as TaskRecord;
-    return typeof rec.taskId === 'string' ? rec : undefined;
+    return parseTaskRecord(raw);
   }
 }
 ```
@@ -279,15 +270,11 @@ SQL 工具。省事，但**把 SQL 的执行权交给了模型**：
 - 适合探索型问题（「这批订单为什么退款多」），不适合动作型（下单 / 退款 / 改状态）—— 后者封成
   `@Tool`，参数由 schema 约束。
 
-## 6. 已知缺口
+## 6. 记录解析与迁移
 
-**`parseTaskRecord` 没有导出。** `src/index.ts` 导出了 `TaskStore` / `TaskRecord` / `MaybePromise`
-与四个 store 类，但读回记录的**唯一入口**（含旧形状归一）住在 `src/store/record.ts`，不在导出面上。
-后果：外部实现 `TaskStore` 的人只能 `JSON.parse(raw) as TaskRecord` —— 而那个 `as` 正是 record.ts
-头注在讲的东西（类型系统不检查盘上的数据，旧记录带着已不存在的状态值被读回来，每一处判断都按新语义读它）。
-
-当前只能照 §3.2 的 `parse` 自己兜。这个缝值得补（导出 `parseTaskRecord`），但那是公共面变更，
-要走 §10 决策与版本节 —— 本文只记录缺口，不替你决定。
+`parseTaskRecord(raw)` 是公共导出的读回入口：JSON 解析 + 最小形状守卫 + 旧版本形状归一。
+外部 TaskStore 不要再写 `JSON.parse(raw) as TaskRecord`；那只会断言「盘上数据符合今天的类型」，
+不会迁移昨天的记录。坏 JSON 会抛错，由 store 按自身策略决定跳过还是上抛；非记录形状返回 undefined。
 
 ## 7. 要不要出一个 `@migor/agentia-mysql` 包？NestJS 那种接入方式呢？
 

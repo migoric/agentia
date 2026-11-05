@@ -27,6 +27,8 @@ import { applyMiddleware } from './middleware.js';
 import type { CapabilityMiddleware } from './middleware.js';
 import { buildCapabilityGraph, findCapabilityCycle } from './capability-cycles.js';
 import type { CapabilityRefInput } from './capability-cycles.js';
+import { buildCapabilityManifest } from './manifest.js';
+import type { CapabilityManifest } from './manifest.js';
 import type { ContextPolicy } from '../engine/types.js';
 import type { RetryOptions } from '../engine/retry.js';
 
@@ -168,6 +170,8 @@ export interface AppOptions {
    * 调试期在应用级开一次 `false`，不必每个调用点重复传。见 `RunAgentOptions.maxEventChars`。
    */
   maxEventChars?: number | false;
+  /** 缺省单条工具结果回模型的字符上限；不设 / false = 不截断 */
+  maxToolResultChars?: number | false;
   /** 只收集这些 token 的 provider 上的能力（@Tool / @SubAgent / @Skill / @Prompt 四类同样收窄）；缺省扫全部 providers */
   toolSources?: Token[];
   /**
@@ -287,6 +291,7 @@ export class AgentApp {
     toolTimeoutMs?: number | undefined;
     maxToolConcurrency?: number | undefined;
     maxEventChars?: number | false | undefined;
+    maxToolResultChars?: number | false | undefined;
     traceLimits?: TraceLimits | undefined;
   };
   private _tools: AgentTool[] = [];
@@ -352,6 +357,7 @@ export class AgentApp {
       toolTimeoutMs: opts.toolTimeoutMs,
       maxToolConcurrency: opts.maxToolConcurrency,
       maxEventChars: opts.maxEventChars,
+      maxToolResultChars: opts.maxToolResultChars,
       traceLimits: opts.traceLimits,
     };
 
@@ -506,6 +512,11 @@ export class AgentApp {
     return this._tools;
   }
 
+  /** 最终菜单的团队契约：含 schema/审批/风险元数据；hash 与装配顺序无关 */
+  getCapabilityManifest(): CapabilityManifest {
+    return buildCapabilityManifest(this.name, this._tools);
+  }
+
   /** 容器访问点 */
   get container(): Container {
     return this.di;
@@ -585,6 +596,7 @@ export class AgentApp {
         events: opts.events,
         contextPolicy: opts.contextPolicy ?? this.base.contextPolicy,
         retry: opts.retry ?? this.base.retry,
+        usageOffset: opts.usageOffset,
         maxTotalTokens: opts.maxTotalTokens ?? this.base.maxTotalTokens,
         maxCostUsd: opts.maxCostUsd ?? this.base.maxCostUsd,
         priceOverrides: opts.priceOverrides ?? this.base.priceOverrides,
@@ -592,6 +604,7 @@ export class AgentApp {
         toolTimeoutMs: opts.toolTimeoutMs ?? this.base.toolTimeoutMs,
         maxToolConcurrency: opts.maxToolConcurrency ?? this.base.maxToolConcurrency,
         maxEventChars: opts.maxEventChars ?? this.base.maxEventChars,
+        maxToolResultChars: opts.maxToolResultChars ?? this.base.maxToolResultChars,
         resultSchema: opts.resultSchema,
         // 提示词版本化（D4）：system 是 SystemPrompt 实例时自动带上它的 version
         // （run 根 attribute `system.version`）；传已拼好的 SystemParam 则无版本可记。
