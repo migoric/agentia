@@ -5,7 +5,35 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.10.5] - 2026-11-05
+
+### 变更
+
+本版包含**可信边界收紧、可授权可对外暴露的生产宿主面、以及「顺序由代码定」的子循环**：
+
+- ⚠️ **行为变更（安全修）**：`POST /tasks` 的 `options` 只认 `traceContext` / `maxCostUsd` /
+  `maxTotalTokens`，**其余键一律 400 并点名**；身份与租户改由宿主新增的
+  `resolveRunOptions(req, { route, principal })` 按请求注入（`authenticate` 的返回值从此不再被丢弃）。
+  在 HTTP 的 `options` 里传过 `model` / `blackboard` / `maxIterations` 的调用方**必须改接法**，
+  迁移见下方该条目。
+- 新增**任务对象级授权** `authorizeTask`（poll / approve / cancel / event / stream 逐动作判定，
+  读任务快照不触发惰性推进）与**可信审批人** `resolveApprovalActor`（由 principal 生成 `decidedBy`，
+  覆盖请求体自报身份）；两者缺省不配 = 旧行为。
+- 新增 `responseMode: 'full' | 'public'` 与 `exposeTraceEvents`：把 trace 的**存储面**与
+  **HTTP 暴露面**分开 —— 对外服务可以不返回 trace / 任务 spec / 挂起历史 / `ownerId`，
+  而 `TaskStore` 与 sinks 仍保留完整记录。
+- 新增 `runCapabilityLoop(ctx, opts)`：顺序由**代码**定、但活不过这次请求的子循环；
+  配 `@Tool({ approval: 'required' })` 就能挂起等人批，且与调用方**同一棵** trace。
+- 新增**能力契约** `buildCapabilityManifest` / `app.getCapabilityManifest()` 与 CLI `agentia manifest`
+  （真装配、不调模型）；四类能力可标 `metadata.{owner,version,risk,sideEffect}`，
+  hash 覆盖描述 / schema / 审批 / 元数据且**与输入顺序无关**，可当 PR 留档的比较基座。
+- 挂起恢复的**预算按任务累计**（`TaskRecord.usageTotal` + 段内 `usageOffset`），恢复段的会话输入
+  随任务落库（`sessionInput`）；新增 `maxToolResultChars`，把「回模型的截断」与「记账的截断」
+  拆成两条**互相独立**的闸。
+- 新增 `docs/multi-replica.md`（三种拓扑 + 六个会坏的点 + 故障转移 runbook）与
+  `examples/super-agent` 多工单编排示例（按产物自己复算 trace 图，已纳入 e2e 门禁）。
+- 另含公共导出补齐（`parseTaskRecord`、`CLIENT_RUN_OPTION_KEYS`、`TaskHttpResponse`、
+  `CapabilityMetadata` 等类型面扩展），详细条目如下。
 
 ### ⚠️ 行为变更（安全修）：`POST /tasks` 的 `options` 白名单化 + 宿主 `resolveRunOptions` 缝（2026-11-04 ref-run-options-trust-boundary）
 
@@ -72,6 +100,64 @@
 - **如实标注的边界**：`approve` / `signal` 的互斥是**进程内**的（`#inflight` Map），
   跨进程并发会各派发一次；`drain()` 是单向闩，停机后被拒的记录只能等下次启动认领。
   这些是设计取舍，不是待修缺陷 —— 文档的职责是让部署方知道要自己兜。
+
+### 新增：任务对象级授权 `authorizeTask` 与可信审批人 `resolveApprovalActor`（2026-11-05 ref-http-task-authorization）
+
+- **补的是哪个洞**：`authenticate` 只回答「你是谁」，不回答「你能不能碰这个任务」。多租户宿主
+  此前只能在**每个**端点里自己查一次，漏一处的表现是「别人的任务能被取消 / 被批准 / 被读事件」。
+- **形状**：`authorizeTask(req, { action, taskId, task, principal })` —— action 取
+  `poll` / `approve` / `cancel` / `event` / `stream`，返回 `false` → 403，抛 `HttpException`
+  按其状态码回；审批与事件的判定发生在**读 body 之前**。缺省不配 = 旧行为（不拦）。
+- **为什么不走 poll 取快照**：它直接读 `runner.store.get`。走 poll 会让「查一次权限」触发
+  惰性超时判定与到期推进 —— 授权检查不该有副作用（`docs/spec.md` §10 该条有完整理由）。
+- **`decidedBy` 不再是自报字段**：配 `resolveApprovalActor` 后由 principal 生成并**覆盖**请求体；
+  返回 `undefined` = 不记审批人，空字符串算宿主配置错误（500）。不配则 `decidedBy` 仍只是
+  调用方填写的审计字段，不是可信身份。
+- **验证**：`tests/transport/http-authorization.test.ts`（五个动作 × 拒/过/抛错映射）+
+  `tests/transport/httpApproval.test.ts` 的可信审批人用例。
+
+### 新增：`responseMode: 'public'` —— trace 的存储面与 HTTP 暴露面分开（2026-11-05 ref-public-response-mode）
+
+- **补的是哪个洞**：trace 既是本框架的卖点，也是**信息泄露面** —— 它含工具入参出参、
+  任务 `spec.messages`、挂起历史与 `ownerId`。此前接对外服务只有「全关端点」或「全露」两个选择。
+- **形状**：`responseMode: 'full'`（缺省，历史形状）/ `'public'`；后者从 run / task 响应里去掉
+  trace、任务 spec、`suspendedMessages`、`ownerId` / `pendingEvents`，并**默认关闭** SSE 的
+  `trace.event` 帧。`exposeTraceEvents: true` 可单独开帧，但不会把完整 trace 加回 `run.end`。
+- **边界**：它只改 HTTP 输出 —— `TaskStore` 与 `TraceSink` 的记录**保持完整**（脱敏不是存储职责）；
+  也不能替代 `authorizeTask`，两者一个管「这条响应里有什么」，一个管「你能不能读这条任务」。
+- **单源**：公共投影只在 `http-shapes.ts` 一处实现，所有任务响应与 `task.end` 共用，
+  避免某条路由漏脱敏。验证：`tests/transport/http-response-mode.test.ts`。
+
+### 新增：能力契约 `agentia manifest` 与四类能力的 `metadata`（2026-11-05 ref-capability-manifest）
+
+- **补的是哪个洞**：多人协作时「这次 PR 到底改了哪个能力的哪个 schema」只能靠读 diff。
+- **形状**：`@Tool` / `@Skill` / `@SubAgent` / `@Prompt` 增加可选
+  `metadata: { owner?, version?, risk?, sideEffect? }`；`buildCapabilityManifest` /
+  `app.getCapabilityManifest()` 从**最终菜单**产出 `{ app, hash, capabilities }`，
+  hash 覆盖名称 / 类别 / description / schema / strict / 审批 / 元数据，**与输入顺序无关**
+  ⇒ 可以直接当 PR 留档的比较基座。CLI `agentia manifest` 真装配 `src/app.ts`、**不调用模型**。
+- **不做什么**：它是留档与比较基座，不替代 code review，也不执行安全策略。
+- **验证**：`tests/toolkit/manifest.test.ts`；`scripts/e2e-cli.ts` 真跑产物路径。
+
+### 改动：恢复段预算按任务累计 + 工具结果回模型截断（2026-11-05 ref-durable-resume-accounting / ref-tool-result-limit）
+
+- **预算**：`TaskRecord` 新增 `usageTotal`（每个已收尾段折进去）与 `sessionInput`（首个挂起段
+  存下本轮输入，恢复成功后补写会话、终态清除）。恢复段经段内 `usageOffset` 参与
+  `maxTotalTokens` / `maxCostUsd`，主/子循环同口径；`trace.totalUsage` 仍只代表本段。
+- **如实标注的边界**：进程崩在「模型已花 / 工具已执行、结果尚未落库」那个窗口时，那笔用量
+  **追不回来** —— 它不是精确的全局账单。旧版本留下的挂起记录没有 `sessionInput`，仍只能跳过补写。
+- **`maxToolResultChars`**：新旋钮，只裁**回模型**的 `tool_result`（缺省 / `false` = 不截断，
+  `0` = 截到零长度并留 `…(+N)`），经 `forwardToolContext` 透传嵌套循环；与 `maxEventChars`
+  （只管记账）**互相独立**、不改变副作用。验证：`tests/engine/tool-result-limit.test.ts`
+  真穿两回合，断言模型看到截断而 trace 仍完整。
+
+### 新增：`parseTaskRecord` 公共导出（2026-11-05 ref-task-record-parser-public）
+
+- 外部 `TaskStore` 不再用 `JSON.parse(raw) as TaskRecord` 绕过旧形状归一：
+  公共入口做 JSON 解析 + 形状守卫 + 旧版本归一，坏 JSON 抛错、非记录返回 `undefined`
+  （坏数据吞不吞仍由各 store 决定）。`docs/database.md` 的 MySQL 骨架改走该入口，代码围栏真编译。
+
+## [Unreleased]
 
 ## [0.10.4] - 2026-10-28
 
@@ -4214,7 +4300,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/migoric/agentia/releases/tag/v0.10.5
 [0.10.4]: https://github.com/migoric/agentia/releases/tag/v0.10.4
 [0.10.3]: https://github.com/migoric/agentia/releases/tag/v0.10.3
 [0.10.2]: https://github.com/migoric/agentia/releases/tag/v0.10.2
