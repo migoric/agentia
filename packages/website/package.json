@@ -18,6 +18,6 @@
     "lenis": "^1.3.27"
   },
   "devDependencies": {
-    "node-html-parser": "^9.0.4"
+    "node-html-parser": "^9.0.6"
   }
 }
