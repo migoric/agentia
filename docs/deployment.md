@@ -113,6 +113,13 @@ gracefulShutdown({
 - 跨机多副本：`RedisTaskStore`——但仍受 §2 的**单宿主写者**前提约束：多副本**同时写**需要部署层
   协调（按 key 分片，或写路径收敛到单写者）。异步任务的 `ownerId` 认领语义能防双跑（同库的
   `resumePending` 按 `ownerId` 跳过别人的记录），但**不是**通用分布式锁。
+- **展开在 [`docs/multi-replica.md`](multi-replica.md)**：三种拓扑的选型判据、六个会坏的点
+  （写路径交错 / 审批双派发 / 唤醒抢所有权 / `cancel` 打不到 owner / 跨进程 SSE / 定时任务重复触发）、
+  故障转移 runbook 与多副本自检清单。下面三条是**读之前就该知道的**：
+  - 每个副本必须**显式**传自己的 `runner`（同一个 store）—— 漏传时 `createHttpHandler` 会造一个
+    `InMemoryTaskStore` 的 runner，表现为「任务时有时无」而**不报错**；
+  - `approve` / `cancel` / `signal` 的互斥是**进程内**的 ⇒ 必须按 `taskId` 粘到 owner；
+  - 能无状态横向扩的只有同步 `/run`；`/tasks` 那一半要么收敛到单写者，要么按 `taskId` 分片。
 
 ## 9. 回滚
 
@@ -137,4 +144,6 @@ gracefulShutdown({
 - [ ] 四个预算旋钮至少设了 `maxTotalTokens`（§6）
 - [ ] trace 的消费方式定了（四配方之一）；缺省不记 assistant 文本这点已知（§7）
 - [ ] `/healthz` 已接负载均衡，`draining` 用于摘流量（§4）
-- [ ] 多副本的话，写路径的协调方案定了（§8）
+- [ ] 多副本的话，写路径的协调方案定了（§8）：每个副本**显式**传了同一个 store 的 `runner`、
+      `approve` / `cancel` / `signal` 已按 `taskId` 粘到 owner、`Scheduler` 只在一个副本上
+      `start()`——详见 [`docs/multi-replica.md`](multi-replica.md) §9
