@@ -102,6 +102,26 @@ export function applySuspendedOutcome(
   suspendedMessages: MessageParam[],
   ctx: SuspendedOutcomeContext,
 ): MessageParam[] | undefined {
+  // 同一轮等待的判定（2026-11-07 深评 F2）：事件投递会把 approval 挂起的任务叫醒，但
+  // 引擎发现决定仍不齐会**原样再挂起**（同一批 pending）。若无条件把 suspendedSince
+  // 刷成 now，每 < approvalTimeoutMs 投一条事件就能把审批超时永久推迟。
+  // 只有「新的一轮等待」（非续跑 / 待决集合变了 / 原因变了）才重置计时基准。
+  const previousPending = rec.pendingApprovals;
+  const samePendingSet =
+    previousPending !== undefined &&
+    result.pendingApprovals !== undefined &&
+    previousPending.length === result.pendingApprovals.length &&
+    previousPending.every((id, i) => id === result.pendingApprovals![i]);
+  const sameWait =
+    ctx.isResume &&
+    rec.suspendedReason === result.suspendedReason &&
+    (result.suspendedReason !== 'approval' ||
+      (samePendingSet &&
+        // 只要旧决定还在，就不能沿用 since：那条决定可能**已经被上一段消费**，
+        // 沿用会让这一次同名等待直接复用它（审批绕过）。F2 要保留的是「纯事件唤醒、
+        // 一个决定都还没做」的时钟。
+        previousPending?.every((id) => rec.approvals?.[id] === undefined) === true));
+
   // HITL 挂起不是终态：槽位照常释放、onFinished 不触发、finishedAt 不置 —— 那三件事各自
   // 在自己的出口判（`#execute` 的 finally），这里只负责把记录改成「在等」的样子。
   rec.status = 'suspended';
@@ -119,7 +139,7 @@ export function applySuspendedOutcome(
   // —— approve / 惰性超时 / 重启后都靠它们。
   rec.spec = { ...rec.spec, messages: suspendedMessages };
   rec.pendingApprovals = result.pendingApprovals;
-  rec.suspendedSince = ctx.now;
+  rec.suspendedSince = sameWait && rec.suspendedSince !== undefined ? rec.suspendedSince : ctx.now;
   // 挂起原因：从结果形状里取，**不写死** —— 写死成 'approval' 会让将来新增的挂起原因在落库
   // 这一步被悄悄改写成审批。
   rec.suspendedReason = result.suspendedReason;

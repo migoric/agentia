@@ -40,7 +40,11 @@ export class DrainGate {
     // 置于 draining 置位**之后**：校验抛错也要先把停机态立住，否则新单还会被接进来。
     assertTimerDelay(timeoutMs, 'DrainGate.waitForIdle 的 timeoutMs（drain 等待预算）');
     if (idle()) return true;
-    const drained = new Promise<boolean>((resolve) => this.waiters.push(() => resolve(true)));
+    let waiter: (() => void) | undefined;
+    const drained = new Promise<boolean>((resolve) => {
+      waiter = () => resolve(true);
+      this.waiters.push(waiter);
+    });
     if (timeoutMs <= 0) return drained;
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -55,6 +59,13 @@ export class DrainGate {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      // 超时返回后把等待者摘掉（与 TaskWaiters.wait 的 finish 同款）：否则每次
+      // `drain({timeoutMs})` 超时都留下一个永不 resolve 的闭包（2026-11-07 深评 F9）。
+      // 已由 signalIdle 唤醒的 waiter 已被 splice 掉，这里按引用 indexOf 幂等。
+      if (waiter !== undefined) {
+        const i = this.waiters.indexOf(waiter);
+        if (i >= 0) this.waiters.splice(i, 1);
+      }
     }
   }
 

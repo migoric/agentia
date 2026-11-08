@@ -22,6 +22,7 @@ import { summarizeSuspended } from './wake-policy.js';
 import type { SuspendedEntry, SuspendedSummary } from './wake-policy.js';
 import { isThenable } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
+import { TaskWakeGate } from './task-wake-gate.js';
 
 /** `approve` 的入参：一批 tool_use_id → 批准/拒绝（理由可选） */
 export type ApprovalDecisions = Record<string, { approved: boolean; reason?: string }>;
@@ -50,6 +51,11 @@ export interface ApprovalSupervisorDeps {
   approvalTimeoutMs: number;
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
+  /**
+   * 跨唤醒路径的 per-task 互斥闸（2026-11-07 深评 P1）：approve / signalTask / 审批超时 /
+   * 到期唤醒共用它。两条路径并发读同一份 suspended 快照再各自派发，会让同一任务跑两遍。
+   */
+  wakeGate?: TaskWakeGate;
   /**
    * cancel 的 per-task 在飞闸读数（2026-10-13 ref-run-root-close）：approve 进入前等它收口再重判；
    * 惰性超时恢复见它即**跳过本轮**（惰性路径下一轮还会再判，跳过不丢）。
@@ -82,9 +88,12 @@ export class ApprovalSupervisor {
   readonly #inflight = new Map<string, Promise<TaskRecord>>();
 
   readonly #deps: ApprovalSupervisorDeps;
+  /** 共享闸；单测可省略（省略时本件自建一把，跨路径互斥只在 AsyncRunner 注入时生效） */
+  readonly #wakeGate: TaskWakeGate;
 
   constructor(deps: ApprovalSupervisorDeps) {
     this.#deps = deps;
+    this.#wakeGate = deps.wakeGate ?? new TaskWakeGate();
   }
 
   /** 挂起读数：按原因分组的条数 + 最早的目标时刻（无时间挂起时为 `null`） */
@@ -166,9 +175,11 @@ export class ApprovalSupervisor {
     }
     const inflight = this.#inflight.get(taskId);
     if (inflight) return inflight;
-    const run = this.#approveInner(taskId, decisions, opts).finally(() => {
-      this.#inflight.delete(taskId);
-    });
+    const run = this.#wakeGate
+      .run(taskId, () => this.#approveInner(taskId, decisions, opts))
+      .finally(() => {
+        this.#inflight.delete(taskId);
+      });
     this.#inflight.set(taskId, run);
     return run;
   }
@@ -216,7 +227,15 @@ export class ApprovalSupervisor {
     }
     rec.approvals ??= {};
     for (const [id, d] of Object.entries(decisions)) {
-      if (rec.approvals[id]) continue; // 逐 id 幂等：第一次决定赢
+      const existing = rec.approvals[id];
+      // 逐 id 幂等，但**旧挂起的决定**允许被本次覆盖（2026-11-07 深评）：
+      // OpenAI 兼容端点会复用 `call_1`，旧决定若不换新，新一次等待无法批准。
+      const stale =
+        existing !== undefined &&
+        rec.suspendedSince !== undefined &&
+        existing.requestedAt !== undefined &&
+        existing.requestedAt !== rec.suspendedSince;
+      if (existing !== undefined && !stale) continue;
       rec.approvals[id] = {
         approved: d.approved,
         ...(d.reason !== undefined ? { reason: d.reason } : {}),
@@ -227,7 +246,7 @@ export class ApprovalSupervisor {
     }
     // 惰性审批超时：人的决定先并入（先到先赢），仍空着的待决项由超时兜底成 deny
     if (approvalExpired(rec, now, this.#deps.approvalTimeoutMs)) fillTimeoutDenials(rec, now);
-    const complete = approvalsComplete(rec);
+    const complete = approvalsComplete(rec, rec.suspendedSince);
     if (complete) {
       rec.status = 'running'; // 由 #executeInner 接管（acquireSlot → 恢复执行）
       rec.ownerId = this.#deps.ownerId;
@@ -260,9 +279,14 @@ export class ApprovalSupervisor {
    */
   #expireAndResume(rec: TaskRecord, now: number): void {
     if (this.#inflight.has(rec.taskId)) return;
-    const run = this.#expireAndResumeInner(rec, now).finally(() => {
-      this.#inflight.delete(rec.taskId);
-    });
+    // 跨路径互斥（2026-11-07 深评 P1）：其它唤醒路径在飞 ⇒ 跳过本轮。
+    // 惰性路径不丢事：下一次 poll / resumePending 还会再判。
+    if (this.#wakeGate.busy(rec.taskId)) return;
+    const run = this.#wakeGate
+      .run(rec.taskId, () => this.#expireAndResumeInner(rec, now))
+      .finally(() => {
+        this.#inflight.delete(rec.taskId);
+      });
     this.#inflight.set(rec.taskId, run);
     // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
     run.catch(() => undefined);

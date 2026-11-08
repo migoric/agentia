@@ -225,6 +225,14 @@ describe('gracefulShutdown', () => {
     });
 
     const added = process.listeners('SIGTERM').filter((f) => !before.includes(f));
+    // 第二次信号会把信号**重新投递**给本进程（摘掉监听不会补做默认动作）。测试里替换
+    // `process.kill` 以记录这次重投，避免真的 SIGTERM 掉测试进程。
+    const realKill = process.kill;
+    let reissued: { pid: number; signal: string | number | undefined } | undefined;
+    process.kill = ((pid: number, signal?: string | number) => {
+      reissued = { pid, signal };
+      return true;
+    }) as typeof process.kill;
     try {
       const fire = added[0] as (s: NodeJS.Signals) => void;
       fire('SIGTERM');
@@ -233,7 +241,13 @@ describe('gracefulShutdown', () => {
       // 进程永远退不掉（参考宿主里那句 `if (stopping) return;` 就是这个 bug）。
       const stillOurs = process.listeners('SIGTERM').filter((f) => added.includes(f));
       assert.equal(stillOurs.length, 0, '第二次信号后必须解除监听，让 Node 默认行为接管');
+      assert.deepEqual(
+        reissued,
+        { pid: process.pid, signal: 'SIGTERM' },
+        '并重新投递一次，让默认终止真正发生',
+      );
     } finally {
+      process.kill = realKill;
       for (const f of added) process.off('SIGTERM', f as never);
     }
   });

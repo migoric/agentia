@@ -37,7 +37,15 @@ export function approvalExpired(rec: TaskRecord, now: number, timeoutMs: number)
 export function fillTimeoutDenials(rec: TaskRecord, now: number): void {
   rec.approvals ??= {};
   for (const id of rec.pendingApprovals ?? []) {
-    if (rec.approvals[id]) continue;
+    const existing = rec.approvals[id];
+    // 旧挂起的决定（requestedAt 与本次不同）不挡本次超时兜底（2026-11-07 深评）：
+    // 否则一条被复用的 tool_use_id 会让新一次等待永远补不出 deny。
+    const stale =
+      existing !== undefined &&
+      rec.suspendedSince !== undefined &&
+      existing.requestedAt !== undefined &&
+      existing.requestedAt !== rec.suspendedSince;
+    if (existing !== undefined && !stale) continue;
     rec.approvals[id] = {
       approved: false,
       reason: '审批超时',
@@ -52,6 +60,12 @@ export function fillTimeoutDenials(rec: TaskRecord, now: number): void {
  * 决定齐了没：**每个**待决 id 都有决定（人工或超时兜底）。没有待决项时返回 true
  * （空集真值）—— 与抽取前的行内写法逐字一致。
  */
-export function approvalsComplete(rec: TaskRecord): boolean {
-  return (rec.pendingApprovals ?? []).every((id) => rec.approvals?.[id] !== undefined);
+export function approvalsComplete(rec: TaskRecord, since?: number): boolean {
+  return (rec.pendingApprovals ?? []).every((id) => {
+    const d = rec.approvals?.[id];
+    if (d === undefined) return false;
+    // 有本次挂起时刻时，旧挂起留下的决定不算数（2026-11-07 深评）。
+    if (since !== undefined && d.requestedAt !== undefined && d.requestedAt !== since) return false;
+    return true;
+  });
 }
