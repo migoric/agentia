@@ -2,7 +2,7 @@
   // Biome 配置（lint + format 二合一，Rust 实现）。
   // 为什么选 Biome 而非 eslint+prettier：单工具、单配置、无插件生态负担 —— 对一个
   // 「零新增运行时依赖」的库来说，工具链也尽量收敛到一个二进制。
-  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -19,7 +19,13 @@
       // Biome 对 Astro 语法支持不全（会把确实用到的 frontmatter import 误报为未使用），
       // 独立 SVG 是静态资产而非源码。官网版式另有 tests/docs/website-css.test.ts 钉不变量。
       "!**/*.astro",
-      "!**/*.svg"
+      "!**/*.svg",
+      // Markdown / YAML 不是本仓的代码面：Biome 2.6 起会格式化它们，但全仓
+      // 历史文档的排版是**快照/证据**，不该为了工具升级重排 80 个文件。
+      // 需要检查文档的另有专用用例（tests/docs/**），不靠 Biome。
+      "!**/*.md",
+      "!**/*.yml",
+      "!**/*.yaml"
     ]
   },
   "formatter": {

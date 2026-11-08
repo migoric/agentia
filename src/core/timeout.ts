@@ -74,7 +74,7 @@ export function assertTimerDelay(ms: number, where: string): number {
  */
 export function clampTimerDelay(ms: number): number {
   if (!(ms > 0)) return 0; // 含 NaN / 负数：调用点读 0 即「不睡」（见 limits 表）
-  return ms > MAX_TIMER_DELAY_MS ? MAX_TIMER_DELAY_MS : ms;
+  return Math.min(ms, MAX_TIMER_DELAY_MS);
 }
 
 /**
