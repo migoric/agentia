@@ -397,20 +397,28 @@ export class TraceRecorder {
     // 增量出口只派一次 ⇒ 重复交付不会让增量流里多出一条。
     if (this.droppedEvents > 0) {
       const root = spans.find((s) => s.spanId === this.rootSpanId);
-      if (root) {
-        if (this.truncationSummary === null) {
+      const internalRoot = this.rootSpanId ? this.index.get(this.rootSpanId) : undefined;
+      if (root && internalRoot) {
+        // 每次 droppedEvents 变化都生成**新**一笔摘要（2026-11-07 深评）：只在第一次
+        // snapshot 冻结计数会让中途交付过的 trace 少报丢弃数。新摘要同时进内部 root
+        // 与增量出口 ⇒ 按 seq 折回仍与后续 snapshot 一致；计数没变则复用同一笔。
+        if (
+          this.truncationSummary === null ||
+          this.truncationSummary.body.droppedEvents !== this.droppedEvents
+        ) {
           this.truncationSummary = {
             time: Date.now(),
             name: 'trace.truncated',
             body: { droppedEvents: this.droppedEvents, limit: this.maxEvents },
           };
+          internalRoot.events.push(this.truncationSummary);
           this.emit({
             type: 'span.event',
-            spanId: this.rootSpanId,
+            spanId: this.rootSpanId!,
             event: { ...this.truncationSummary },
           });
         }
-        root.events.push(this.truncationSummary);
+        if (!root.events.includes(this.truncationSummary)) root.events.push(this.truncationSummary);
       }
     }
     return {

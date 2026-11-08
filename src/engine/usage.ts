@@ -87,12 +87,21 @@ export function buildPricing(
   return { ...DEFAULT_PRICING, ...overrides };
 }
 
+/**
+ * 计量数值的运行时防线（2026-11-07 深评）：`MessageUsage` 是线缆形状，兼容端点可能把
+ * int64 回成字符串、或回 null/NaN。`?? 0` 只挡 null/undefined；字符串会一路进
+ * metrics 的 `+=` 变成字符串拼接、NaN 会让 OTLP 的 int64 非法。非有限/负数一律归 0。
+ */
+function countOf(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
 export function usageFromAnthropic(u: MessageUsage): Usage {
   return {
-    inputTokens: u.input_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
-    cacheReadTokens: u.cache_read_input_tokens ?? 0,
-    cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+    inputTokens: countOf(u.input_tokens),
+    outputTokens: countOf(u.output_tokens),
+    cacheReadTokens: countOf(u.cache_read_input_tokens),
+    cacheCreationTokens: countOf(u.cache_creation_input_tokens),
   };
 }
 

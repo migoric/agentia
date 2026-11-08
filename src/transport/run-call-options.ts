@@ -90,8 +90,11 @@ export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions 
         : {}),
     // 恢复段预算按整任务累计：此前各段的 trace 已在挂起/终态出口折进 usageTotal。
     ...(isResume && rec.usageTotal !== undefined ? { usageOffset: rec.usageTotal } : {}),
-    // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）
+    // HITL 恢复段：审批决定随任务落库，重跑时原样进引擎（进程重启不丢）。
+    // `approvalEpoch` 取**本次挂起**的时刻：旧挂起留下的决定（requestedAt 不同）不会被
+    // 新一次同名 tool_use 复用（2026-11-07 深评）。
     ...(rec.approvals !== undefined ? { approvals: rec.approvals } : {}),
+    ...(isResume && rec.suspendedSince !== undefined ? { approvalEpoch: rec.suspendedSince } : {}),
     // 事件投入口（2026-09-28 ref-run-event-input）：挂起期间投递的事件随记录进引擎，由它在
     // 未决 tool_use 解决之后注入消息流（为什么不能由宿主直接追加进
     // spec.messages 的末尾：见 signalTask 与 engine/loop.ts 的注入点纪律）

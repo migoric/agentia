@@ -22,7 +22,11 @@ export type StopResolution =
  * 畸形 tool_use（块为空）与框架不认识的 stop_reason。
  */
 export function resolveStopReason(message: Message, maxTokens: number): StopResolution {
+  const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
   if (message.stop_reason === 'end_turn') {
+    // 兼容端点可能回 `finish_reason=stop` 却仍带 tool_calls：静默丢弃工具调用会让 run
+    // 以成功收尾、而模型要的副作用从未发生（2026-11-07 深评）。按 tool_use 处理。
+    if (toolUses.length > 0) return { kind: 'tools', toolUses };
     return { kind: 'finish', stopReason: 'end_turn', finalText: textOf(message) };
   }
   if (message.stop_reason === 'refusal') {
@@ -32,6 +36,24 @@ export function resolveStopReason(message: Message, maxTokens: number): StopReso
       finalText: textOf(message),
       error: { type: 'refusal', message: 'model refused the request', retryable: false },
     };
+  }
+  if (
+    message.stop_reason === 'max_tokens' ||
+    message.stop_reason === 'model_context_window_exceeded'
+  ) {
+    const contextWindow = message.stop_reason === 'model_context_window_exceeded';
+    if (contextWindow) {
+      return {
+        kind: 'finish',
+        stopReason: 'model_context_window_exceeded',
+        finalText: textOf(message),
+        error: {
+          type: 'model_context_window_exceeded',
+          message: '模型上下文窗口已耗尽（model_context_window_exceeded）',
+          retryable: false,
+        },
+      };
+    }
   }
   if (message.stop_reason === 'max_tokens') {
     // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），
@@ -65,7 +87,6 @@ export function resolveStopReason(message: Message, maxTokens: number): StopReso
     return { kind: 'finish', stopReason: 'stop_sequence', finalText: textOf(message) };
   }
 
-  const toolUses = message.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
   if (toolUses.length === 0) {
     // 到这里的剩余 stop_reason 不会产生可执行块，防死循环直接停：
     // 'tool_use' 但块为空（畸形响应）与「本框架不认识的 stop_reason」区分开。

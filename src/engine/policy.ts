@@ -85,7 +85,10 @@ export function createBudgetPolicy(opts: BudgetPolicyOptions = {}): ContextPolic
       // 失败不记账 ⇒ 下一回合自然重试。代价要说清：**摘要器持续失败时每回合都会再调一次**
       // （每次多一次失败的模型往返）；要抑制请在 `summarize` 里自己退避，别靠滞回额度兜。
       const compacted = await compactMessages(current, { keepRecent, summarize });
-      lastCompactAt = info.iteration;
+      // no-op 不算「成功压缩」（2026-11-07 深评）：compactMessages 在「消息不够 / 尾段
+      // 工具不自洽」时会原样返回。把这次也记进滞回，会让 compactEvery:N 白等 N-1 回合，
+      // 而上下文继续涨。只有真的换了数组才消耗额度。
+      if (compacted !== current) lastCompactAt = info.iteration;
       return compacted;
     },
   };

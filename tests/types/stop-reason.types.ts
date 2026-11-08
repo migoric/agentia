@@ -26,6 +26,7 @@ const allClassified: Record<AgentStopReason, boolean> = {
   end_turn: true,
   stop_sequence: true,
   max_tokens: false,
+  model_context_window_exceeded: false,
   refusal: false,
   pause_turn: false,
   max_iterations: false,

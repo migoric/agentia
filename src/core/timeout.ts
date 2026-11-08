@@ -209,6 +209,22 @@ export async function withTimeout<T>(
 }
 
 /**
+ * 上游 `Retry-After` → 毫秒（**夹到可兑现区间**；解析不了返回 undefined）。
+ *
+ * 2026-11-07 深评：引擎层重试此前只看指数退避，client 层读到 header 却在最后一次失败时
+ * 丢掉 —— 429 + `Retry-After: 60` 会在限流窗口里热重试。适配器把结果挂到错误上，
+ * 引擎用 `max(backoff, retryAfterMs)`。
+ */
+export function retryAfterMsOf(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return clampTimerDelay(Math.max(0, Math.round(secs * 1000)));
+  const at = Date.parse(value);
+  if (Number.isFinite(at)) return clampTimerDelay(Math.max(0, at - Date.now()));
+  return undefined;
+}
+
+/**
  * 可被 signal 中断的 sleep（**单源**）。
  *
  * 合并两处逐字相同的实现：`engine/retry.ts` 的 `sleep`（重试退避期间收到取消就

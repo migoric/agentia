@@ -43,8 +43,21 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.trace.status, 'ok');
   });
 
-  it('未识别的 stop_reason：保留文本但按失败收尾，并给出可诊断的 error', async () => {
+  it('model_context_window_exceeded：已知的截断类原因，单独记账', async () => {
     const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截输出')]);
+    const { run, result } = await executeRun({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+    });
+    assert.equal(result.stopReason, 'model_context_window_exceeded');
+    assert.equal(result.finalText, '半截输出');
+    assert.equal(run.status, 'failed');
+    assert.equal(result.error?.type, 'model_context_window_exceeded');
+    assert.equal(result.trace.status, 'error');
+  });
+
+  it('未识别的 stop_reason：保留文本但按失败收尾，并给出可诊断的 error', async () => {
+    const { client } = mockClient([rawMsg('mystery_stop_reason', '半截输出')]);
     const { run, result } = await executeRun({
       messages: [{ role: 'user', content: 'go' }],
       client,
@@ -52,7 +65,7 @@ describe('agentLoop 边界与失败路径', () => {
     assert.equal(result.stopReason, 'unknown_stop_reason');
     assert.equal(result.finalText, '半截输出', '已产出的文本不该丢');
     assert.equal(run.status, 'failed');
-    assert.match(result.error?.message ?? '', /model_context_window_exceeded/);
+    assert.match(result.error?.message ?? '', /mystery_stop_reason/);
     assert.equal(result.trace.status, 'error');
   });
 
@@ -81,7 +94,7 @@ describe('agentLoop 边界与失败路径', () => {
 
     // 两条分支的原因不同，文案也必须不同：都写成「未识别的 stop_reason」等于把
     // 「模型吐了个畸形响应」误报成「框架不认识这个 stop_reason」
-    const { client: other } = mockClient([rawMsg('model_context_window_exceeded', 'x')]);
+    const { client: other } = mockClient([rawMsg('mystery_stop_reason', 'x')]);
     const { result: unknown } = await executeRun({
       messages: [{ role: 'user', content: 'go' }],
       client: other,

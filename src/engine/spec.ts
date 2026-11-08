@@ -129,6 +129,12 @@ export interface RunInvocationOptions {
    */
   approvals?: Record<string, ApprovalDecision>;
   /**
+   * 续跑段的挂起时刻（`TaskRecord.suspendedSince`）：引擎只认 `requestedAt` 与它相等的
+   * 审批决定，防止旧决定被新一次同名 tool_use 复用（2026-11-07 深评）。
+   * 异步宿主自动注入；手工续跑可省略（省略 = 不过滤，兼容旧行为）。
+   */
+  approvalEpoch?: number;
+  /**
    * 会话引用（C4 的**可序列化**形态）：会话 id 字符串，随 `TaskRecord` 落库、
    * 重启续跑不丢。只被**异步宿主**消费 —— `AsyncRunner` 配了 `sessionStore` 时，
    * 执行前把它换成 `RunAppOptions.session`（store 实例 + id）注入 run；
