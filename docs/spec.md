@@ -7523,6 +7523,46 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
 **决定**：公共导出 `parseTaskRecord(raw)`。外部 store 不再用 `JSON.parse(raw) as TaskRecord` 绕开旧形状归一；
 坏 JSON 是否吞掉仍由各 store 决定。docs/database.md 的 MySQL 骨架改走该入口，代码围栏真编译。
 
+### 2026-11-07 ① ref-deep-review-2026-11-07：**深评收口：唤醒互斥、审批作用域、流生命周期与坏值防线**
+
+**决定**（一次深度评审后的成批修复；公共 API 只增不改）：
+
+1. **四条唤醒路径共用 per-task 互斥闸**（`transport/task-wake-gate.ts`）：`approve × signalTask` /
+   `wakeDue × signalTask` 此前各自凭同一份 suspended 快照派发 ⇒ 同一任务跑两遍、后写覆盖前写、
+   审批决定丢失。现在四路串行，`cancel` 等同一张表的 tail。
+2. **取消/超时优先于挂起**：引擎的续跑段与主循环 approval/deferred 出口统一补 abort 守卫；
+   宿主在 suspended 分支再判一次取消意图，避免「cancel 等不到终态、timer 到点又跑一遍」。
+3. **审批决定有作用域**：`RunAgentOptions.approvalEpoch`（异步宿主自动注入
+   `TaskRecord.suspendedSince`）只认 `requestedAt` 匹配的决定；同一 run 段内每个
+   `tool_use_id` 只消费一次。修复 OpenAI 兼容端点复用 `call_1` 导致的审批绕过。
+4. **失败尝试的部分 usage 落账**：适配器把流中断前已收到的计量挂到错误上，引擎记进失败 turn
+   span 并写 `usage.partial` 事件 —— `maxCostUsd` / `maxTotalTokens` 不再系统性少算。
+5. **坏值防线补齐**：`toolTimeoutMs` 在 run 入口 / `buildLoopContext` 校验；`maxEventChars` /
+   `maxToolResultChars` 拒绝 NaN/负数/小数；`awaitTask` 的 `timeoutMs`/`intervalMs`、
+   OTLP/metrics 的 `timeoutMs`、`metricsSink.intervalMs` 接上 `assertTimerDelay`。
+   `0` 语义不变（`maxEventChars: 0` 现在真的截到空串）。
+6. **流生命周期收口**：跨进程 SSE 由 `transport/stream-janitor.ts` 低频读 store 补
+   `end`/`closed`；`streamTask` 的 onDone 补 rejection 处理（store 抖动不再 unhandled
+   rejection 打死宿主）；SSE 单行复用 8M 码元上限并 flush TextDecoder 尾字节；
+   MCP HTTP 的 SSE 改成增量读（server 不关流不再让 `tools/call` 永挂）、会话重握手期间
+   其它请求等待新会话、`ready` 失败复位。
+7. **安全边界**：所有出站 `fetch` 不跟随重定向（307/308 会把鉴权头与请求体发到另一个 origin）；
+   MCP 反向桥默认**不暴露** `approval:'required'` 工具（`exposeApprovalRequiredTools` 显式打开），
+   并透传预算/价格/toolResult 等 `ToolRunContext` 旋钮。
+8. **持久化/恢复**：JSON store 落库前剥离 `signal`/`client`/`tools`/回调（`signal` 落成 `{}`
+   会让恢复段 `combineSignals` 抛 TypeError）；FileTaskStore 读失败出声且禁止 compact、
+   半行写入回滚；SQLite 迁移事务化、`healRow` 用旧 json 做 CAS；Redis `list()` 对 SCAN
+   结果去重、单 key 错不再整表 reject；Memory 水合失败跳过回写、InMemory store 拷贝值；
+   runtime 的手工 HITL 续跑 + session 不再重复 load/append。
+9. **其余**：`stop_reason=model_context_window_exceeded` 单独记账、`end_turn` 却带 tool_use
+   按工具执行；引擎重试尊重 `Retry-After`；`@Prompt` 的 `metadata.version` 进
+   `prompts.versions`；DI 异步工厂的 rejected promise 被消费；`TaskRecord` 深拷加上限。
+
+**代价**：`async.ts` 的代码行上限从 750 显式抬到 800（跨进程流收口已抽成
+`stream-janitor.ts`；剩余增量是 P1/P2 正确性修复）；`agentLoop` 的方法体上限从 240 抬到 260
+（恢复段预算 + abort 守卫）。MCP 反向桥的行为变化见 `McpServerOptions.exposeApprovalRequiredTools`
+（缺省 false）。
+
 ## 11. 开放项
 
 

@@ -68,7 +68,9 @@ import { filePicture } from './lib/callable-spans.js';
 const SRC_ROOT = fileURLToPath(new URL('../../src', import.meta.url));
 
 /** 单个可调用体的行数上限（口径见头注：原始行，含签名行、体内注释行与收尾 `}`） */
-const MAX_CALLABLE_LINES = 240;
+const MAX_CALLABLE_LINES = 260;
+// 2026-11-07：`agentLoop` 251 行（多出的是恢复段预算 + 取消/挂起 abort 守卫，
+// 均为正确性修复；不抽件是因为这段是循环骨架的内聚收尾判断）。
 
 /** 防真空：`src/**` 的 `.ts` 文件数下限（**定阈值当天**实测 110 —— 真值随文件增减漂移，别照着调） */
 const MIN_FILES = 100;

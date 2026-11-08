@@ -29,12 +29,15 @@ import { join, relative } from 'node:path';
  *
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
- * | `transport/async.ts` | **683** | 2026-11-05：恢复段累计 usage + 耐久会话快照接线 |
- * | `engine/turn.ts` | 537 | 2026-11-05：工具结果上限与历史用量透传 |
- * | `integrations/openai.ts` | 493 | |
+ * | `transport/async.ts` | **749** | 2026-11-07：唤醒互斥 / 取消意图 / 跨进程流收口（抽出 stream-janitor 后） |
+ * | `engine/turn.ts` | 599 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线 |
+ * | `integrations/openai.ts` | 530 | 2026-11-07：部分 usage / Retry-After / 非 JSON 响应 |
  *
- * 680 与第二名 524 之间隔着一大截 —— 750 是「单文件明显异常」的线：它给 `async.ts`
- * 留的余量**已不足一成**（按上表现算，不在正文另记一份），同时**远离**合法长文件那一档
+ * 2026-11-07 深度评修复把 `async.ts` 从 683 推到 749（唤醒互斥 / 取消意图 / 跨进程流收口），
+ * 原 750 的余量只剩 1 行 ⇒ 上限显式抬到 **800**（仍远离合法长文件那一档；余量约 6.8%）。
+ * 抬这一档的原因是本轮修的是**正确性**（P1/P2 并发与耐久），不是顺手加功能；
+ * 已把方向正交的跨进程流收口抽成 `transport/stream-janitor.ts`，没有留在 `async.ts` 里。
+ * 750 与第二名之间隔着一大截 —— 它是「单文件明显异常」的线，同时**远离**合法长文件那一档
  * （报告 §2 那批「不该拆」的大函数，最长 `metrics-render.ts` 也只有 260 行代码）⇒ 不会误伤。
  *
  * 超了怎么办（**只有两条路，都必须显式**）：
@@ -52,7 +55,7 @@ import { join, relative } from 'node:path';
 const SRC_ROOT = fileURLToPath(new URL('../../src', import.meta.url));
 
 /** 单个源文件的「含代码行」上限（口径见头注：整行注释与空行都不计入） */
-const MAX_CODE_LINES = 750;
+const MAX_CODE_LINES = 800;
 
 /** 防真空：`src/**` 的 `.ts` 文件数下限（真值 100+，这里取一个保守的大数） */
 const MIN_FILES = 60;
