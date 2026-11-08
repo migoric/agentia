@@ -40,6 +40,8 @@ export type AgentStopReason =
   | 'end_turn'
   | 'stop_sequence'
   | 'max_tokens'
+  /** 模型输出/上下文撞到窗口上限（Anthropic 的 model_context_window_exceeded） */
+  | 'model_context_window_exceeded'
   | 'refusal'
   | 'pause_turn'
   | 'max_iterations'
@@ -91,6 +93,7 @@ const SUCCESS_STOP_REASON: Record<AgentStopReason, boolean> = {
   stop_sequence: true, // 命中 stop 序列同样是正常收尾
   // —— 非正常收尾（都带结构化 error，见 engine/stop-reason.ts）——
   max_tokens: false,
+  model_context_window_exceeded: false,
   refusal: false,
   pause_turn: false,
   max_iterations: false,
@@ -339,6 +342,13 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 其 tool_use 在这里**没有**决定 ⇒ 该回合整体挂起（见 AgentTool.approval）。
    */
   approvals?: Record<string, ApprovalDecision>;
+  /**
+   * 本轮续跑对应的**挂起时刻**（= `TaskRecord.suspendedSince`，2026-11-07 深评）。
+   * 引擎只认 `requestedAt === approvalEpoch` 的决定 —— 旧挂起留下的同名 tool_use_id
+   * 决定（OpenAI 兼容端点会复用 `call_1`）不能自动批准新一轮调用。
+   * 缺省 undefined = 手工续跑/兼容模式，不做 epoch 过滤（同 run 内仍只消费一次）。
+   */
+  approvalEpoch?: number;
   /**
    * 挂起期间投递的事件（2026-09-28 ref-run-event-input；语义见 `RunInvocationOptions.events`）：
    * 续跑段在未决 tool_use 解决之后渲染成 user 文本消息注入消息流，并在 run 根

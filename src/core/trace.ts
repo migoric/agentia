@@ -61,6 +61,14 @@ export const TOOL_OUTPUT_EVENT = 'tool.output';
 export const USAGE_MISSING_EVENT = 'usage.missing';
 
 /**
+ * 失败尝试的**部分 usage** 事件（2026-11-07 深评）：模型已经报过 input tokens、随后
+ * 流被截断/超时时，这次尝试的账不会进 `recordTurnUsage`（它只处理成功响应）。
+ * 适配器把已累积的 usage 挂在错误上，引擎写进该 turn span 并记这条事件 ——
+ * 否则 `maxCostUsd` / `maxTotalTokens` 会系统性少算。
+ */
+export const USAGE_PARTIAL_EVENT = 'usage.partial';
+
+/**
  * 「上下文策略在本回合开始前**真的压缩了**历史」事件名（body 带 `{ from, to, model }`）。
  *
  * 记账点在 `engine/turn.ts` 的回合入口检查（压缩发生时本回合的 llm.turn span 还不存在，

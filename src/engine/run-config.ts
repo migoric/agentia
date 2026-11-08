@@ -48,6 +48,7 @@ export function resolveModelChain(args: {
   client: ModelClient;
   fallbacks?: ModelFallbackLink[] | undefined;
 }): ResolvedModelLink[] {
+  assertModelClient(args.client, 'client');
   const chain: ResolvedModelLink[] = [{ model: args.model, client: args.client }];
   for (const [i, link] of (args.fallbacks ?? []).entries()) {
     const where = `fallbacks[${i}]`;
@@ -58,17 +59,26 @@ export function resolveModelChain(args: {
       throw new TypeError(`${where}.model 必须是非空字符串，收到 ${JSON.stringify(link.model)}`);
     }
     const client = link.client ?? args.client;
-    const stream = (client as { messages?: { stream?: unknown } } | undefined)?.messages?.stream;
-    if (typeof stream !== 'function') {
-      throw new TypeError(
-        `${where}.client 不满足 ModelClient 契约（messages.stream 不是函数）—— ` +
-          '常见原因：异步任务的 options 经持久化 store  JSON 往返后 client 变成空壳；' +
-          '跨重启仍成立的链请只写 model（client 由 runner/应用级配置兜住）',
-      );
-    }
+    assertModelClient(client, `${where}.client`);
     chain.push({ model: link.model, client });
   }
   return chain;
+}
+
+/**
+ * ModelClient 的**运行时鸭子校验**（2026-11-07 深评）：主环与 fallback 环都必须过。
+ * 此前只校验 fallback 环的 client，主 `options.client` 是空壳（持久化 JSON 往返后的 `{}`）
+ * 时要到 `messages.stream` 才炸，错误会被 classifyError 记成 unknown。
+ */
+export function assertModelClient(client: unknown, where: string): asserts client is ModelClient {
+  const stream = (client as { messages?: { stream?: unknown } } | undefined)?.messages?.stream;
+  if (typeof stream !== 'function') {
+    throw new TypeError(
+      `${where} 不满足 ModelClient 契约（messages.stream 不是函数）—— ` +
+        '常见原因：异步任务的 options 经持久化 store JSON 往返后 client 变成空壳；' +
+        '跨重启仍成立的链请只写 model（client 由 runner/应用级配置兜住）',
+    );
+  }
 }
 
 /**

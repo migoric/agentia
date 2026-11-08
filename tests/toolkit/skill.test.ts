@@ -71,7 +71,7 @@ describe('Skill 能力（ctx.llm 受限子运行）', () => {
         return out.text;
       }
     }
-    const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截')]);
+    const { client } = mockClient([rawMsg('mystery_stop_reason', '半截')]);
     const { ctx, recorder } = makeCtx(client);
     const tool = skillToTool(onlySkill(new Fragile()), () => []);
 
@@ -85,7 +85,7 @@ describe('Skill 能力（ctx.llm 受限子运行）', () => {
     // 「不可重试的模型侧异常」这个信息就丢了
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, false);
-    assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
+    assert.match(capability.error?.message ?? '', /mystery_stop_reason/);
   });
 
   it('预算护栏透传 ctx.llm 子循环（C1）：子循环超支即停，主 run 以 budget_exceeded 收尾', async () => {
@@ -288,7 +288,7 @@ describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
       }
     }
     // 子运行以「未识别的 stop_reason」非成功收尾（loop.error 是 engine 判定的丰富错误）
-    const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截')]);
+    const { client } = mockClient([rawMsg('mystery_stop_reason', '半截')]);
     const { ctx, recorder } = makeCtx(client);
     const tool = skillToTool(onlySkill(new FallbackThenBoom()), () => []);
 
@@ -301,7 +301,7 @@ describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
     assert.equal(capability.error?.type, 'unknown');
     assert.equal(capability.error?.retryable, false);
     assert.match(capability.error?.message ?? '', /boom/);
-    assert.doesNotMatch(capability.error?.message ?? '', /model_context_window_exceeded/);
+    assert.doesNotMatch(capability.error?.message ?? '', /mystery_stop_reason/);
   });
 
   it('主路径不回归：方法体不 catch llm 失败 ⇒ span 仍记 llmError 的丰富分类', async () => {
@@ -312,7 +312,7 @@ describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
         return out.text;
       }
     }
-    const { client } = mockClient([rawMsg('model_context_window_exceeded', '半截')]);
+    const { client } = mockClient([rawMsg('mystery_stop_reason', '半截')]);
     const { ctx, recorder } = makeCtx(client);
     const tool = skillToTool(onlySkill(new Fragile()), () => []);
 
@@ -323,7 +323,7 @@ describe('Skill 陈旧 llmError 不得给无关异常贴标签', () => {
     // llm 闭包抛出的对象被外层按引用相等认领 ⇒ 用 engine 判定的丰富错误收尾
     assert.equal(capability.error?.type, 'agent_error');
     assert.equal(capability.error?.retryable, false);
-    assert.match(capability.error?.message ?? '', /model_context_window_exceeded/);
+    assert.match(capability.error?.message ?? '', /mystery_stop_reason/);
   });
 });
 

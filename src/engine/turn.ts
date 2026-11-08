@@ -36,9 +36,10 @@ import {
   CONTEXT_BUDGET_EVENT,
   TOOL_INPUT_EVENT,
   TOOL_OUTPUT_EVENT,
+  USAGE_PARTIAL_EVENT,
 } from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
-import { isTimeoutError } from '../core/timeout.js';
+import { assertTimerDelay, isTimeoutError, MAX_TIMER_DELAY_MS } from '../core/timeout.js';
 import { classifyError, isAbortError } from './errors.js';
 import { createDeferRequest } from './defer.js';
 import type { DeferRequest } from './defer.js';
@@ -55,6 +56,7 @@ import {
   toolInputPayload,
   toolOutputPayload,
   toolResultBlock,
+  validateMaxEventChars,
   validateMaxToolResultChars,
 } from './tool-events.js';
 import type { ToolErrorKind } from './tool-events.js';
@@ -150,6 +152,8 @@ export interface AgentLoopArgs<S extends JsonSchema = JsonSchema> {
   onUnpricedModel?: ((info: { model: string; spanId: string }) => void) | undefined;
   /** 人工审批决定（HITL）：以 tool_use_id 为键；恢复挂起的 run 时由宿主传入 */
   approvals?: Record<string, ApprovalDecision> | undefined;
+  /** 本轮续跑的挂起时刻；决定只在其 `requestedAt === approvalEpoch` 时可用（undefined = 不过滤） */
+  approvalEpoch?: number | undefined;
   /**
    * 挂起期间投递的事件（2026-09-28 ref-run-event-input；语义见 RunInvocationOptions.events）：
    * 由 loop.ts 的续跑入口在**未决 tool_use 解决之后**注入消息流（本文件不消费它 ——
@@ -180,6 +184,8 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
   /** submit_result 校验通过的结构化结果（先到先得，见 executeOneTool） */
   typed: SchemaType<S> | undefined;
   submitted: boolean;
+  /** 本段已消费的审批决定 id（同一 run 段内同一 tool_use_id 只批一次） */
+  consumedApprovals: Set<string>;
 }
 
 /**
@@ -189,6 +195,12 @@ export interface LoopContext<S extends JsonSchema = JsonSchema> {
  */
 export function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): LoopContext<S> {
   validateMaxToolResultChars(args.maxToolResultChars);
+  validateMaxEventChars(args.maxEventChars);
+  // 直连 agentLoop / runAgentScoped 的路径不经过 runAgent 的配置段：同款坏值防线在这里再落一次
+  // （0 / 负数仍是合法的「不设超时」；NaN / 超 2^31-1ms 必须在第一次模型调用前响亮失败）。
+  if (args.toolTimeoutMs !== undefined) {
+    assertTimerDelay(args.toolTimeoutMs, 'AgentLoopArgs.toolTimeoutMs');
+  }
   // resultSchema 模式：追加隐藏 submit_result 工具 + system 末尾指令。
   // 该工具由 engine 内部注入，不属开发者菜单；菜单已有同名工具视为装配冲突。
   let apiTools = args.tools.map(toApiTool);
@@ -245,6 +257,7 @@ export function buildLoopContext<S extends JsonSchema>(args: AgentLoopArgs<S>): 
     progress: args.progress ?? { iterations: 0 }, // 就地累加，抛错时调用方仍读得到
     typed: undefined,
     submitted: false,
+    consumedApprovals: new Set<string>(),
   };
 }
 
@@ -333,6 +346,27 @@ export async function checkTurnEntry<S extends JsonSchema>(
   return null;
 }
 
+/**
+ * 从失败错误上取适配器挂的**部分 usage**（2026-11-07 深评）。三个内置适配器在流中途失败时
+ * 会把已累积的计量挂在 `partialUsage` 上；这里做形状校验，坏值一律丢弃而不是把 NaN 记进 trace。
+ */
+function partialUsageOf(e: unknown): Usage | undefined {
+  const p = (e as { partialUsage?: Partial<Usage> } | null)?.partialUsage;
+  if (p === undefined || p === null || typeof p !== 'object') return undefined;
+  const num = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+  const out: Usage = {
+    inputTokens: num(p.inputTokens),
+    outputTokens: num(p.outputTokens),
+    cacheReadTokens: num(p.cacheReadTokens),
+    cacheCreationTokens: num(p.cacheCreationTokens),
+  };
+  if (p.costEstimate !== undefined) out.costEstimate = num(p.costEstimate);
+  const any =
+    out.inputTokens + out.outputTokens + out.cacheReadTokens + out.cacheCreationTokens > 0;
+  return any || p.costEstimate !== undefined ? out : undefined;
+}
+
 /** 一回合的模型请求结果：turn span id + 成功时的 finalMessage；aborted 表示中途被取消 */
 export interface TurnOutcome {
   turnId: SpanId;
@@ -409,7 +443,25 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
         break;
       } catch (e) {
         const errInfo = classifyError(e);
-        args.recorder.end(turnId, { status: 'error', error: errInfo });
+        // 失败尝试的部分 usage（2026-11-07 深评）：适配器在流中途失败时可能已收到
+        // input/cache 计量（上游照常计费）。不记的话预算护栏看不到这笔钱。
+        const partial = partialUsageOf(e);
+        if (partial !== undefined) {
+          const cost = costEstimate(link.model, partial, ctx.pricing);
+          if (cost !== undefined) partial.costEstimate = cost;
+          args.recorder.event(turnId, USAGE_PARTIAL_EVENT, {
+            model: link.model,
+            input_tokens: partial.inputTokens,
+            output_tokens: partial.outputTokens,
+            cache_read_tokens: partial.cacheReadTokens,
+            cache_creation_tokens: partial.cacheCreationTokens,
+          });
+        }
+        args.recorder.end(turnId, {
+          status: 'error',
+          error: errInfo,
+          ...(partial !== undefined ? { usage: partial } : {}),
+        });
         // 中断：不冒泡、不重试、**不换环**（用户取消不是故障 —— 换厂商再打一发是荒腔）
         if (isAbortError(e) || signal?.aborted) {
           aborted = true;
@@ -429,7 +481,14 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
           }
           throw e; // 冒泡：runAgent 或子 agent 运行器负责收尾
         }
-        const delayMs = backoffDelay(attempt, retryCfg);
+        // 上游 `Retry-After` 优先于指数退避（2026-11-07 深评）：client 层把 header 挂在
+        // 错误上；引擎兜底重试发生在 client 放弃之后，正是最需要尊重限流窗口的时候。
+        const retryAfterMs = (e as { retryAfterMs?: unknown } | null)?.retryAfterMs;
+        const baseDelay = backoffDelay(attempt, retryCfg);
+        const delayMs =
+          typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs)
+            ? Math.min(Math.max(baseDelay, retryAfterMs), MAX_TIMER_DELAY_MS)
+            : baseDelay;
         args.recorder.event(turnId, 'llm.retry', { attempt, delayMs, error: errInfo.type });
         try {
           retryCfg.onRetry({ attempt, delayMs, error: errInfo });
@@ -494,7 +553,6 @@ export function recordTurnUsage<S extends JsonSchema>(
       }
     }
   }
-  args.recorder.end(turnId, { usage });
   args.recorder.setAttribute(turnId, 'input_tokens', usage?.inputTokens ?? 0);
   args.recorder.setAttribute(turnId, 'output_tokens', usage?.outputTokens ?? 0);
   args.recorder.setAttribute(turnId, 'cache_read_tokens', usage?.cacheReadTokens ?? 0);
@@ -513,6 +571,9 @@ export function recordTurnUsage<S extends JsonSchema>(
       );
     }
   }
+  // 属性写完再 end（2026-11-07 深评）：把 span.end 当「收尾快照」的增量消费者
+  // 不会漏掉 end 之后才写的 input_tokens / output.text。
+  args.recorder.end(turnId, { usage });
 }
 
 /** 回合收尾分流：finish = 终止/边界分支（带 stopReason 与收尾文本）；tools = 还有工具要执行 */
@@ -545,6 +606,30 @@ export type TurnToolsOutcome =
  * 两类例外不参与审批：隐藏的 submit_result（不在 args.tools 里，是纯内部提交、
  * 永不需审批）与未知工具（走既有 unknown_tool 路径）。
  */
+/**
+ * 本次调用可用的审批决定（2026-11-07 深评）：
+ * - 只对 `approval:'required'` 工具生效；
+ * - 同一 run 段内每个 tool_use_id 只消费一次（防止同一段里 id 复用绕过审批）；
+ * - 有 `approvalEpoch` 时要求决定的 `requestedAt` 与本次挂起时刻一致（防止**上一段**
+ *   的同名 id 决定批准这一次；OpenAI 兼容端点会复用 `call_1`）。
+ * 缺 `requestedAt`（手工传 approvals 的兼容路径）时不做 epoch 判定。
+ */
+function approvalDecisionFor<S extends JsonSchema>(
+  ctx: LoopContext<S>,
+  use: ToolUseBlock,
+  tool: AgentTool | undefined,
+): ApprovalDecision | undefined {
+  if (tool?.approval !== 'required') return undefined;
+  const decision = ctx.args.approvals?.[use.id];
+  if (decision === undefined) return undefined;
+  if (ctx.consumedApprovals.has(use.id)) return undefined;
+  const epoch = ctx.args.approvalEpoch;
+  if (epoch !== undefined && decision.requestedAt !== undefined && decision.requestedAt !== epoch) {
+    return undefined;
+  }
+  return decision;
+}
+
 export async function executeTurnTools<S extends JsonSchema>(
   ctx: LoopContext<S>,
   turnId: SpanId,
@@ -555,7 +640,7 @@ export async function executeTurnTools<S extends JsonSchema>(
   if (!overBudget) {
     const pending = toolUses.filter((use) => {
       const tool = args.tools.find((t) => t.name === use.name);
-      return tool?.approval === 'required' && args.approvals?.[use.id] === undefined;
+      return tool?.approval === 'required' && approvalDecisionFor(ctx, use, tool) === undefined;
     });
     if (pending.length > 0) {
       args.recorder.event(turnId, 'approval.requested', {
@@ -636,7 +721,9 @@ async function executeOneTool<S extends JsonSchema>(
   const tool = args.tools.find((t) => t.name === use.name);
   // HITL：需审批工具的决定（到达这里说明决定已在 —— 未决的整回合在
   // executeTurnTools 的审批闸被拦下，不会走到单工具执行）。
-  const decision = tool?.approval === 'required' ? args.approvals?.[use.id] : undefined;
+  const decision = approvalDecisionFor(ctx, use, tool);
+  // 决定一旦被采用就消费掉：同一段里模型若再次用同一个 id 调审批工具，必须重新等人批。
+  if (decision !== undefined) ctx.consumedApprovals.add(use.id);
   // 工具级时序（E1）：起点在事件之前 —— durationMs 覆盖「入参校验 + 执行 + 超时等待」
   // 的完整处理时长，是「哪一步慢」的可信基线。并行工具各记各的（tool_use_id 配对）。
   const toolStartedAt = Date.now();

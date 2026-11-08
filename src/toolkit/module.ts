@@ -591,6 +591,7 @@ export class AgentApp {
         // HITL：审批决定（tool_use_id → 决定）原样进引擎；恢复挂起任务时由
         // AsyncRunner 经它把落库的决定喂回来
         approvals: opts.approvals,
+        approvalEpoch: opts.approvalEpoch,
         // 事件投入口（2026-09-28 ref-run-event-input）：与 approvals 同一条「契约字段必须原样透传」的规则
         // （漏掉这一行 = AsyncRunner 投递的事件在 app.run 门口静默丢掉）
         events: opts.events,

@@ -41,6 +41,7 @@ import {
 import { textOf } from './text.js';
 import { resolveStopReason } from './stop-reason.js';
 import { classifyError } from './errors.js';
+import { assertTimerDelay } from '../core/timeout.js';
 import type { AgentLoopArgs } from './turn.js';
 import type {
   AgentRunResult,
@@ -190,8 +191,34 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
           'run 照常收尾（trace 上记了 menu.drift 事件与属性）。要按原样续跑就把它们加回菜单。',
       );
     }
+    // 成本硬管控（C1）：恢复段执行已批准的工具前也要判一次预算 —— 超限不该再产生
+    // 副作用（尤其子 agent 工具会继续烧 token）。主循环的 overBudget 语义在这里同样适用。
+    const resumeOverBudget = ctx.budget
+      ? ctx.budget.check({ totalUsage: addUsage(args.usageOffset, args.recorder.usage()) })
+      : null;
     // 工具事件记到父 span：被恢复的回合属于挂起段的旧 trace，本段没有对应 llm.turn
-    const outcome = await executeTurnTools(ctx, args.parentSpanId ?? '', resumeUses, null);
+    const outcome = await executeTurnTools(
+      ctx,
+      args.parentSpanId ?? '',
+      resumeUses,
+      resumeOverBudget,
+    );
+    // 取消/超时优先于任何挂起出口（2026-11-07 深评 P1-1）：恢复段执行未决工具期间
+    // signal 可能已中止；若这里仍返回 suspended，宿主会把它落成 suspended，
+    // cancel 的 #awaitCancelled 等不到终态（409），timer 挂起到点还会重跑整批工具。
+    // 主循环的 deferred 出口此前有这条守卫，恢复段的两个出口与 approval 出口漏了。
+    if (outcome.kind !== 'executed' && args.signal?.aborted) {
+      return abortedResult(ctx.progress.iterations);
+    }
+    if (resumeOverBudget && !ctx.submitted) {
+      return finishedResult({
+        stopReason: 'budget_exceeded',
+        finalText: '',
+        iterations: ctx.progress.iterations,
+        typed: ctx.typed,
+        error: budgetError(args, resumeOverBudget),
+      });
+    }
     if (outcome.kind === 'suspended') {
       return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending });
     }
@@ -290,6 +317,13 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     }
 
     const outcome = await executeTurnTools(ctx, turnId, resolution.toolUses, overBudget);
+    // 取消/超时优先于任何挂起出口（approval 与 deferred 一并覆盖）。
+    if (outcome.kind !== 'executed' && args.signal?.aborted) {
+      stopReason = 'aborted';
+      error = abortedError();
+      finished = true;
+      break;
+    }
     if (outcome.kind === 'suspended') {
       // HITL 挂起：assistant 消息（含未决 tool_use）已在历史里、**不推任何 tool_result**
       // （全有或全无，见 executeTurnTools 的审批闸）；approval.requested 已记在 turn span 上。
@@ -299,16 +333,6 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
       return suspendedResult(ctx, { reason: 'approval', pending: outcome.pending }, finalText);
     }
     if (outcome.kind === 'deferred') {
-      // abort 优先于挂起（2026-09-28 复审收口）：本回合若已被中止（runTimeoutMs 到点 /
-      // cancel），意图是「停」—— 不能挂成 timer 之后到点再醒，那等于把取消/超时**吃掉**
-      // （审批挂起要人来推、timer 会自己醒，所以这条判据对 deferred 比对 approval 更要紧；
-      // 审批那条由 cancel 对 suspended 的翻转兜底，timer 没有这兜底的下一棒）。
-      if (args.signal?.aborted) {
-        stopReason = 'aborted';
-        error = abortedError();
-        finished = true;
-        break;
-      }
       // 时间挂起（durable timer）：与上面同形 —— 这批工具**跑过但结果作废**
       // （defer.requested 已记在 turn span 上），assistant 消息留在历史末尾，
       // 醒来后由续跑入口重跑这一批。error 保持 undefined。
@@ -437,6 +461,12 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     // 否则 `maxAttempts: NaN` 静默关重试、`baseDelayMs: NaN` 的 RangeError 会被退避处的
     // catch 误报成「用户取消」（各旋钮 0 的读法见 core/limits.ts 真源表）
     validateRetryOptions(options.retry);
+    // 工具超时旋钮同款（2026-11-07 深评）：坏值（NaN / 超 2^31-1ms）此前只在
+    // withTimeout 内抛，被 executeOneTool 的 catch 收成「每条工具都失败、run 还能成功」。
+    // 这里在第一次模型调用之前响亮失败（0/负数仍是合法的「不设超时」）。
+    if (options.toolTimeoutMs !== undefined) {
+      assertTimerDelay(options.toolTimeoutMs, 'RunAgentOptions.toolTimeoutMs');
+    }
   } catch (e) {
     recorder.end(rootId, { status: 'error', error: classifyError(e) });
     throw e;
@@ -481,6 +511,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
           priceOverrides: options.priceOverrides,
           onUnpricedModel: options.onUnpricedModel,
           approvals: options.approvals,
+          approvalEpoch: options.approvalEpoch,
           events: options.events,
         }),
     );

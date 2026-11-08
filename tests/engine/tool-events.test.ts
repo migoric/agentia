@@ -87,7 +87,7 @@ describe('tool-events —— 单工具执行的记账面（从 executeOneTool �
 
   it('tool_result 上限只裁回模型的正文，并明确标出丢弃字符数；false / 缺省不裁', () => {
     assert.equal(toolResultBlock(use, true, 'abcdefghij', 4).content, 'abcd…(+6)');
-    assert.equal(toolResultBlock(use, true, 'abcdefghij', 0).content, '…(+10)');
+    assert.equal(toolResultBlock(use, true, 'abcdefghij', 0).content, '', '0 = 截到零长度');
     assert.equal(toolResultBlock(use, true, 'abcdefghij', false).content, 'abcdefghij');
     assert.equal(toolResultBlock(use, true, 'abcdefghij').content, 'abcdefghij');
     assert.equal(toolResultBlock(use, true, { a: 1 }, 4).content, '{"a"…(+3)');

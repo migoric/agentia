@@ -75,7 +75,10 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Message
   const turns = sortTurns(trace);
 
   return normalizeForApi(
-    expandTurns(turns, byId, includeToolIO, maxChars),
+    [
+      ...resumeToolMessages(trace, includeToolIO, maxChars),
+      ...expandTurns(turns, byId, includeToolIO, maxChars),
+    ],
     REPLAY_HEAD,
     REPLAY_TAIL,
   );
@@ -115,10 +118,69 @@ export function forkMessages(trace: Trace, opts: ForkReplayOptions): MessagePara
   const messages: MessageParam[] = [
     // fork 头无条件在最前（溯源信息必须存在，不能像 replay 头那样「首条已是 user 就省」）
     { role: 'user', content: head },
+    ...resumeToolMessages(trace, includeToolIO, maxChars),
     ...expandTurns(kept, byId, includeToolIO, maxChars),
     ...(opts.append ?? []),
   ];
   return normalizeForApi(messages, head, FORK_TAIL);
+}
+
+/**
+ * 续跑段的工具往返（2026-11-07 深评）：HITL / timer 恢复段在**没有 llm.turn** 的情况下
+ * 执行上一段留下的 tool_use，事件记在 run 根上（见 engine/loop.ts 的续跑入口）。
+ * `expandTurns` 只读 llm.turn，于是这些 tool_use/tool_result 在重放里完全消失。
+ * 这里把 run 根上的 tool.input/output 合成一条 assistant + user 对，插在最前面
+ * （续跑段的工具执行发生在该段第一个模型回合之前）。
+ */
+function resumeToolMessages(
+  trace: Trace,
+  includeToolIO: boolean,
+  maxChars: number,
+): MessageParam[] {
+  if (!includeToolIO) return [];
+  const root = trace.spans.find((s) => s.spanId === trace.rootSpanId);
+  if (!root) return [];
+  const inputs = eventsOf(root, TOOL_INPUT_EVENT);
+  if (inputs.length === 0) return [];
+  const outputs = eventsOf(root, TOOL_OUTPUT_EVENT);
+  const used = new Set<number>();
+  const pairs: Array<{ id: string; output: ToolEventIO | undefined }> = [];
+  const content: ContentBlockParam[] = [
+    { type: 'text', text: '[replay] 续跑段在无 llm.turn 的情况下执行的未决工具' },
+  ];
+  let seq = 0;
+  for (const input of inputs) {
+    let idx =
+      input.toolUseId === undefined
+        ? -1
+        : outputs.findIndex((o, j) => !used.has(j) && o.toolUseId === input.toolUseId);
+    if (idx < 0) idx = outputs.findIndex((o, j) => !used.has(j) && o.tool === input.tool);
+    if (idx < 0) idx = outputs.findIndex((_, j) => !used.has(j));
+    const output = idx >= 0 ? outputs[idx] : undefined;
+    if (idx >= 0) used.add(idx);
+    const id = `replay_resume_${++seq}`;
+    pairs.push({ id, output });
+    content.push({
+      type: 'tool_use',
+      id,
+      name: input.tool,
+      input: parseInput(input.input, maxChars),
+    });
+  }
+  return [
+    { role: 'assistant', content },
+    {
+      role: 'user',
+      content: pairs.map(({ id, output }) => ({
+        type: 'tool_result' as const,
+        tool_use_id: id,
+        content: output
+          ? truncateWithMark(output.content ?? '', maxChars)
+          : '[replay] trace 中缺失对应 tool.output 事件',
+        is_error: output ? output.ok === false : true,
+      })),
+    },
+  ];
 }
 
 /** 全部 llm.turn 按 startedAt 时序排列（稳定排序：同刻保 spans 数组插入序） */

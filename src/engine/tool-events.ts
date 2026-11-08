@@ -91,6 +91,15 @@ export function toolOutputPayload(opts: {
   };
 }
 
+export function validateMaxEventChars(value: number | false | undefined): void {
+  if (value === undefined || value === false) return;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(
+      `maxEventChars 必须是非负安全整数或 false（不截断；${zeroClauseOf('maxEventChars')}），收到 ${String(value)}`,
+    );
+  }
+}
+
 export function validateMaxToolResultChars(value: number | false | undefined): void {
   if (value === undefined || value === false) return;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {

@@ -181,8 +181,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'chars',
     zero: 'disabled',
     zeroClause: '0 = 截到零长度；false = 不截断',
-    badValue: 'none',
-    note: '两个「关掉」的写法语义不同：`false` 才是「不截断」（调试期看全文），`0` 是把正文截成空串。⚠️ 靠 `!= null` 判定透传（真值判定会吃掉 `false`）。',
+    badValue: 'throws',
+    note: '两个「关掉」的写法语义不同：`false` 才是「不截断」（调试期看全文），`0` 是把正文截成空串（`truncateWithMark` 对 n<=0 返回空串）。⚠️ 靠 `!= null` 判定透传（真值判定会吃掉 `false`）。NaN / 负数 / 小数在第一次模型调用前拒（2026-11-07 深评补登：此前 NaN 让 `s.length > NaN` 恒假 ⇒ 静默不截断）。',
   },
   {
     knob: 'maxToolResultChars',
@@ -248,8 +248,8 @@ export const LIMIT_SEMANTICS = [
     unit: 'ms',
     zero: 'immediate',
     zeroClause: '0 = 立即导出',
-    badValue: 'none',
-    note: '⚠️ **同名反义**：`Scheduler.every` 的 `intervalMs: 0` 是**配置错误**（抛错），这里却是「关掉定时器、每次累加后立即导出」。两个同名旋钮两种读法 —— 改任何一个之前先看这张表。',
+    badValue: 'throws',
+    note: '⚠️ **同名反义**：`Scheduler.every` 的 `intervalMs: 0` 是**配置错误**（抛错），这里却是「关掉定时器、每次累加后立即导出」。两个同名旋钮两种读法 —— 改任何一个之前先看这张表。NaN / Infinity / 超 2^31-1ms 在构造期拒（2026-11-07 深评：NaN 此前让定时器与立即导出**同时**不成立 ⇒ 永远不导出，且零信号）。',
   },
   {
     knob: 'RetryOptions.baseDelayMs',
