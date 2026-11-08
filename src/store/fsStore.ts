@@ -5,11 +5,12 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { parseTaskRecord } from './record.js';
+import { parseTaskRecord, serializeTaskRecord } from './record.js';
 import { cloneTaskRecord } from './store.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
@@ -34,6 +35,8 @@ export class FileTaskStore implements TaskStore {
   // （实测读数见 spec §10 2026-09-28 ref-due-index-measure）。runner 对缺失的 listDue 回退全表，语义不变。
   private readonly byTask = new Map<string, TaskRecord>();
   private readonly byKey = new Map<string, string>(); // idempotencyKey → taskId
+  /** 启动读取失败后进入降级态：仍可追加新记录，但**禁止 compact**（否则空内存会重写掉旧文件） */
+  private degraded = false;
 
   constructor(
     private readonly file: string,
@@ -51,7 +54,13 @@ export class FileTaskStore implements TaskStore {
     try {
       raw = readFileSync(this.file, 'utf8');
     } catch (err) {
-      // 读失败按空宿主启动：观测不击穿业务，缺省仍吞；宿主要告警就传 onLoadError
+      // 读失败按空宿主启动（不击穿业务），但**必须出声**：否则宿主以为续跑扫描跑了，
+      // 实际一条旧任务都没读到；再调 compact 会把旧文件永久清空（2026-11-07 深评）。
+      this.degraded = true;
+      console.warn(
+        `[agentia] FileTaskStore 读取 ${this.file} 失败，按空库启动（续跑将看不到旧任务；已禁用 compact）：`,
+        err instanceof Error ? err.message : err,
+      );
       this.onLoadError?.(err);
       return;
     }
@@ -98,7 +107,27 @@ export class FileTaskStore implements TaskStore {
   }
 
   private append(rec: TaskRecord): void {
-    writeFileSync(this.file, `${JSON.stringify(rec)}\n`, { flag: 'a' });
+    // 半行自愈（2026-11-07 深评）：此前只在启动时 healTail；同进程一次写残（ENOSPC /
+    // 中断）后，下一次 append 会粘在残行尾部，重启时整行非法被跳过（丢一条记录）。
+    // 记录写前长度，失败时截回去。
+    let before = -1;
+    try {
+      before = existsSync(this.file) ? statSync(this.file).size : 0;
+    } catch {
+      before = -1;
+    }
+    try {
+      writeFileSync(this.file, `${serializeTaskRecord(rec)}\n`, { flag: 'a' });
+    } catch (e) {
+      if (before >= 0) {
+        try {
+          truncateSync(this.file, before);
+        } catch {
+          /* 截不回去也没别的补救；至少原错误照抛 */
+        }
+      }
+      throw e;
+    }
   }
 
   save(rec: TaskRecord): void {
@@ -141,6 +170,13 @@ export class FileTaskStore implements TaskStore {
    * 旧文件也完整），内存态不受影响。
    */
   compact(): void {
+    if (this.degraded) {
+      // 读失败时内存是空的；compact 会把文件重写成空/只剩新记录 —— 等于永久删除旧历史。
+      console.warn(
+        `[agentia] FileTaskStore 处于降级态（启动读取失败），拒绝 compact：${this.file}`,
+      );
+      return;
+    }
     // 赢家殿后：内存语义是「同幂等键最后 save 的 taskId 赢」（save 覆写 byKey），
     // 而 load 回放按行序 last-wins。直接按 Map 首次插入序写盘会丢掉「最后 save」
     // 信息 —— 同键重提的新任务插入在后，旧任务又被 save 赢回时，插入序恰与赢家
@@ -150,7 +186,7 @@ export class FileTaskStore implements TaskStore {
     const rows = [...this.byTask.values()].sort(
       (a, b) => Number(winners.has(a.taskId)) - Number(winners.has(b.taskId)),
     );
-    const body = rows.map((r) => `${JSON.stringify(r)}\n`).join('');
+    const body = rows.map((r) => `${serializeTaskRecord(r)}\n`).join('');
     // 原子重写：先写临时文件再 rename。直接 writeFileSync 截断重写，中途被杀会留下
     // 半截文件、丢掉全部记录；同目录 rename 是原子的，旧文件在新文件就位前保持完整。
     // 临时文件名固定（单写者前提，见头注释）—— 上次被杀留下的残临时文件会被本次覆写。

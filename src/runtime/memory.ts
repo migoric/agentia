@@ -77,6 +77,26 @@ export interface MemoryStore {
  * **任何**键，这边就会报冲突。这是有意的方向选择（宁可多报「可能覆盖了」，
  * 也不漏报「真的覆盖了」），代价是同一份 store 上的**无关写**也会报警。
  */
+/** 纯数据深拷（数组 / 普通对象）；类实例与函数按引用保留（AbortSignal 等不能拷也无需拷） */
+function cloneMemoryValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(cloneMemoryValue) as T;
+  if (value !== null && typeof value === 'object') {
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      Object.defineProperty(out, k, {
+        value: cloneMemoryValue(v),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return out as T;
+  }
+  return value;
+}
+
 export class InMemoryMemoryStore implements MemoryStore {
   private readonly data = new Map<string, unknown>();
   /** 单调版本：任何成功写入 +1（读不改）。粗粒度见类注释 */
@@ -92,7 +112,8 @@ export class InMemoryMemoryStore implements MemoryStore {
 
   save(entries: Record<string, unknown>): void {
     for (const [key, value] of Object.entries(entries)) {
-      this.data.set(key, value);
+      // 入库也拷一份：否则调用方后续就地改黑板对象会绕过 save 直接改库（CAS 也发现不了）。
+      this.data.set(key, cloneMemoryValue(value));
     }
     this.revision += 1;
   }
@@ -111,7 +132,7 @@ export class InMemoryMemoryStore implements MemoryStore {
     // 该 key 会静默丢失 —— 与 run.ts 的 flushMemory 保持对称。
     const out: Record<string, unknown> = Object.create(null);
     for (const key of keys) {
-      if (this.data.has(key)) out[key] = this.data.get(key);
+      if (this.data.has(key)) out[key] = cloneMemoryValue(this.data.get(key));
     }
     return { values: out };
   }

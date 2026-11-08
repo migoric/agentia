@@ -22,6 +22,7 @@
  * SQLite 照旧抛），异常留给调用方按各自口径处理 —— 归一层不越权决定「坏了怎么办」。
  */
 import type { TaskRecord } from './store.js';
+import { cloneTaskRecord } from './store.js';
 
 /**
  * ① 之前的状态值。它在本版的 `RunStatus` 联合类型里**不存在**，所以下面那处比较只能走字符串
@@ -72,6 +73,35 @@ export function normalizeLegacyRecord(rec: TaskRecord): boolean {
  * - 坏 JSON 照旧抛（调用方按自己的口径吞或冒泡，见文件头的边界）；
  * - 形状不合格（不是对象 / 没有 `taskId`）⇒ `undefined`（「这条不是记录」，与「解析失败」分开）。
  */
+/**
+ * 落库前的**可序列化清洗**（2026-11-07 深评）：`JSON.stringify` 会把 `AbortSignal` 变成
+ * `{}`、把 `ModelClient` 变成 `{messages:{}}`、把 `tools` 里的 run 函数丢掉。读回后这些
+ * 空壳会在恢复段被当成真对象使用（`combineSignals({})` 直接 TypeError / 工具菜单半残）。
+ *
+ * 因此三条 JSON store 统一走这里：
+ * - 去掉 `signal` / `client` / 回调 / `tools`（它们属于提交进程，不能跨重启）；
+ * - fallback 环只保留 `model`（client 由 runner/应用级配置兜住，与文档口径一致）。
+ * 返回的是**新对象**，不改调用方记录。
+ */
+export function serializeTaskRecord(rec: TaskRecord): string {
+  const copy = cloneTaskRecord(rec);
+  const options = copy.spec.options;
+  if (options !== undefined) {
+    const rest = { ...options };
+    // 只摘「进程内对象」；纯数据（approvals / events / blackboard / 预算 / labels）保留。
+    delete rest.signal;
+    delete rest.client;
+    delete rest.onText;
+    delete rest.onTraceEvent;
+    delete rest.tools;
+    if (rest.fallbacks !== undefined) {
+      rest.fallbacks = rest.fallbacks.map((link) => ({ model: link.model }));
+    }
+    copy.spec = { ...copy.spec, options: rest };
+  }
+  return JSON.stringify(copy);
+}
+
 export function parseTaskRecord(raw: string): TaskRecord | undefined {
   const rec = JSON.parse(raw) as TaskRecord;
   if (!rec || typeof rec.taskId !== 'string') return undefined;

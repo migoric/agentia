@@ -96,8 +96,18 @@ export function collectPromptEntries(instance: object): CollectedPrompts {
         : {}),
       run: (input: unknown) => Reflect.apply(target[key] as Function, target, [input]),
     });
-    // 版本表以最终菜单名（capabilityName 校验后的 name）为键；缺省无版本不进表
-    if (spec.version !== undefined) versions[spec.name ?? name] = spec.version;
+    // 版本表以最终菜单名（capabilityName 校验后的 name）为键；缺省无版本不进表。
+    // 判定用**归一后的 version**（metadata.version 优先）：此前只看 spec.version，
+    // 只写 metadata.version 的能力在 manifest 有版本、trace 查不到（2026-11-07 深评）。
+    if (version !== undefined) {
+      // defineProperty 而非赋值：能力名允许 `__proto__`，赋值会走原型 setter 静默丢条目。
+      Object.defineProperty(versions, spec.name ?? name, {
+        value: version,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
   };
 
   // 实例方法（沿原型链）
