@@ -38,7 +38,7 @@ describe('DrainGate —— 优雅停机的等待闸（从 AsyncRunner 抽出）'
     assert.equal(gate.waiterCount, 0, '唤醒后等待者出表');
   });
 
-  it('超时：返回 false、停在停机态、等待者按原样留在表里（与抽取前逐字一致）', async () => {
+  it('超时：返回 false、停在停机态、等待者被摘除（2026-11-07 修复泄漏）', async () => {
     const gate = new DrainGate();
     const t0 = performance.now();
     const ok = await gate.waitForIdle(() => false, 40);
@@ -54,8 +54,8 @@ describe('DrainGate —— 优雅停机的等待闸（从 AsyncRunner 抽出）'
     assert.equal(gate.isDraining, true, '超时也停在停机态 —— drain 不是回滚，是「不再往前推」');
     assert.equal(
       gate.waiterCount,
-      1,
-      '旧实现超时后不摘除等待者（下次归零会再唤醒一次，结果已被忽略）—— 这是有意保留的原样行为',
+      0,
+      '超时后必须摘除等待者：旧实现会留下一个永不 resolve 的闭包（重复 drain 时累积）',
     );
   });
 

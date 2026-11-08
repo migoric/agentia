@@ -27,6 +27,7 @@
 import type { TaskEvent } from '../core/run.js';
 import type { TaskRecord, TaskStore } from '../store/store.js';
 import type { ApprovalSupervisor } from './approval-supervisor.js';
+import { TaskWakeGate } from './task-wake-gate.js';
 
 /**
  * `signalTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
@@ -77,6 +78,8 @@ export interface SignalSupervisorDeps {
   approvals: ApprovalSupervisor;
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
+  /** 跨唤醒路径的 per-task 互斥闸（2026-11-07 深评 P1，与 approve / wakeDue 共用） */
+  wakeGate?: TaskWakeGate;
   /**
    * cancel 的 per-task 在飞闸读数（2026-10-13 ref-run-root-close）：投递进入前等它收口再重判
    * （否则事件落库与 cancelled 落库互相覆盖，两边都说了假话）。
@@ -90,9 +93,12 @@ export class SignalSupervisor {
   readonly #inflight = new Map<string, Promise<TaskRecord>>();
 
   readonly #deps: SignalSupervisorDeps;
+  /** 共享闸；单测可省略（省略时本件自建一把，跨路径互斥只在 AsyncRunner 注入时生效） */
+  readonly #wakeGate: TaskWakeGate;
 
   constructor(deps: SignalSupervisorDeps) {
     this.#deps = deps;
+    this.#wakeGate = deps.wakeGate ?? new TaskWakeGate();
   }
 
   /**
@@ -139,7 +145,7 @@ export class SignalSupervisor {
     const prev = this.#inflight.get(taskId);
     const run = Promise.resolve(prev)
       .catch(() => undefined) // 前一次的 reject 已由它自己的调用方接走，这里只排队
-      .then(() => this.#signalInner(taskId, event))
+      .then(() => this.#wakeGate.run(taskId, () => this.#signalInner(taskId, event)))
       .finally(() => {
         // 只摘自己：链上可能已有更新的节点（无条件 delete 会摘掉别人的）
         if (this.#inflight.get(taskId) === run) this.#inflight.delete(taskId);

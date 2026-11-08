@@ -27,6 +27,7 @@ import { timerDue } from './wake-policy.js';
 import { resumeSkipReason } from './resume-policy.js';
 import { ownerAlive } from './owner-liveness.js';
 import type { ApprovalSupervisor } from './approval-supervisor.js';
+import { TaskWakeGate } from './task-wake-gate.js';
 
 /** resumePending 的启动扫描选项 */
 export interface ResumePendingOptions {
@@ -58,6 +59,8 @@ export interface ResumeScannerDeps {
   approvals: ApprovalSupervisor;
   /** 派发入口（`AsyncRunner.#dispatch`：停机闸 + 唯一派发点 + 停机窗口里的一次告警） */
   dispatch(rec: TaskRecord): void;
+  /** 跨唤醒路径的 per-task 互斥闸（2026-11-07 深评 P1，与 approve / signalTask 共用） */
+  wakeGate?: TaskWakeGate;
   /** 停机闸读数（`wakeDue` 的配套 5：drain 之后不唤醒，见 `drain-gate.ts`） */
   isDraining(): boolean;
   /**
@@ -78,9 +81,12 @@ export class ResumeScanner {
   readonly #inflightWakes = new Map<string, Promise<TaskRecord>>();
 
   readonly #deps: ResumeScannerDeps;
+  /** 共享闸；单测可省略（省略时本件自建一把，跨路径互斥只在 AsyncRunner 注入时生效） */
+  readonly #wakeGate: TaskWakeGate;
 
   constructor(deps: ResumeScannerDeps) {
     this.#deps = deps;
+    this.#wakeGate = deps.wakeGate ?? new TaskWakeGate();
   }
 
   resumePending(opts: ResumePendingOptions = {}): number | Promise<number> {
@@ -146,9 +152,13 @@ export class ResumeScanner {
     // 惰性路径跳过不丢事：下一轮读还会再判（若取消没成）。
     if (this.#deps.cancelInflight?.(rec.taskId)) return false;
     if (this.#inflightWakes.has(rec.taskId)) return false;
-    const run = this.#wakeDueInner(rec, now).finally(() => {
-      this.#inflightWakes.delete(rec.taskId);
-    });
+    // 跨路径互斥（2026-11-07 深评 P1）：approve / signalTask 在飞 ⇒ 跳过本轮。
+    if (this.#wakeGate.busy(rec.taskId)) return false;
+    const run = this.#wakeGate
+      .run(rec.taskId, () => this.#wakeDueInner(rec, now))
+      .finally(() => {
+        this.#inflightWakes.delete(rec.taskId);
+      });
     this.#inflightWakes.set(rec.taskId, run);
     // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
     run.catch(() => undefined);

@@ -15,7 +15,17 @@ export function combineSignals(...signals: Array<AbortSignal | undefined>): Abor
   // 去重：同一个源被传两次时，下面的 listeners Map 按源建（后者覆盖前者），
   // 却对同一源挂了两个同名监听 ⇒ 摘除只摘掉一个，另一个（连闭包）滞留在宿主级
   // 长寿 signal 上 —— 正是这段代码要防的累积。Set 保序，行为不变。
-  const real = [...new Set(signals.filter((s): s is AbortSignal => s !== undefined))];
+  // 结构守卫（2026-11-07 深评）：持久化 store 反序列化回来的 signal 可能是 `{}`（旧记录），
+  // 只判 undefined 会在 `s.addEventListener` 处抛 TypeError。不是合法 AbortSignal 就当没给。
+  const real = [
+    ...new Set(
+      signals.filter(
+        (s): s is AbortSignal =>
+          s !== undefined &&
+          typeof (s as { addEventListener?: unknown }).addEventListener === 'function',
+      ),
+    ),
+  ];
   // 单源直接复用，避免多包一层 listener
   if (real.length === 1) return real[0];
 

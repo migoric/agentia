@@ -22,6 +22,8 @@ import type { ApprovalDecisions } from './approval-supervisor.js';
 import { SignalSupervisor } from './signal-supervisor.js';
 import { ResumeScanner } from './resume-scanner.js';
 import type { ResumePendingOptions } from './resume-scanner.js';
+import { TaskWakeGate } from './task-wake-gate.js';
+import { createStreamJanitor } from './stream-janitor.js';
 import { timerDue } from './wake-policy.js';
 import type { SuspendedSummary } from './wake-policy.js';
 import { DrainGate } from './drain-gate.js';
@@ -310,6 +312,13 @@ export interface AppCallable {
   ): Promise<{ run: { runId: string; status: RunStatus }; result: AgentRunResult }>;
 }
 
+/**
+ * 跨进程流的兜底轮询间隔（2026-11-07 深评 F5）：本进程的 `markDone` 只覆盖本进程写终态，
+ * 后续段在别的进程完成时只能靠读 store 收口。5s 是「连接不挂死」与「store 读放大」的折中；
+ * 0 可关闭（内部/测试用）。
+ */
+const STREAM_CROSS_PROCESS_POLL_MS = 5_000;
+
 export class AsyncRunner {
   readonly store: TaskStore;
   /**
@@ -372,6 +381,12 @@ export class AsyncRunner {
   private readonly runTimeoutMs: number;
   private readonly approvalTimeoutMs: number;
 
+  /**
+   * 跨唤醒路径的 per-task 互斥闸（2026-11-07 深评 P1）：approve / signalTask / 审批超时 /
+   * 到期唤醒共用同一张表。缺了它，`approve × signalTask`（或 `wakeDue × signalTask`）
+   * 会各自凭同一份 suspended 快照派发一次 ⇒ 同一任务跑两遍、后写覆盖前写。
+   */
+  readonly #wakeGate = new TaskWakeGate();
   /**
    * 审批监督簇（挂起登记 + 在飞闸 + `approve` + 超时恢复）—— 实现见 approval-supervisor.ts。
    * 依赖（store / ownerId / approvalTimeoutMs / dispatch 回调）在构造函数末尾注入。
@@ -500,6 +515,7 @@ export class AsyncRunner {
       store: this.store,
       ownerId: this.ownerId,
       approvalTimeoutMs: this.approvalTimeoutMs,
+      wakeGate: this.#wakeGate,
       dispatch: (rec) => this.#dispatch(rec),
       cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
     });
@@ -510,6 +526,7 @@ export class AsyncRunner {
       store: this.store,
       ownerId: this.ownerId,
       approvals: this.#approvals,
+      wakeGate: this.#wakeGate,
       dispatch: (rec) => this.#dispatch(rec),
       cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
     });
@@ -518,6 +535,7 @@ export class AsyncRunner {
       ownerId: this.ownerId,
       host: this.#host,
       approvals: this.#approvals,
+      wakeGate: this.#wakeGate,
       dispatch: (rec) => this.#dispatch(rec),
       isDraining: () => this.#drain.isDraining,
       cancelInflight: (taskId) => this.#cancelInflight.get(taskId),
@@ -647,7 +665,7 @@ export class AsyncRunner {
   async streamTask(
     taskId: string,
     listener: (frame: TaskStreamFrame) => void,
-    opts: { from?: number } = {},
+    opts: { from?: number; pollMs?: number } = {},
   ): Promise<() => void> {
     const noop = (): void => {};
     if (this.#streams.has(taskId)) {
@@ -662,21 +680,57 @@ export class AsyncRunner {
       if (replayed.done) {
         const rec = await this.poll(taskId);
         if (rec) listener({ type: 'end', record: rec });
+        // 终态但记录被清（TTL / 外部删除）也不能静默：客户端需要一个收口帧。
+        else listener({ type: 'closed', reason: 'not-in-this-process' });
         return noop;
       }
       // 实时订阅：`onDone` 里补发 `end` 帧 —— 终态是流的一部分
       //（没有它，这条 SSE 会在任务跑完之后一直挂着，客户端以为它还在跑）
-      return this.#streams.subscribe(
+      const off = this.#streams.subscribe(
         taskId,
         (item: TaskStreamEvent) =>
           listener({ type: 'trace', index: item.index, event: item.event }),
         () => {
-          // poll 可能是异步 store ⇒ 用 then 补发（此刻任务已终态、记录已落库）
-          void Promise.resolve(this.poll(taskId)).then((rec) => {
-            if (rec) listener({ type: 'end', record: rec });
-          });
+          // poll 可能是异步 store ⇒ 用 then 补发（此刻任务已终态、记录已落库）。
+          // ⚠️ 必须有 rejection 处理（2026-11-07 深评）：`poll` 在 Redis 抖动时 reject，
+          // 没有第二个参数的 `.then` 会产生 unhandledRejection ⇒ Node ≥15 终止宿主进程。
+          void Promise.resolve(this.poll(taskId)).then(
+            (rec) => {
+              try {
+                if (rec) listener({ type: 'end', record: rec });
+                // 记录被清（TTL / 外部删除）时也不能一帧都不发：`end` 是唯一会
+                // closeStream 的帧，不发就是永远只有心跳。
+                else listener({ type: 'closed', reason: 'not-in-this-process' });
+              } catch {
+                /* listener 自己的错由宿主记账，不得再变成 unhandled */
+              }
+            },
+            () => {
+              try {
+                listener({ type: 'closed', reason: 'not-in-this-process' });
+              } catch {
+                /* 同上 */
+              }
+            },
+          );
         },
       );
+      // 跨进程收口（2026-11-07 深评 F5）：抽成 stream-janitor.ts 纯件（poll / 判定 / 收口由
+      // 回调注入），本类只负责接上 markDone 与 listener。
+      let janitorCleanup: () => void = () => {};
+      const cleanup = (): void => {
+        off();
+        janitorCleanup();
+      };
+      janitorCleanup = createStreamJanitor({
+        poll: () => Promise.resolve(this.poll(taskId)),
+        isTerminal: (rec) => isTerminalTask(rec as TaskRecord),
+        ownerId: this.ownerId,
+        onTerminal: () => this.#streams.markDone(taskId),
+        onClosed: () => listener({ type: 'closed', reason: 'not-in-this-process' }),
+        pollMs: opts.pollMs ?? STREAM_CROSS_PROCESS_POLL_MS,
+      });
+      return cleanup;
     }
     const rec = await this.poll(taskId);
     if (!rec) throw new TaskStreamError(`task 不存在: ${taskId}`);
@@ -758,10 +812,12 @@ export class AsyncRunner {
     if (advance !== undefined || isThenable(found)) {
       // 异步路径：先入闸（后续推进路径会看到它并等待/跳过），等在飞推进收口后**重读**再判
       const run = (async (): Promise<TaskRecord> => {
-        if (advance !== undefined) await advance.catch(() => undefined);
         // 意图先立（等闸窗口里就要可见）：等槽位那趟 #executeInner 可能正好放行 ——
-        // 意图在场它才不会起跑（见 #executeInner 的取消意图闸）
+        // 意图在场它才不会起跑（见 #executeInner 的取消意图闸）。
+        // ⚠️ 必须在 `await advance` **之前**登记：此前写在等待之后，与注释相反，
+        // 让「等 approve 收口」的窗口里新起的 #execute 看不到意图（2026-11-07 深评）。
         this.#cancels.add(taskId);
+        if (advance !== undefined) await advance.catch(() => undefined);
         try {
           const rec = advance !== undefined ? await this.store.get(taskId) : await found;
           return await this.#cancel(rec, taskId);
@@ -782,7 +838,10 @@ export class AsyncRunner {
 
   /** 三条推进路径（审批 / 事件投递 / 到期唤醒）在该任务上的在飞 Promise（无则 undefined） */
   #advanceInflight(taskId: string): Promise<unknown> | undefined {
+    // 跨路径闸的 tail 覆盖**全部**已登记的唤醒（含排队中的）；先取它，再退回各监督件的
+    // 单件读数 —— tail 是 2026-11-07 深评 P1 的修法，单件读数只作防御性兜底。
     return (
+      this.#wakeGate.tail(taskId) ??
       this.#approvals.inflightFor(taskId) ??
       this.#signals.inflightFor(taskId) ??
       this.#scanner.inflightWakeFor(taskId)
@@ -849,7 +908,10 @@ export class AsyncRunner {
       this.#reportPersistError(rec, error, 'outcome');
       saved = undefined;
     }
-    if (wasQueued) this.#cancelSettled.add(taskId);
+    // 只有「确实有一趟活着的 #execute 会消费这个标记」才登记；`queued` 但本进程没有
+    // 对应执行趟（resumePending 认领后被停机拒派 / 上一进程崩溃留下的记录）时登记
+    // 会永远没人摘（2026-11-07 深评 F8）。
+    if (wasQueued && this.#executions.has(taskId)) this.#cancelSettled.add(taskId);
     const finish = (): TaskRecord => {
       // 取消意图的终点（2026-10-13 ref-run-root-close）：还有活着的 #execute 时留给它消费 —— 它靠这个意图
       // 判「绝不起跑」（等槽位那趟的 readClaimed 可能读到的是落库前的旧快照）；
@@ -1085,11 +1147,20 @@ export class AsyncRunner {
     opts: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<TaskRecord> {
     const timeoutMs = opts.timeoutMs ?? 30_000;
+    // 坏值防线（2026-11-07 深评 F6）：`timeoutMs: NaN` 会让 `deadline` 变 NaN、
+    // `left <= 0` 恒假 ⇒ 永不超时；`Math.min(intervalMs, left)` 再把 NaN 交给
+    // setTimeout（Node 钳到 1ms）⇒ 每毫秒读一次 store。本仓其它定时旋钮全都挡了，这条漏了。
+    assertTimerDelay(timeoutMs, 'AsyncRunner.awaitTask 的 timeoutMs');
     // intervalMs 现在只是**兜底轮询**间隔，不是主路径：本进程把任务写到终态会主动唤醒
     // （见 task-waiters.ts 的 notify）。默认从 5ms 放宽到 250ms —— 旧实现每 5ms 读一次 store，
     // 等 30s 就是约 6000 次读（SQLite/Redis 下是 6000 次往返）。用异步 store 且终态由
     // **他进程**写入时唤不醒，才靠这个间隔兜底。
     const intervalMs = opts.intervalMs ?? 250;
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      throw new TypeError(
+        `AsyncRunner.awaitTask 的 intervalMs 必须是正的有限数（毫秒），收到 ${String(opts.intervalMs)}`,
+      );
+    }
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       // 走 poll 而不是裸 store.get：惰性审批超时的判定挂在那里（HITL）
@@ -1326,24 +1397,54 @@ export class AsyncRunner {
             if (segmentUsage) rec.usageTotal = addUsage(rec.usageTotal, segmentUsage);
             rec.error = out.result.error;
             if (out.result.stopReason === 'suspended' && out.result.suspendedMessages) {
-              // HITL 挂起：记录怎么改、事件簿记按 `eventsDelivered` 分档、以及「用户输入快照
-              // 必须在 `rec.spec` 被覆盖**之前**取」那条顺序事实 —— 全在 `run-outcome.ts`。
-              // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
-              // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
-              const snapshot = applySuspendedOutcome(
-                rec,
-                out.result,
-                out.result.suspendedMessages,
-                {
-                  isResume,
-                  hasSessionStore: this.sessionStore !== undefined,
-                  now: Date.now(),
-                },
-              );
-              // 顺序承重：快照先落地，`markSuspended` 再登记（后者读 status / suspendedReason /
-              // wakeAt —— 三样都刚被上一行写好；挂起读数纪律①：与落库同一个分支登记）
-              if (snapshot !== undefined) this.sessionInputs.set(rec.taskId, snapshot);
-              this.#approvals.markSuspended(rec);
+              // 取消意图优先于挂起（2026-11-07 深评 P1-1）：引擎侧的 abort 守卫已覆盖
+              // 「signal 已中止」的出口；这里再兜住「结果已返回、cancel 在随后一拍到达」的
+              // 窗口 —— 否则记录会落成 suspended，cancel 等不到终态而 409。
+              if (this.#cancels.has(rec.taskId)) {
+                rec.status = 'cancelled';
+                rec.error ??= abortedError();
+                rec.pendingApprovals = undefined;
+                rec.suspendedSince = undefined;
+                rec.suspendedReason = undefined;
+                rec.wakeAt = undefined;
+                rec.pendingEvents = undefined;
+                this.#approvals.unmarkSuspended(rec.taskId);
+              } else {
+                // HITL 挂起：记录怎么改、事件簿记按 `eventsDelivered` 分档、以及「用户输入快照
+                // 必须在 `rec.spec` 被覆盖**之前**取」那条顺序事实 —— 全在 `run-outcome.ts`。
+                // 槽位照常释放（finally）、onFinished 不触发（#execute 的出口判断）、
+                // finishedAt 不置（下面 finally 里按状态跳过）：它不是终态。
+                const snapshot = applySuspendedOutcome(
+                  rec,
+                  out.result,
+                  out.result.suspendedMessages,
+                  {
+                    isResume,
+                    hasSessionStore: this.sessionStore !== undefined,
+                    now: Date.now(),
+                  },
+                );
+                // 顺序承重：快照先落地，`markSuspended` 再登记（后者读 status / suspendedReason /
+                // wakeAt —— 三样都刚被上一行写好；挂起读数纪律①：与落库同一个分支登记）
+                if (snapshot !== undefined) this.sessionInputs.set(rec.taskId, snapshot);
+                this.#approvals.markSuspended(rec);
+              }
+            } else if (out.result.stopReason === 'suspended') {
+              // 自定义 AppCallable 返回 suspended 却没给 suspendedMessages：内建引擎不会
+              // 产生这种形状，但薄宿主/JS 宿主可达。按终态 failed 收口，别落成
+              // 「suspended 但挂起痕迹全清」的僵尸记录（approve / resume 两条闸都判不到）。
+              rec.status = 'failed';
+              rec.error = {
+                type: 'agent_error',
+                message:
+                  'AppCallable 返回了 stopReason=suspended，但没有 suspendedMessages —— 无法恢复，按失败收口',
+                retryable: false,
+              };
+              rec.pendingApprovals = undefined;
+              rec.suspendedSince = undefined;
+              rec.suspendedReason = undefined;
+              rec.wakeAt = undefined;
+              this.#approvals.unmarkSuspended(rec.taskId);
             } else {
               // 取消：机制与 `runTimeoutMs` 一字不差（同一条 abort signal），**意图**不同 ——
               // 意图从 `#cancels` 取，不从 signal 反推：同一条 signal 有三个来源
@@ -1395,6 +1496,10 @@ export class AsyncRunner {
         }
       }
     } catch (e) {
+      // 认领处的 #runAborts 登记在 save('running') **之前**，而 save 可能同步抛 /
+      // 异步 reject —— 那条路径跳过了内层 finally 的 delete ⇒ 句柄永久滞留。
+      // 这里兜底摘除（幂等），避免失败次数把 Map 撑成无界（2026-11-07 深评 F7）。
+      this.#runAborts.delete(rec.taskId);
       rec.status = 'failed';
       rec.error = classifyError(e);
       rec.finishedAt = Date.now();

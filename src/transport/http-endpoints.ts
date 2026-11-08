@@ -346,6 +346,13 @@ async function handleRun(ctx: HttpCtx): Promise<void> {
   }
   const input = await parseJsonBody(req, res, ctx.maxBodyBytes);
   if (input === PARSE_FAILED) return;
+  // 读 body 的 await 窗口里 drain 可能已经完成（inFlightRuns 还是 0 ⇒ drain 返回 true）。
+  // 这里必须在**同一同步段**重判再自增，否则「排空干净」之后还会起一条同步 run
+  // （2026-11-07 深评 F3）。
+  if (state.draining) {
+    sendShuttingDown(req, res);
+    return;
+  }
   let messages: ReturnType<typeof normalizeMessages>;
   try {
     messages = normalizeMessages(input);
