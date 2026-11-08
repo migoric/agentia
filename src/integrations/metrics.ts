@@ -1,5 +1,6 @@
 import type { Trace, TraceSink } from '../core/trace.js';
 import { zeroClauseOf } from '../core/limits.js';
+import { assertTimerDelay } from '../core/timeout.js';
 import { MetricsState } from './metrics-state.js';
 import type { MetricsSnapshot } from './metrics-state.js';
 import { renderOpenMetrics, renderPrometheus } from './metrics-render.js';
@@ -277,6 +278,16 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   const p = opts.prefix ?? 'agentia_';
   const intervalMs = opts.intervalMs ?? 60_000;
   const timeoutMs = opts.timeoutMs ?? 10_000;
+  // 2026-11-07 深评：NaN 此前让 `intervalMs > 0` 与 `intervalMs === 0` 同时为假 ⇒ 永远不导出；
+  // Infinity 被 setInterval 钳到 1ms。timeoutMs 同 OTLP 导出器。
+  // intervalMs 有「0 = 立即导出」的合法读法，所以不能直接复用 assertTimerDelay 的文案
+  // （它不插 limits 表里的 zeroClause，而报错文案必须与表同源）。
+  if (Number.isNaN(intervalMs) || intervalMs > 2_147_483_647) {
+    throw new TypeError(
+      `metricsSink: intervalMs 必须是可兑现的毫秒数（${zeroClauseOf('metricsSink.intervalMs')}），收到 ${String(intervalMs)}`,
+    );
+  }
+  assertTimerDelay(timeoutMs, 'metricsSink 的 timeoutMs');
   const serviceName = opts.serviceName ?? 'agentia';
 
   const state = new MetricsState({
@@ -327,8 +338,8 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   return {
     export(trace: Trace): void | Promise<void> {
       state.accumulate(trace);
-      // intervalMs=0：立即导出并由框架 await；否则只累加，定时器负责导出
-      if (format === 'otlp' && intervalMs === 0) return flush();
+      // intervalMs <= 0：立即导出并由框架 await；否则只累加，定时器负责导出
+      if (format === 'otlp' && intervalMs <= 0) return flush();
       return undefined;
     },
 

@@ -37,6 +37,22 @@ describe('core 单源原语', () => {
     assert.deepEqual(lines, ['data: a', 'data: b', '', 'data: c']);
   });
 
+  it('sseLines：单行超上限 ⇒ 带上游故障 status 抛出（不 OOM）', async () => {
+    const chunks = Array.from({ length: 9 }, () => 'x'.repeat(1_000_000));
+    await assert.rejects(
+      async () => {
+        for await (const _ of sseLines(streamOf(...chunks))) {
+          /* 不应产出完整行 */
+        }
+      },
+      (e: unknown) => {
+        assert.equal((e as { status?: number }).status, 500);
+        assert.match((e as Error).message, /分帧上限/);
+        return true;
+      },
+    );
+  });
+
   it('sseLines：提前 break 时取消底层流（读锁不释放就漏连接）', async () => {
     let cancelled = false;
     const enc = new TextEncoder();

@@ -33,6 +33,7 @@ import { backoffDelay, resolveRetry } from '../src/engine/retry.js';
 import {
   toolInputPayload,
   toolResultBlock,
+  validateMaxEventChars,
   validateMaxToolResultChars,
 } from '../src/engine/tool-events.js';
 import { resolveMaxRetries } from '../src/integrations/adapter-options.js';
@@ -291,12 +292,13 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     assert.ok(off.input.includes(body.a), 'false = 不截断：全文必须在场');
     assert.ok(zero.input.length < full.input.length, '0 不是「不截断」—— 它把正文截得更短');
     assert.ok(zero.input.length < off.input.length);
+    assert.throws(() => validateMaxEventChars(Number.NaN), /maxEventChars/);
     return 'disabled';
   },
 
   async maxToolResultChars() {
     const use = { id: 'tu1', name: 't', input: {} } as never;
-    assert.equal(toolResultBlock(use, true, 'abcdef', 0).content, '…(+6)');
+    assert.equal(toolResultBlock(use, true, 'abcdef', 0).content, '', '0 = 截到零长度');
     assert.equal(toolResultBlock(use, true, 'abcdef', false).content, 'abcdef');
     assert.equal(toolResultBlock(use, true, 'abcdef').content, 'abcdef');
     for (const bad of [Number.NaN, -1, 0.5]) {
@@ -863,6 +865,8 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
       ['metricsSink.maxModels', () => metricsSink({ maxModels: 0 }), /0 = 一个模型都认不下/],
       ['metricsSink.maxScores', () => metricsSink({ maxScores: 0 }), /0 = 一个分数都认不下/],
       ['maxToolResultChars', () => validateMaxToolResultChars(-1), /0 = 截到零长度/],
+      ['maxEventChars', () => validateMaxEventChars(Number.NaN), /0 = 截到零长度/],
+      ['metricsSink.intervalMs', () => metricsSink({ intervalMs: Number.NaN }), /0 = 立即导出/],
       // 2026-10-13 深评 A1 补登的四个 retry 旋钮（与 maxRetries 同纪律，文案插 zeroClauseOf）
       ['RetryOptions.maxAttempts', () => resolveRetry({ maxAttempts: -1 }), /0 = 关闭重试/],
       ['RetryOptions.jitter', () => resolveRetry({ jitter: 2 }), /0 = 不加抖动/],

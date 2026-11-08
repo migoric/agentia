@@ -5,10 +5,16 @@ import type {
   TextBlock,
   ToolUseBlock,
 } from '../core/message.js';
+import type { Usage } from '../core/trace.js';
 import { textOf } from '../core/text.js';
 import { resolveMaxRetries, statusOfStreamError } from './adapter-options.js';
 import { sseLines } from '../core/sse.js';
-import { assertTimerDelay, backoffMs, interruptibleSleep } from '../core/timeout.js';
+import {
+  assertTimerDelay,
+  backoffMs,
+  interruptibleSleep,
+  retryAfterMsOf,
+} from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 import { zeroClauseOf } from '../core/limits.js';
 
@@ -73,11 +79,31 @@ export interface AnthropicClientOptions {
  */
 export class AnthropicApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /**
+   * 流中途失败时**已经收到**的计量（2026-11-07 深评）：上游已经按这些 token 计费，
+   * 引擎要把它们记进失败 turn 的 span，否则 `maxCostUsd` / `maxTotalTokens` 会少算。
+   */
+  readonly partialUsage?: Usage;
+  /** 上游 `Retry-After`（毫秒，已夹到定时器可兑现区间）；引擎层重试据此避免热重试 */
+  readonly retryAfterMs?: number;
+  constructor(status: number, message: string, partialUsage?: Usage, retryAfterMs?: number) {
     super(message);
     this.name = 'AnthropicApiError';
     this.status = status;
+    if (partialUsage !== undefined) this.partialUsage = partialUsage;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** 已累积的 RawUsage → `Usage`；一个字段都没报过则 undefined（别把「没报」记成「全 0」） */
+function usageOfRaw(u: RawUsage, saw: boolean): Usage | undefined {
+  if (!saw) return undefined;
+  return {
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+  };
 }
 
 /** 创建默认 ModelClient（Anthropic）。不传则完全走环境变量 + 官方端点。 */
@@ -132,9 +158,21 @@ export function createAnthropicClient(options: AnthropicClientOptions = {}): Mod
             // 内容协商（与 openai.ts 同款）：个别兼容端点会忽略 stream:true 直接回整份 JSON
             const ctype = res.headers.get('content-type') ?? '';
             if (!ctype.includes('event-stream')) {
-              const body = (await res.json()) as Message & {
-                error?: { type?: string; message?: string };
-              };
+              const rawBody = res.clone();
+              let body: Message & { error?: { type?: string; message?: string } };
+              try {
+                body = (await res.json()) as Message & {
+                  error?: { type?: string; message?: string };
+                };
+              } catch {
+                // 200 + text/html（代理登录页 / CDN 错误页）：裸 SyntaxError 会被 classifyError
+                // 记成 unknown/不可重试，且文案看不出端点与状态码（2026-11-07 深评）。
+                throw new AnthropicApiError(
+                  500,
+                  `Anthropic 端点返回了非 JSON 响应（content-type=${ctype}）：` +
+                    (await rawBody.text().catch(() => '')).slice(0, 200),
+                );
+              }
               // 回落路径不能强转了事：「HTTP 200 裹错误」在非流式形态下同样存在
               // （流式路径由下方 readAnthropicStream 的 error 事件分支处理）。此前这里
               // 直接强转 Message：body 是 {"error":{...}} 时 content 为 undefined，
@@ -227,6 +265,9 @@ async function postWithRetries(
     try {
       res = await fetch(url, {
         method: 'POST',
+        // 不跟随重定向：307/308 会把 x-api-key 与整段 prompt/对话 body 发到另一个 origin。
+        // `manual` 让 3xx 落进下面的 !ok 分支，由带 status 的 ApiError 收口（可分类、不重试）。
+        redirect: 'manual',
         headers,
         body,
         ...(signal ? { signal } : {}),
@@ -245,7 +286,12 @@ async function postWithRetries(
       retryAfter = res.headers.get('retry-after');
       continue;
     }
-    throw new AnthropicApiError(res.status, `Anthropic 请求失败（HTTP ${res.status}）：${text}`);
+    throw new AnthropicApiError(
+      res.status,
+      `Anthropic 请求失败（HTTP ${res.status}）：${text}`,
+      undefined,
+      retryAfterMsOf(res.headers.get('retry-after')),
+    );
   }
 }
 
@@ -455,6 +501,7 @@ async function readAnthropicStream(
             500,
             `Anthropic 流式响应的 content_block index 非法（${String(event.index)}）：` +
               `必须是 0..${MAX_STREAM_BLOCK_INDEX} 的整数，按上游故障处理`,
+            usageOfRaw(usage, sawUsage),
           );
         }
         const type = cb.type ?? 'text';
@@ -521,6 +568,7 @@ async function readAnthropicStream(
         throw new AnthropicApiError(
           statusOfStreamError({ type: err.type }),
           `Anthropic 流内错误（${err.type ?? 'unknown'}）：${err.message ?? payload.slice(0, 300)}`,
+          usageOfRaw(usage, sawUsage),
         );
       }
       case 'message_stop': {
@@ -552,6 +600,7 @@ async function readAnthropicStream(
       500,
       `Anthropic 流式响应被截断（未收到 message_stop，也未收到 message_delta 的 stop_reason；` +
         `已累积 ${blocks.length} 个内容块、${chars} 字符文本）；响应不完整，按上游故障处理`,
+      usageOfRaw(usage, sawUsage),
     );
   }
 

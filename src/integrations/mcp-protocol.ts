@@ -1,3 +1,4 @@
+import { sseLines } from '../core/sse.js';
 import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 
 /**
@@ -188,7 +189,11 @@ export function unwrap(msg: { result?: unknown; error?: unknown }, method: strin
 export async function readMcpText(res: Response): Promise<string> {
   try {
     return await res.text();
-  } catch {
+  } catch (e) {
+    // 取消/超时不能被吞成「body 为空」：那会把 abort 改写成「SSE 里没有 id」的协议错，
+    // 引擎分类从 aborted/timeout 变成 unknown（2026-11-07 深评）。其余读失败仍按
+    // 「没有额外诊断信息」处理（status 已经给出第一条错误）。
+    if ((e as { name?: unknown } | null)?.name === 'AbortError') throw e;
     return '';
   }
 }
@@ -222,25 +227,36 @@ export function pickJsonRpcResult(msg: unknown, id: number, method: string): unk
  */
 export async function readMcpResult(res: Response, id: number, method: string): Promise<unknown> {
   const ct = (res.headers.get('content-type') ?? '').toLowerCase();
-  const text = await readMcpText(res);
   if (ct.includes('text/event-stream')) {
-    for (const frame of text.split(/\r?\n\r?\n/)) {
-      const data = frame
-        .split(/\r?\n/)
-        .filter((l) => l.startsWith('data:'))
-        .map((l) => l.slice(5).trim())
-        .join('');
-      if (data === '') continue;
-      let msg: unknown;
-      try {
-        msg = JSON.parse(data);
-      } catch {
+    if (res.body === null) {
+      throw new Error(`MCP ${method}：SSE 响应没有 body`);
+    }
+    // **增量**读 SSE（2026-11-07 深评）：规范只要求 server SHOULD 在发完响应后关流，
+    // 保活的 server 会让 `res.text()` 永远不 resolve。读到与 id 配对的帧就返回，
+    // `sseLines` 的 finally 会 cancel 流 —— 同时不再把整个 body 缓存进内存。
+    let data = '';
+    for await (const line of sseLines(res.body)) {
+      if (line === '') {
+        if (data !== '') {
+          let msg: unknown;
+          try {
+            msg = JSON.parse(data);
+          } catch {
+            data = '';
+            continue;
+          }
+          data = '';
+          if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
+        }
         continue;
       }
-      if (isJsonRpcResponse(msg) && msg.id === id) return unwrap(msg, method);
+      if (!line.startsWith('data:')) continue;
+      // SSE 规范：只去掉一个前导空格，保留 payload 的其余空白（多行 data 用换行拼接）。
+      data += (data === '' ? '' : '\n') + line.slice(5).replace(/^ /, '');
     }
     throw new Error(`MCP ${method}：SSE 响应里没有 id 为 ${id} 的报文`);
   }
+  const text = await readMcpText(res);
   if (text.trim() === '') {
     throw new Error(`MCP ${method}：响应体为空（期望 id 为 ${id} 的 JSON-RPC 报文）`);
   }

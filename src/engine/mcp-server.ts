@@ -3,13 +3,15 @@ import type { IncomingMessage, Server } from 'node:http';
 import { stringifySafe } from '../core/json.js';
 import { validateJsonSchema } from '../core/schema.js';
 import { TIMED_OUT, isTimeoutError, withTimeout } from '../core/timeout.js';
-import type { AgentTool, ModelClient, ToolRunContext } from '../core/tool.js';
+import type { AgentTool, ModelClient, ModelPricing, ToolRunContext } from '../core/tool.js';
 import type { SpanError, TraceContext, TraceSink } from '../core/trace.js';
 import { flushTraceSinks } from '../core/trace-sink.js';
 import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT, parseTraceparent } from '../core/trace.js';
 import { DEFAULT_PROTOCOL_VERSION } from '../integrations/mcp.js';
 import { createAnthropicClient } from '../integrations/anthropic.js';
 import { classifyError } from './errors.js';
+import { assertTimerDelay } from '../core/timeout.js';
+import { validateMaxEventChars, validateMaxToolResultChars } from './tool-events.js';
 import { startHttpTransport } from './mcp-server-http.js';
 import { startStdioTransport } from './mcp-server-stdio.js';
 import { buildToolRunContext } from './tool-context.js';
@@ -113,6 +115,22 @@ export interface McpServerOptions {
   auth?: (req: IncomingMessage) => unknown | Promise<unknown>;
   /** `serverInfo.name`（`initialize` 握手回给客户端），缺省 `'agentia'` */
   name?: string;
+  /**
+   * 是否把 `approval: 'required'` 的工具也暴露出去。**缺省 false**（2026-11-07 深评）：
+   * MCP 协议没有 HITL 挂起通道，反向桥直接 `tool.run` —— 暴露出去就等于绕过人工审批。
+   * 需要暴露时显式打开，并自行承担「客户端即审批人」的语义。
+   */
+  exposeApprovalRequiredTools?: boolean;
+  /** 单次 `tools/call` 的累计 token 上限（透传 `ToolRunContext.maxTotalTokens`） */
+  maxTotalTokens?: number;
+  /** 单次 `tools/call` 的累计成本上限（透传 `ToolRunContext.maxCostUsd`） */
+  maxCostUsd?: number;
+  /** 价格覆盖表（透传 `ToolRunContext.priceOverrides`，否则子循环里的自定义模型算不出成本） */
+  priceOverrides?: Record<string, ModelPricing>;
+  /** 单条工具结果回模型的字符上限（透传 `ToolRunContext.maxToolResultChars`） */
+  maxToolResultChars?: number | false;
+  /** assistant 文本记录口径（透传 `ToolRunContext.traceContent`） */
+  traceContent?: 'full';
 }
 
 /** `createMcpServer` 的返回值（也是两条传输各自的返回值） */
@@ -174,6 +192,11 @@ interface CallDeps {
   readonly sinks: readonly TraceSink[];
   /** 单次执行的超时（见 `McpServerOptions.toolTimeoutMs`）；undefined = 不限 */
   readonly toolTimeoutMs: number | undefined;
+  readonly maxTotalTokens: number | undefined;
+  readonly maxCostUsd: number | undefined;
+  readonly priceOverrides: Record<string, ModelPricing> | undefined;
+  readonly maxToolResultChars: number | false | undefined;
+  readonly traceContent: 'full' | undefined;
   /** 每次调用那棵 trace 的事件数闸（见 `McpServerOptions.traceLimits`）；undefined = 不限 */
   readonly traceLimits: TraceLimits | undefined;
   /** 事件正文截断上限（见 `McpServerOptions.maxEventChars`）；undefined = 引擎缺省 */
@@ -219,7 +242,16 @@ async function callTool(
   /** 入站链路（SEP-414）：调用方经 `params._meta.traceparent` 带来的上游 span；undefined = 孤立根 */
   link: TraceContext | undefined,
 ): Promise<Record<string, unknown>> {
-  const { sinks, toolTimeoutMs, maxEventChars } = deps;
+  const {
+    sinks,
+    toolTimeoutMs,
+    maxEventChars,
+    maxTotalTokens,
+    maxCostUsd,
+    priceOverrides,
+    maxToolResultChars,
+    traceContent,
+  } = deps;
   const recorder = new TraceRecorder({
     ...(deps.traceLimits?.maxEvents !== undefined ? { maxEvents: deps.traceLimits.maxEvents } : {}),
   });
@@ -246,6 +278,11 @@ async function callTool(
     abandoned: abandonAc.signal,
     signal,
     toolTimeoutMs,
+    ...(maxTotalTokens !== undefined ? { maxTotalTokens } : {}),
+    ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
+    ...(priceOverrides !== undefined ? { priceOverrides } : {}),
+    ...(maxToolResultChars !== undefined ? { maxToolResultChars } : {}),
+    ...(traceContent !== undefined ? { traceContent } : {}),
   });
 
   let ok = true;
@@ -415,6 +452,19 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
       'createMcpServer：app 必须是鸭子类型 { tools: AgentTool[] }（如 AgentApp）',
     );
   }
+  if (opts.toolTimeoutMs !== undefined) {
+    assertTimerDelay(opts.toolTimeoutMs, 'createMcpServer 的 toolTimeoutMs');
+  }
+  validateMaxEventChars(opts.maxEventChars);
+  validateMaxToolResultChars(opts.maxToolResultChars);
+  for (const [name, v] of [
+    ['maxTotalTokens', opts.maxTotalTokens],
+    ['maxCostUsd', opts.maxCostUsd],
+  ] as const) {
+    if (v !== undefined && Number.isNaN(v)) {
+      throw new TypeError(`createMcpServer：${name} 不能是 NaN（会让预算闸恒不触发）`);
+    }
+  }
   if (opts.transport !== 'stdio' && opts.transport !== 'http') {
     throw new TypeError(
       `createMcpServer：transport 只认 'stdio' | 'http'，收到 ${String(opts.transport)}`,
@@ -423,14 +473,30 @@ export function createMcpServer(app: McpServerApp, opts: McpServerOptions): McpS
 
   /** client 惰性构造（见 McpServerOptions.client）：第一次 tools/call 才建 */
   let cachedClient: ModelClient | undefined;
+  // HITL 工具**默认不暴露**（2026-11-07 深评）：MCP 没有审批挂起通道，暴露 = 绕过审批。
+  const tools = opts.exposeApprovalRequiredTools
+    ? app.tools
+    : app.tools.filter((t) => t.approval !== 'required');
+  if (tools.length < app.tools.length) {
+    // 不静默藏工具（2026-11-07 深评）：用户会疑惑「明明有 @Tool，MCP 客户端看不到」。
+    console.warn(
+      `[agentia:mcp-server] 默认不暴露 ${app.tools.length - tools.length} 个 approval:'required' 工具 ` +
+        '（MCP 没有 HITL 挂起通道，暴露 = 绕过审批）；要暴露请设 exposeApprovalRequiredTools: true',
+    );
+  }
   const deps: DispatchDeps = {
-    tools: app.tools,
+    tools,
     serverInfo: { name: opts.name ?? 'agentia', version: SERVER_INFO_VERSION },
     sinks: opts.sinks ?? [],
     toolTimeoutMs: opts.toolTimeoutMs,
     // 构造期校验（坏值响亮抛 TypeError，与 run 入口同一个判定器）
     traceLimits: resolveTraceLimits(opts.traceLimits, 'createMcpServer'),
     maxEventChars: opts.maxEventChars,
+    maxTotalTokens: opts.maxTotalTokens,
+    maxCostUsd: opts.maxCostUsd,
+    priceOverrides: opts.priceOverrides,
+    maxToolResultChars: opts.maxToolResultChars,
+    traceContent: opts.traceContent,
     clientOf: () => {
       cachedClient ??= opts.client ?? createAnthropicClient();
       return cachedClient;

@@ -14,8 +14,9 @@ import type {
 } from '../core/message.js';
 import { resolveMaxRetries, statusOfStreamError } from './adapter-options.js';
 import { textOf } from '../core/text.js';
+import type { Usage } from '../core/trace.js';
 import { sseLines } from '../core/sse.js';
-import { backoffMs, interruptibleSleep } from '../core/timeout.js';
+import { backoffMs, interruptibleSleep, retryAfterMsOf } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -70,10 +71,16 @@ export interface OpenAIClientOptions {
  */
 export class OpenAICompatApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** 流中途失败时已收到的计量（2026-11-07 深评；语义见 anthropic.ts 同名字段） */
+  readonly partialUsage?: Usage;
+  /** 上游 `Retry-After`（毫秒，已夹到定时器可兑现区间） */
+  readonly retryAfterMs?: number;
+  constructor(status: number, message: string, partialUsage?: Usage, retryAfterMs?: number) {
     super(message);
     this.name = 'OpenAICompatApiError';
     this.status = status;
+    if (partialUsage !== undefined) this.partialUsage = partialUsage;
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -102,6 +109,9 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
               `${baseURL}/v1/chat/completions`,
               {
                 method: 'POST',
+                // 不跟随重定向：307/308 会把 prompt body 发到另一个 origin（authorization
+                // 会被 undici 剥掉，但 body 不会）。
+                redirect: 'manual',
                 headers: {
                   'content-type': 'application/json',
                   ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
@@ -126,6 +136,8 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
               throw new OpenAICompatApiError(
                 res.status,
                 `OpenAI 请求失败 ${res.status}: ${body.slice(0, 200)}`,
+                undefined,
+                retryAfterMsOf(res.headers.get('retry-after')),
               );
             }
 
@@ -135,7 +147,17 @@ export function createOpenAIClient(opts: OpenAIClientOptions = {}): ModelClient 
             const ctype = res.headers.get('content-type') ?? '';
             const isSse = ctype.includes('event-stream');
             if (!useStream || !isSse) {
-              const data = (await res.json()) as OpenAIChatResponse;
+              const rawBody = res.clone();
+              let data: OpenAIChatResponse;
+              try {
+                data = (await res.json()) as OpenAIChatResponse;
+              } catch {
+                throw new OpenAICompatApiError(
+                  500,
+                  `OpenAI 兼容端点返回了非 JSON 响应（content-type=${ctype}）：` +
+                    (await rawBody.text().catch(() => '')).slice(0, 200),
+                );
+              }
               const message = toAnthropicMessage(data, params.model);
               // 非流式：完整文本一次性交给回调（与流式的最终结果一致）
               // 分隔符 `''`：回落的原文本来就是一整段，拼回去要与流式累积的文本逐字一致
@@ -473,6 +495,7 @@ async function readStream(
         statusOfStreamError(chunk.error),
         `OpenAI 流式响应携带错误分片: ${chunk.error.message ?? JSON.stringify(chunk.error)}` +
           (chunk.error.code ? `（code=${chunk.error.code}）` : ''),
+        streamUsageOf(acc),
       );
     }
     applyChunk(acc, chunk, textCallbacks);
@@ -488,6 +511,7 @@ async function readStream(
       `OpenAI 流式响应被截断（未收到 [DONE]，也未收到 finish_reason；` +
         `已累积 ${acc.text.length} 字符文本、${acc.toolCalls.size} 个工具调用）；` +
         '响应不完整，按上游故障处理',
+      streamUsageOf(acc),
     );
   }
   if (!acc.text && acc.toolCalls.size === 0 && mapStopReason(acc.finish, false) !== 'refusal') {
@@ -550,10 +574,30 @@ function inputUsageOf(u: OpenAIUsage | undefined): {
   inputTokens: number;
   cacheReadTokens: number;
 } {
-  const prompt = u?.prompt_tokens ?? 0;
-  const hit = typeof u?.prompt_cache_hit_tokens === 'number' ? u.prompt_cache_hit_tokens : 0;
+  const num = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+  const prompt = num(u?.prompt_tokens);
+  const hit = num(u?.prompt_cache_hit_tokens);
   // Math.max 只兜畸形回报（hit > prompt_tokens）：宁可不拆，也别把 input_tokens 弄成负数
   return { inputTokens: Math.max(0, prompt - hit), cacheReadTokens: hit };
+}
+
+/** 累积器里已收到的 usage（失败路径用；没收到则 undefined） */
+function streamUsageOf(acc: StreamAccumulator): Usage | undefined {
+  if (acc.usage === undefined) return undefined;
+  const { inputTokens, cacheReadTokens } = inputUsageOf(acc.usage);
+  return {
+    inputTokens,
+    outputTokens:
+      typeof acc.usage.completion_tokens === 'number' &&
+      Number.isFinite(acc.usage.completion_tokens) &&
+      acc.usage.completion_tokens >= 0
+        ? acc.usage.completion_tokens
+        : 0,
+    cacheReadTokens,
+    // OpenAI 形态无缓存写计量
+    cacheCreationTokens: 0,
+  };
 }
 
 /** 累积器 → Message */
