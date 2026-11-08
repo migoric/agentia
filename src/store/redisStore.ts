@@ -1,5 +1,5 @@
 import { isTerminalStatus } from '../core/run.js';
-import { parseTaskRecord } from './record.js';
+import { parseTaskRecord, serializeTaskRecord } from './record.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
 /**
@@ -142,7 +142,7 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async save(rec: TaskRecord): Promise<void> {
-    const json = JSON.stringify(rec);
+    const json = serializeTaskRecord(rec);
     // TTL 只加在**终态**记录上（2026-09-28 外部深评 S1）。此前无条件加：一条在等审批的
     // 任务，TTL 一到记录就没了 —— 那条「批了它」的决定无家可归（`InMemoryTaskStore.evict`
     // 里那句「suspended 不可淘汰」是同一条道理，两处此前读数相反）。
@@ -190,10 +190,23 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async list(): Promise<TaskRecord[]> {
-    const keys = await this.enumerate(this.taskPattern());
+    // Redis SCAN 契约允许同一个 key 返回多次（rehash / 过期时真实发生）。不去重会让
+    // `resumePending` 把同一条记录认领两次并派发两次（2026-11-07 深评）。
+    const keys = [...new Set(await this.enumerate(this.taskPattern()))];
     const recs: TaskRecord[] = [];
     for (const k of keys) {
-      const rec = parseRecord(await this.client.get(k));
+      let raw: string | null;
+      try {
+        raw = await this.client.get(k);
+      } catch (e) {
+        // 单 key 读失败不该让整次 resume 扫描 reject（扫描会因此完全停摆）。
+        console.warn(
+          `[agentia] RedisTaskStore.list 读取 ${k} 失败，跳过该条：`,
+          e instanceof Error ? e.message : e,
+        );
+        continue;
+      }
+      const rec = parseRecord(raw);
       if (rec) recs.push(rec);
     }
     recs.sort(

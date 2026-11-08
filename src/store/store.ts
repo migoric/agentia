@@ -167,11 +167,20 @@ export interface TaskStore {
  * `RunInvocationOptions.fallbacks` 的序列化边界注释）。
  */
 export function cloneTaskRecord(rec: TaskRecord): TaskRecord {
-  return cloneData(rec);
+  return cloneData(rec, 0);
 }
 
-function cloneData<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(cloneData) as T;
+/** 记录应是浅层 JSON 数据；超过这个深度按事故级输入响亮拒绝，而不是让 V8 爆栈 */
+const MAX_CLONE_DEPTH = 256;
+
+function cloneData<T>(value: T, depth: number): T {
+  if (depth > MAX_CLONE_DEPTH) {
+    throw new TypeError(
+      `TaskRecord 的嵌套超过 ${MAX_CLONE_DEPTH} 层 —— 记录应是浅层 JSON 数据，` +
+        '拒绝深拷以免 RangeError 掩盖真实问题（2026-11-07 深评）',
+    );
+  }
+  if (Array.isArray(value)) return value.map((v) => cloneData(v, depth + 1)) as T;
   if (value !== null && typeof value === 'object') {
     const proto: unknown = Object.getPrototypeOf(value);
     // 类实例（AbortSignal 等）按引用保留：克隆它没有意义，也克隆不了
@@ -180,7 +189,7 @@ function cloneData<T>(value: T): T {
     for (const [k, v] of Object.entries(value)) {
       // 直接赋值 '__proto__' 会走原型 setter：自有键丢失且副本原型被改。
       Object.defineProperty(out, k, {
-        value: cloneData(v),
+        value: cloneData(v, depth + 1),
         writable: true,
         enumerable: true,
         configurable: true,

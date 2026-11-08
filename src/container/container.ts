@@ -144,6 +144,9 @@ export class Container {
     // `container: []`，不许引内部任何模块），为几行逻辑破叶子边界不值得。
     // 逃逸口：确实要注入 Promise **本体**，包一层即可（`useValue: { promise }`）。
     if (value instanceof Promise) {
+      // 抛类型错前先消费 rejection（2026-11-07 深评）：一个会 reject 的 async 工厂此前会
+      // 留下 unhandledRejection，Node ≥15 默认终止宿主进程 —— 装配错误已经报了，不该再死一次。
+      value.catch(() => undefined);
       throw new TypeError(
         `provider "${token}" 解析出的是 Promise：容器同步解析，它会被原样缓存成「值」，` +
           '下游拿到 Promise 而非 await 过的结果（首次属性访问全 undefined、且零报错）。' +

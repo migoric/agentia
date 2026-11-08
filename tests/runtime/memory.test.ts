@@ -239,7 +239,7 @@ describe('MemoryStore 跨 run 记忆', () => {
     );
   });
 
-  it('水合 load 失败：不杀死 run（辅助动作失败 → 当无记忆继续），回写仍发生', async () => {
+  it('水合 load 失败：不杀死 run（当无记忆继续），但**不回写**（避免覆盖没读到的记忆）', async () => {
     const saved: Record<string, unknown>[] = [];
     const store: MemoryStore = {
       load: () => {
@@ -260,8 +260,8 @@ describe('MemoryStore 跨 run 记忆', () => {
     assert.equal(run.status, 'succeeded', '水合失败不得把 run 打成 failed');
     assert.equal(result.finalText, 'ok');
     assert.equal(result.error, undefined);
-    // 失败路径同样回写（blackboard 当前值）：工具写过 k
-    assert.deepEqual(saved, [{ k: 'v' }]);
+    // 读失败 ⇒ 没有基线，禁止回写：否则本次 run 的默认值会覆盖库里没读到的真实记忆
+    assert.deepEqual(saved, []);
   });
 
   it('load 用无原型对象：__proto__ 键不被吞（与 flushMemory 对称）', () => {

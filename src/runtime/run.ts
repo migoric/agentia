@@ -5,6 +5,7 @@ import type { TraceLimits } from '../engine/tracer.js';
 import type { Trace, TraceSink, TraceRecordEvent } from '../core/trace.js';
 import { isSuccessStopReason } from '../engine/types.js';
 import { runAgent } from '../engine/loop.js';
+import { tailToolUses } from '../engine/resume-input.js';
 import { TraceRecorder, resolveTraceLimits } from '../engine/tracer.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunMeta, RunStatus } from '../core/run.js';
@@ -220,14 +221,32 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
   }
   /** 水合时读到的版本句柄：回写照它做 CAS（没 CAS 的 store 恒 undefined） */
   let memoryRev: unknown;
+  /** 水合是否成功（失败时禁止回写：否则用本次默认值覆盖没读到的真实记忆） */
+  let memoryHydrated = false;
   return withRunContext(ctx, async () => {
     try {
+      // 程序内 HITL 续跑 + session 的组合（2026-11-07 深评）：`suspendedMessages` 已含
+      // 上一段 loadSession 拼进去的完整历史，再 load 会翻倍；成功后的 append 又会把
+      // 含未决 tool_use 的 assistant 整段写回，留下孤立 tool_use / 连续 assistant，
+      // 下一轮该会话直接 400。AsyncRunner 靠「恢复段不注入 session」规避；这条公开路径
+      // 没有对应闸，这里同样不注入并**出声**（不静默丢会话）。
+      const manualResume =
+        options.approvals !== undefined || tailToolUses(options.messages).length > 0;
+      const sessionSkipped = session !== undefined && manualResume;
+      if (sessionSkipped) {
+        console.warn(
+          '[agentia] 续跑段（approvals / 末尾未决 tool_use）不再注入 session：' +
+            'suspendedMessages 已含完整历史，重复 load/append 会翻倍并毒化会话；' +
+            '本轮不会回写会话。要持久化 HITL 请用 AsyncRunner（它有 sessionInput 快照）。',
+        );
+      }
       options.contextInit?.(ctx);
       if (memory) {
         // 水合是辅助动作：store 故障（Redis 挂掉等）不得杀死本次 run ——
         // 与下面 flushMemory 对称（那里已有同款防护）。失败即当「无记忆」继续跑。
         try {
           memoryRev = await hydrateMemory(memory, ctx);
+          memoryHydrated = true;
         } catch (e) {
           // 水合失败此前是**完全无声**的：它的后果（CAS 回写被拒）发生在几十行之后、还被归因成
           // 「并发抢写」（2026-09-29 外部深评 A1）—— 在这里留下**第一因**，别让它隔着整条 run。
@@ -240,7 +259,7 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       const result = await runAgent<S>({
         ...options,
         // 会话历史拼在传入 messages **之前**；读不出来就当无历史（同上：辅助动作不击穿 run）
-        messages: await loadSession(session, options.messages),
+        messages: sessionSkipped ? options.messages : await loadSession(session, options.messages),
         recorder: run.recorder,
         // 会话标识落 run 根 attribute（`session.id`）—— 多轮 run 按会话聚合的锚点
         ...(session ? { sessionId: session.id } : {}),
@@ -259,15 +278,18 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
         // 回写是辅助动作：失败不得把已成功的 run 翻成 failed（会丢结果与 trace），
         // 与下面失败路径的 flushMemory 同款防护。
         try {
-          await flushMemory(memory, ctx, memoryRev);
-        } catch {
-          /* ignore */
+          await flushMemory(memory, ctx, memoryRev, memoryHydrated);
+        } catch (e) {
+          console.warn(
+            '[agentia] 记忆回写失败，本轮改动未落库：' +
+              (e instanceof Error ? e.message : String(e)),
+          );
         }
       }
       // 只在**跑成功**的轮次回写会话（见 appendSession 的不变量 1）。
       // 注意判据是 run 的终态而非「有没有抛异常」—— stopReason 为 error / max_tokens /
       // budget_exceeded / aborted 的 run 同样是「没跑完」，不该进对话历史。
-      if (session && run.status === 'succeeded') {
+      if (session && !sessionSkipped && run.status === 'succeeded') {
         await appendSession(session, options.messages, result.finalText);
       }
       // 冲刷前把「run 之后才算得出的结论」挂上 trace（见 beforeFlush 的注释）。
@@ -280,9 +302,12 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       if (memory) {
         // 失败路径也回写；save 自身出错不掩盖原始错误
         try {
-          await flushMemory(memory, ctx, memoryRev);
-        } catch {
-          /* ignore */
+          await flushMemory(memory, ctx, memoryRev, memoryHydrated);
+        } catch (e) {
+          console.warn(
+            '[agentia] 记忆回写失败，本轮改动未落库：' +
+              (e instanceof Error ? e.message : String(e)),
+          );
         }
       }
       await flushSinks(options.sinks, run.result!.trace);
@@ -461,7 +486,17 @@ async function flushMemory(
   memory: { store: MemoryStore; keys: string[] },
   ctx: RunContext,
   rev: unknown,
+  hydrated: boolean,
 ): Promise<void> {
+  if (!hydrated) {
+    // 读都没成功就不能写：非 CAS store 此前会直接 save，把库里没读到的真实记忆覆盖成
+    // 本次 run 的默认值（2026-11-07 深评）。
+    console.warn(
+      '[agentia] 记忆回写被跳过：本次水合（load）失败 ⇒ 没有可用基线，写回会覆盖没读到的记忆。' +
+        `keys=[${memory.keys.join(', ')}] —— 真因是读失败（store 连通性），不是并发。`,
+    );
+    return;
+  }
   // 无原型对象：`entries['__proto__'] = v` 在 {} 上会走 Object.prototype 的 setter
   // （改掉原型而非建属性），该 key 的回写值会静默丢失
   const entries: Record<string, unknown> = Object.create(null);

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { createRequire } from 'node:module';
-import { parseTaskRecord } from './record.js';
+import { parseTaskRecord, serializeTaskRecord } from './record.js';
 import type { TaskRecord, TaskStore } from './store.js';
 
 // node:sqlite 是 Node ≥22.5 才有的内置模块。这里**延迟加载**而非顶层静态 import：
@@ -70,15 +70,32 @@ export class SqliteTaskStore implements TaskStore {
     // 读时自愈判据扩到两列（见 healRow）。存量库走下面的**就地迁移**：
     // CREATE TABLE IF NOT EXISTS 不会给旧表加列，所以查列 → 缺则 ALTER + 从 json 回填。
     const cols = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
+    // 迁移事务化（2026-11-07 深评）：ALTER 与回填是两条 DDL/DML，中间被杀会留下
+    // 「列在、wake_at 全 NULL」的半迁移；两个 worker 同时首启还会 duplicate column 崩。
+    // BEGIN IMMEDIATE 串行化；duplicate column 视为「别的进程刚做完」并继续。
     if (!cols.some((c) => c.name === 'wake_at')) {
-      this.db.exec('ALTER TABLE tasks ADD COLUMN wake_at INTEGER');
-      // 回填：旧行的 wakeAt 只在 json 里（不补的话旧库里的在睡任务从此醒不来 ——
-      // 那正是本列要服务的那批记录）
-      this.db.exec(
-        "UPDATE tasks SET wake_at = json_extract(json, '$.wakeAt') " +
-          "WHERE json_extract(json, '$.wakeAt') IS NOT NULL",
-      );
+      try {
+        this.db.exec('BEGIN IMMEDIATE');
+        this.db.exec('ALTER TABLE tasks ADD COLUMN wake_at INTEGER');
+        this.db.exec(
+          "UPDATE tasks SET wake_at = json_extract(json, '$.wakeAt') " +
+            "WHERE json_extract(json, '$.wakeAt') IS NOT NULL",
+        );
+        this.db.exec('COMMIT');
+      } catch (e) {
+        try {
+          this.db.exec('ROLLBACK');
+        } catch {
+          /* 已回滚 / 事务未开始 */
+        }
+        if (!/duplicate column/i.test((e as Error)?.message ?? String(e))) throw e;
+      }
     }
+    // 幂等回填：半迁移窗口留下的 NULL 也在这里补（只扫 wake_at IS NULL 的行）。
+    this.db.exec(
+      "UPDATE tasks SET wake_at = json_extract(json, '$.wakeAt') " +
+        "WHERE wake_at IS NULL AND json_extract(json, '$.wakeAt') IS NOT NULL",
+    );
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, wake_at)');
   }
 
@@ -92,7 +109,7 @@ export class SqliteTaskStore implements TaskStore {
         rec.idempotencyKey ?? null,
         rec.status,
         rec.wakeAt ?? null,
-        JSON.stringify(rec),
+        serializeTaskRecord(rec),
       );
   }
 
@@ -108,13 +125,25 @@ export class SqliteTaskStore implements TaskStore {
    * 判据是「列 ≠ json」而不是「刚才归一过没有」：任何原因（手改过、旧版本写的、将来又一次
    * 改名）造成的漂移都该被顺手修掉，不依赖调用方传一个「我改过」的旗子。
    */
-  private healRow(storedStatus: string | null, storedWakeAt: number | null, rec: TaskRecord): void {
+  private healRow(
+    storedStatus: string | null,
+    storedWakeAt: number | null,
+    storedJson: string,
+    rec: TaskRecord,
+  ): void {
     const wakeAt = rec.wakeAt ?? null;
     if (storedStatus === rec.status && storedWakeAt === wakeAt) return;
     try {
+      // 派生列先拉正（不碰 json，绝无覆盖并发 save 的风险）。
       this.db
-        .prepare('UPDATE tasks SET status = ?, wake_at = ?, json = ? WHERE task_id = ?')
-        .run(rec.status, wakeAt, JSON.stringify(rec), rec.taskId);
+        .prepare('UPDATE tasks SET status = ?, wake_at = ? WHERE task_id = ?')
+        .run(rec.status, wakeAt, rec.taskId);
+      // json 回写带 CAS（`json = 旧值`）：多进程下若并发 save 已经换了新快照，这一条不生效，
+      // 留给下一次真实 save 归一。旧形状的归一化会改 json，所以不能把两者合并成一条
+      // （合并后 WHERE json=旧值 会因“写的是新 json”而永远不命中）。
+      this.db
+        .prepare('UPDATE tasks SET json = ? WHERE task_id = ? AND json = ?')
+        .run(serializeTaskRecord(rec), rec.taskId, storedJson);
     } catch (err) {
       // 只读库 / 他进程占锁超时：读照常返回归一后的记录，只有列这一处没自愈。**响亮一次**，
       // 不静默 —— 否则「DBA 看到旧值」这件事没有任何痕迹（按 taskId 去重，见字段注释）。
@@ -134,7 +163,7 @@ export class SqliteTaskStore implements TaskStore {
       .get(taskId) as { status: string | null; wake_at: number | null; json: string } | undefined;
     if (!row) return undefined;
     const rec = parseTaskRecord(row.json);
-    if (rec) this.healRow(row.status, row.wake_at, rec);
+    if (rec) this.healRow(row.status, row.wake_at, row.json, rec);
     return rec;
   }
 
@@ -147,7 +176,7 @@ export class SqliteTaskStore implements TaskStore {
       .get(key) as { status: string | null; wake_at: number | null; json: string } | undefined;
     if (!row) return undefined;
     const rec = parseTaskRecord(row.json);
-    if (rec) this.healRow(row.status, row.wake_at, rec);
+    if (rec) this.healRow(row.status, row.wake_at, row.json, rec);
     return rec;
   }
 
@@ -164,7 +193,7 @@ export class SqliteTaskStore implements TaskStore {
       // 形状不合格的行**跳过**（不是记录）；坏 JSON 照旧抛（与 get 口径一致）
       const rec = parseTaskRecord(r.json);
       if (!rec) continue;
-      this.healRow(r.status, r.wake_at, rec);
+      this.healRow(r.status, r.wake_at, r.json, rec);
       out.push(rec);
     }
     return out;
@@ -190,7 +219,7 @@ export class SqliteTaskStore implements TaskStore {
     for (const r of rows) {
       const rec = parseTaskRecord(r.json);
       if (!rec) continue;
-      this.healRow(r.status, r.wake_at, rec);
+      this.healRow(r.status, r.wake_at, r.json, rec);
       out.push(rec);
     }
     return out;
