@@ -447,6 +447,7 @@ run 在**文件末尾** —— 取最早那种写法在长跑 dev 环里等于�
 | `memory` | 跨 run 记忆 `{ store, keys }`：run 前水合进 blackboard（用户种子优先）、收尾写回；与 `session` 正交（见 `MemoryStore`） |
 | `beforeFlush` | `(trace, result) => void \| Promise<void>`：**sinks 冲刷之前**的最后一笔（run 正常收尾后调一次，抛错被吞）。给「**拿到结果才判得出**的结论」用的缝 —— 典型是 `defineEval` 的 score：等 `app.run` 返回再 `attachScore`，`metricsSink` 早在导出那一刻聚完账，分数就永远进不了指标。读 trace 就够的判断不必用它，写进 sinks 里即可（见 §6 判官配方） |
 | `approvals` | HITL 审批决定（`Record<tool_use_id, ApprovalDecision>`）：恢复 `suspended` 的 run 时传入（异步宿主会自动带，见 §6.6「人工审批」）；手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 |
+| `approvalEpoch` | 续跑段的挂起时刻（= `TaskRecord.suspendedSince`，异步宿主自动注入）。引擎只认 `requestedAt` 与它相等的决定 —— 防止旧挂起留下的同名 `tool_use_id`（OpenAI 兼容端点会复用 `call_1`）自动批准新一次调用；手工续跑省略 = 不做 epoch 过滤（同 run 内仍只消费一次） |
 | `events` | run 事件（`TaskEvent[]`，`{ eventId?, type, payload }` 全是字符串）：挂起期间投递、随 `TaskRecord` 落库的事件，续跑段由引擎在**未决 tool_use 解决之后**渲染成 user 文本消息注入消息流（异步宿主经 `signalTask` 自动带，见 §6.6「事件投递」）；手工续跑时也可直接给 |
 
 返回 `AgentRunOutput`：`{ run, result }`。`result` 含 `trace` / `stopReason` / `finalText` / `iterations` / `error` / `typed`；
@@ -1018,7 +1019,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
-| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path })` → `TraceSink`，一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` / `view` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path, fsync? })` → `TraceSink`（`fsync: true` 时每次追加后同步落盘；缺省 false 保持旧性能），一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` / `view` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -1520,6 +1521,7 @@ server —— Claude Code / Cursor / 任何 MCP 宿主都能直接调你的 `@To
 - **结果映射与正向桥方向对称**：工具返回 string → `content: [{ type: 'text', text }]`，其他 JSON 化进 text；抛错 → 协议层成功 + `isError: true`（MCP 惯例；正向桥的连接器正好把 `isError` 转回抛错）。
 - **取消是协作式**：客户端断连 / `close()` 会中止该次调用的 `ToolRunContext.signal`；`toolTimeoutMs` 与引擎同款语义（非正数 / 不设 = 不限；超时 = **放弃等待** + abort `abandoned`，该次调用回 `isError`，server 不挂）。
 - **默认 client 是惰性构造的**：`client` 不给时第一次 `tools/call` 才走 `createAnthropicClient()`（与引擎默认同款）—— 纯工具 server 不需要 API key 在场。
+- **`approval: 'required'` 的工具默认不暴露**（2026-11-07）：MCP 没有 HITL 挂起通道，反向桥直接 `tool.run` —— 暴露出去等于绕过人工审批。要暴露请显式设 `exposeApprovalRequiredTools: true`，并理解「MCP 客户端即审批人」；预算类旋钮（`maxTotalTokens` / `maxCostUsd` / `priceOverrides` / `maxToolResultChars` / `traceContent`）会透传给 `ToolRunContext`，否则子 agent 类工具在桥内不受预算约束。
 - **想看一个真用它干活的例子**：`examples/observability-mcp/` 把 `buildRunReport` / `diffTraces` 包成两个只读工具（`report_trace` / `diff_traces`）暴露给任意 MCP 宿主，让 agent 自己查「我上一轮慢在哪」；还带一条**实边界**（工具参数由模型给 ⇒ 只读 trace 根内的文件，realpath 比前缀），以及一条端到端的验收脚本（起真 server ⇐ 出厂连接器 + `mcpTools`）。
 
 ```ts
@@ -1555,6 +1557,12 @@ console.log(mcp.url); // http://127.0.0.1:8787/mcp
 | `traceLimits` | 每次 `tools/call` 那棵 trace 的事件数闸（与引擎 `traceLimits` 同款：超限停记 + run 根留 `trace.truncated` 簿记；缺省 = 不限；坏值构造期抛 TypeError） |
 | `maxEventChars` | 事件正文截断上限（与引擎 `maxEventChars` 同款；`false` = 不截断；缺省 = 引擎缺省） |
 | `toolTimeoutMs` | 单次 `tools/call` 的工具执行超时（毫秒），语义与引擎 `toolTimeoutMs` 同款；非正数 / 不设 = 不限 |
+| `exposeApprovalRequiredTools` | 是否把 `approval: 'required'` 的工具也暴露出去；**缺省 false**（MCP 没有 HITL 挂起通道，暴露 = 绕过人工审批）。显式打开即表示「MCP 客户端就是审批人」 |
+| `maxTotalTokens` | 单次 `tools/call` 的累计 token 上限（透传 `ToolRunContext.maxTotalTokens`） |
+| `maxCostUsd` | 单次 `tools/call` 的累计成本上限（透传 `ToolRunContext.maxCostUsd`） |
+| `priceOverrides` | 价格覆盖表（透传 `ToolRunContext.priceOverrides`，否则子循环里的自定义模型算不出成本） |
+| `maxToolResultChars` | 单条工具结果回模型的字符上限（透传 `ToolRunContext.maxToolResultChars`；`false` = 不截断） |
+| `traceContent` | assistant 文本记录口径（透传 `ToolRunContext.traceContent`；`'full'` = 记 `output.text`） |
 | `auth` | http 侧鉴权钩子：在读 body 之前调用，抛错即 401（原文只进服务端日志）；stdio 侧信任父进程、本项不生效 |
 | `name` | `serverInfo.name`（握手回给客户端），缺省 `'agentia'` |
 
