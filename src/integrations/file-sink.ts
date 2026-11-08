@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { Trace, TraceSink } from '../core/trace.js';
 
@@ -31,14 +31,34 @@ import type { Trace, TraceSink } from '../core/trace.js';
  */
 const sinkByPath = new Map<string, TraceSink>();
 
-export function jsonlTraceSink(options: { path: string }): TraceSink {
+export function jsonlTraceSink(options: { path: string; fsync?: boolean }): TraceSink {
   const path = resolve(options.path);
+  const fsync = options.fsync === true;
   const existing = sinkByPath.get(path);
   if (existing !== undefined) return existing;
   mkdirSync(dirname(path), { recursive: true });
   const sink: TraceSink = {
     export(trace: Trace): void {
-      appendFileSync(path, `${JSON.stringify(trace)}\n`, 'utf8');
+      const line = `${JSON.stringify(trace)}\n`;
+      if (!fsync) {
+        // 保持旧行为：appendFileSync 一次 open/write/close（进程内串行、按行原子）。
+        const fd = openSync(path, 'a');
+        try {
+          writeSync(fd, line);
+        } finally {
+          closeSync(fd);
+        }
+        return;
+      }
+      // opt-in 持久性：fsync 之后才承诺「已落盘」。代价是每次 run 收尾多一次磁盘同步，
+      // 高吞吐宿主应只在关键 trace 上开（2026-11-07 深评）。
+      const fd = openSync(path, 'a');
+      try {
+        writeSync(fd, line);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
     },
   };
   sinkByPath.set(path, sink);

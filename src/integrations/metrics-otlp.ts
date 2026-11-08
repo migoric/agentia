@@ -1,5 +1,6 @@
 import type { DurationStat, MetricsState, RunExemplar } from './metrics-state.js';
 import { scoreLabels } from './metrics-state.js';
+import { assertTimerDelay } from '../core/timeout.js';
 import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
 import { wireSpanId, wireTraceId } from '../core/trace.js';
 
@@ -299,9 +300,12 @@ export async function flushOtlpMetrics(state: MetricsState, opts: OtlpFlushOptio
     report(e);
     return;
   }
+  assertTimerDelay(opts.timeoutMs, 'flushOtlpMetrics 的 timeoutMs');
   try {
     const res = await fetch(`${opts.endpoint}/v1/metrics`, {
       method: 'POST',
+      // 不跟随重定向：307/308 会把指标与鉴权头发到另一个 origin。
+      redirect: 'manual',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
       ...(opts.timeoutMs > 0 ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),

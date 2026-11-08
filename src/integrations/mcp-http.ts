@@ -82,14 +82,23 @@ export function createStreamableHttpMcpConnector(
 
   const post = async (
     payload: unknown,
-    o: { withVersion?: boolean; signal?: AbortSignal } = {},
+    o: { withVersion?: boolean; signal?: AbortSignal; noSessionWait?: boolean } = {},
   ): Promise<Response> => {
     if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
+    // 会话自愈窗口（2026-11-07 深评）：重握手进行中时，**其它**请求先等它建好新会话，
+    // 不能拿 `sessionId=null` 发出去（会被需要会话的 server 判 400/404，且 hasSessionId=false
+    // 让它不会再自愈）。握手自己的 initialize / initialized 用 noSessionWait 跳过等待，
+    // 否则会等自己而死锁。
+    if (o.noSessionWait !== true && reinit !== null) {
+      await reinit;
+    }
     const headers: Record<string, string> = { ...baseHeaders };
     if (sessionId !== null) headers['mcp-session-id'] = sessionId;
     if (o.withVersion) headers['mcp-protocol-version'] = negotiated;
     const res = await fetchImpl(url, {
       method: 'POST',
+      // 不跟随重定向：307/308 会把自定义鉴权头 / mcp-session-id / 请求体发到另一个 origin。
+      redirect: 'manual',
       headers,
       body: JSON.stringify(payload),
       // 裁判（引擎 toolTimeoutMs / 桥兜底）的 abandoned 直达传输层：放弃等待时在飞 fetch
@@ -115,7 +124,7 @@ export function createStreamableHttpMcpConnector(
     reinit = (async () => {
       sessionId = null;
       ready = null; // 下一次 ensureReady 会新建会话
-      await ensureReady();
+      await ensureReady(true);
     })().finally(() => {
       reinit = null;
     });
@@ -138,11 +147,16 @@ export function createStreamableHttpMcpConnector(
     withVersion: boolean,
     allowReinit = true,
     abandoned?: AbortSignal,
+    noSessionWait = false,
   ): Promise<unknown> => {
     const id = nextId++;
     const res = await post(
       { jsonrpc: '2.0', id, method, params },
-      { withVersion, ...(abandoned !== undefined ? { signal: abandoned } : {}) },
+      {
+        withVersion,
+        ...(abandoned !== undefined ? { signal: abandoned } : {}),
+        ...(noSessionWait ? { noSessionWait: true } : {}),
+      },
     );
     if (canSelfHealSession(res.status, sessionId !== null, allowReinit)) {
       await readMcpText(res); // 排空，别把连接晾着
@@ -159,14 +173,18 @@ export function createStreamableHttpMcpConnector(
     return readMcpResult(res, id, method);
   };
 
-  const ensureReady = (): Promise<void> => {
+  const ensureReady = (insideReinit = false): Promise<void> => {
     if (ready) return ready;
-    ready = (async () => {
+    let p: Promise<void>;
+    p = (async () => {
       const init = await guard(
         rpc(
           'initialize',
           { protocolVersion: requestedVersion, capabilities: {}, clientInfo },
           false,
+          true,
+          undefined,
+          insideReinit,
         ),
         'initialize',
       );
@@ -177,7 +195,7 @@ export function createStreamableHttpMcpConnector(
       const res = await guard(
         post(
           { jsonrpc: '2.0', method: 'notifications/initialized', params: {} },
-          { withVersion: true },
+          { withVersion: true, ...(insideReinit ? { noSessionWait: true } : {}) },
         ),
         'notifications/initialized',
       );
@@ -185,8 +203,17 @@ export function createStreamableHttpMcpConnector(
         throw mcpHttpError(res.status, 'notifications/initialized', await readMcpText(res));
       }
       await readMcpText(res); // 排空：202 + 空体是合法应答，但别把连接晾着
-    })();
-    return ready;
+    })().catch((e) => {
+      // 一次瞬时 initialize 失败不能永久毒化连接器（2026-11-07 深评）：清掉 rejected
+      // promise 与半开会话，下一次调用会重新握手。
+      if (ready === p) {
+        ready = null;
+        sessionId = null;
+      }
+      throw e;
+    });
+    ready = p;
+    return p;
   };
 
   const listTools = async (): Promise<McpToolInfo[]> => {
@@ -235,6 +262,7 @@ export function createStreamableHttpMcpConnector(
           (async () => {
             const res = await fetchImpl(url, {
               method: 'DELETE',
+              redirect: 'manual',
               headers: {
                 ...baseHeaders,
                 'mcp-session-id': sid,

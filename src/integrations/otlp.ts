@@ -11,6 +11,7 @@ import {
   wireSpanId,
   wireTraceId,
 } from '../core/trace.js';
+import { assertTimerDelay } from '../core/timeout.js';
 import { otlpPartialSuccess, readOtlpResponseBody } from './otlp-partial.js';
 
 /**
@@ -435,6 +436,9 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
   const endpoint = opts.endpoint.replace(/\/+$/, '');
   const serviceName = opts.serviceName ?? 'agentia';
   const timeoutMs = opts.timeoutMs ?? 10_000;
+  // 2026-11-07 深评：这里此前直接喂 `AbortSignal.timeout` —— NaN 被 `> 0` 读成「不设超时」、
+  // 2^31..2^32-1 被 Node 钳到 1ms、更大值同步抛 RangeError。与 anthropic 的 timeout 同款校验。
+  assertTimerDelay(timeoutMs, 'createOtlpExporter 的 timeoutMs');
   const projectTools = opts.projectToolSpans === true;
 
   // 真正发请求的那条路径：一切失败都**抛**（非 2xx / 超时 / 200 但部分接收）。
@@ -462,6 +466,8 @@ export function createOtlpExporter(opts: OtlpExporterOptions): OtlpExporter {
     };
     const res = await fetch(`${endpoint}/v1/traces`, {
       method: 'POST',
+      // 不跟随重定向：307/308 会把整棵 trace 与鉴权头发到另一个 origin。
+      redirect: 'manual',
       headers: {
         'content-type': 'application/json',
         ...opts.headers,

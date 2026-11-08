@@ -84,6 +84,16 @@ function close(server: Server): Promise<void> {
 }
 
 describe('createOtlpExporter', () => {
+  it('timeoutMs 坏值在构造期拒（NaN / Infinity / 超上限，2026-11-07 深评）', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 10_000_000_000]) {
+      assert.throws(
+        () => createOtlpExporter({ endpoint: 'http://127.0.0.1:1', timeoutMs: bad }),
+        RangeError,
+        `坏值没拦住：${String(bad)}`,
+      );
+    }
+  });
+
   it('POST /v1/traces：Trace → OTLP/JSON 结构正确', async () => {
     const { server, base, captured } = await startCollector(200);
     try {

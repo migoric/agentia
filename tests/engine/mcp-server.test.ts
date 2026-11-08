@@ -102,6 +102,46 @@ const rpc = (id: number, method: string, params?: unknown): Record<string, unkno
   ...(params !== undefined ? { params } : {}),
 });
 
+describe('createMcpServer —— 审批工具默认不暴露（2026-11-07 深评）', () => {
+  const dangerous: AgentTool = {
+    name: 'danger',
+    description: '需要人工审批',
+    inputSchema: { type: 'object', properties: {} },
+    approval: 'required',
+    run: () => 'should not run',
+  };
+  const safe: AgentTool = {
+    name: 'safe',
+    description: '安全工具',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => 'ok',
+  };
+
+  it('tools/list 过滤 approval:required；tools/call 也拒绝', async () => {
+    const s = await startHttp([dangerous, safe]);
+    const list = await post(s.url as string, rpc(1, 'tools/list'));
+    const result = list.body?.result as { tools: Array<{ name: string }> } | undefined;
+    assert.ok(result);
+    const names = result.tools.map((t) => t.name);
+    assert.deepEqual(names, ['safe']);
+    const call = await post(
+      s.url as string,
+      rpc(2, 'tools/call', { name: 'danger', arguments: {} }),
+    );
+    const err = call.body?.error as { code: number } | undefined;
+    assert.equal(err?.code, -32602);
+  });
+
+  it('显式打开 exposeApprovalRequiredTools 才暴露（客户端即审批人）', async () => {
+    const s = await startHttp([dangerous, safe], { exposeApprovalRequiredTools: true });
+    const list = await post(s.url as string, rpc(1, 'tools/list'));
+    const result = list.body?.result as { tools: Array<{ name: string }> } | undefined;
+    assert.ok(result);
+    const names = result.tools.map((t) => t.name);
+    assert.deepEqual(names.sort(), ['danger', 'safe']);
+  });
+});
+
 describe('createMcpServer —— 构造期校验', () => {
   it('app 不是 { tools } 形状 / transport 非法 ⇒ 构造期抛 TypeError', () => {
     assert.throws(() => createMcpServer({} as never, { transport: 'stdio' }), /app 必须是鸭子类型/);
