@@ -123,6 +123,8 @@
 | `tests/store/memoryStore.test.ts`（**任务副本特殊键安全**，2026-10-26 ref-task-record-special-keys） | `cloneTaskRecord` 必须保留 `__proto__` 自有键与值，不改变副本原型，出站副本也不能反写库内数据 | 经真实 `save()/get()` 往返含 `__proto__` 的嵌套 labels，检查 own key、原型与二次读取；实现用 `Object.defineProperty` 写数据属性 | 特殊键在持久化副本中静默消失，且副本原型被字段值替换 |
 | `tests/store/serialize-options.test.ts` · `tests/transport/resume-scanner.test.ts`（**落库剥掉的要留痕、跳过一轮的要说真话**，2026-11-09 ref-resume-dropped-refs） | ① `serializeTaskRecord` 剥掉主 `client` / `tools` / fallback 的 `client` 时必须留下可读清单（`droppedRuntimeRefsOf`），否则恢复段分不清「提交时本来没传」与「被剥掉了」；② `expireIfExpired` 只在**真的起了恢复**时回 `true` —— `wakeGate` 被别的路径占着、或同任务已在飞，一律 `false` | ① 三态：带 `client`+`tools` 的记录读回清单命中两项、**只带 `signal` 的记录不留标记**（否则每条任务都报警）；`buildRunCallOptions` 命中时告警一次，且内部键在装配前被剔除、不透传给引擎。② 占住 `TaskWakeGate` 后调 `expireIfExpired` ⇒ `false` 且不派发，`release()` 之后 ⇒ `true`（阳性对照，防「永远 false」） | 三条反向验证（2026-11-09）：摘掉标记写入 / 摘掉告警调用 / 闸被占时退回 `return true` ⇒ 各自恰好那一条红，还原后与提交逐字节一致 | ① per-task 自定义 client（典型是 OpenAI 兼容端点）的任务跨重启续跑时**静默**打到 runner 端点，自定义工具菜单静默换回装配菜单；② `resumePending` 的 `expired` 计数虚高，宿主若只在启动时调一次，该任务的审批超时兜底静默丢失 |
 
+| `tests/transport/stream-janitor.test.ts`（**跨进程流兜底：一拍一读、故障不击穿**，2026-11-09 ref-stream-janitor-singleton） | 同任务的 N 个 SSE 订阅在**一拍里只读一次 store**（读放大不得随连接数增长）；四类故障路径（异步 reject / **同步 throw** / 记录消失 / 收口回调自己抛）都不得击穿宿主；注销幂等，且最后一条注销后停止轮询（定时器有登记才存在） | 假 `poll` + 假计时直接驱动纯件：3 + 2 个订阅 ⇒ 一拍里恰好 `['a','b']` 两次读（⚠️ 每个订阅必须是**不同对象** —— 登记表是 `Set`，复用同一对象会被去重成一条，第一版就是这么写的，反向验证照样全绿 = 假守卫）；同步抛之后下一拍还能跑；回调抛错被吞且不耽误同任务其它订阅 | 一条变异：把 tick 的「每任务一次」改回「每订阅一次 poll」⇒ 恰好「一拍只读一次 store」那条红，其余 6 条不误伤 | 回到 N 个连接 = N 个 5s 定时器 + N/5 QPS（SQLite 下是读锁压力）；故障路径的 `catch` 掉了就是 `uncaughtException`，观测路径把宿主打死 |
+
 ### 1.4 文档与发布面
 
 | 守卫 | 保护的不变量 | 机制 | 退化了会怎样 |

@@ -7589,6 +7589,41 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
 语义收紧 —— 若外部有「只要过期就该 true」的用法，应自己按 `suspendedSince + 超时预算` 判，
 不要拿这个返回值当「已过期」用（它是「已接管」）。
 
+### 2026-11-09 ② ref-stream-janitor-singleton：**跨进程流兜底提到 runner 级；六条 P3 的边界口径收口**
+
+**决定**（0.10.5 之后深评的 P2-1 / P2-3 / P3-1..P3-6；**公共 API 零变化**）：
+
+1. **P2-1 一条流一个定时器 → runner 级一个扫描器**：`stream-janitor.ts` 从
+   `createStreamJanitor`（单流、自带 `setInterval`）改成 `createStreamJanitorGroup`
+   （`add(taskId, target)` / `close()`）。一拍里每个**任务**只读一次 `store`，再把结论分发给
+   该任务的各个订阅；定时器**有登记才存在**（最后一个订阅注销即停）。此前 N 个并发 SSE 连接
+   = N 个 5s 定时器 + N/5 QPS（SQLite 下 N/5 次读锁），而跨进程收口是低频事件。
+   `streamTask` 的 `pollMs` 从此是**开关**（`<= 0` = 这条流不参与兜底），不再是每连接的间隔
+   —— 间隔只有一个来源（runner 上那个扫描器），这也是「读放大」消失的原因。
+2. **P2-3 故障路径补测**：`stream-janitor` 未覆盖的三段恰好都是故障路径（`safe()` 的 catch、
+   同步 `poll` 抛、`rec === undefined` 的收口）。新用例把四类全钉住：终态、记录消失、异步
+   reject、**同步 throw**、收口回调自己抛错；外加两条结构性不变量（同任务 N 个订阅一拍只读
+   一次 store；注销幂等且最后一条注销后停止轮询），每条都做过反向验证。
+3. **P3-1 `jsonlTraceSink`**：缓存键**仍按路径**（键带 `fsync` 会让同一文件有两个写者 ⇒
+   一次 run 落两行，比静默忽略更贵），但第二次请求的 `fsync` 与既有 sink 不一致时
+   **出声一次**。此前是静默忽略 ⇒「我明明开了 fsync」这类耐久性承诺无声失效。
+4. **P3-2 `sseLines` 上限判据**：从「整个 `buf`」改成「**切出来的那一帧**」。此前判在按行切分
+   之前，一次 read 交付 9M、每行都很短的 chunk 会被误判成「单行超限」（文案与事实相反）。
+   先切后判不能放过真超限：一次 read 连换行一起送来的 9M 单行仍由 `line.length` 拦住。
+5. **P3-3 `resolveStopReason`**：`max_tokens || model_context_window_exceeded` 的外层 `if`
+   里只对后者 return（`max_tokens` 那半空转，真正处理在下面独立分支）⇒ 收成单条件。
+6. **P3-4 `metricsSink.intervalMs` 负数**：代码一直按 `<= 0` 判（负数 = 立即导出），但这读法
+   只在代码里、没进表 ⇒ 同一形状在 `Scheduler.every.intervalMs` 上却是抛错。现在
+   `LIMIT_SEMANTICS` 写明「0 / 负数 = 立即导出」，并由负数用例钉住。
+7. **P3-5 `gracefulShutdown` 二次信号**：注释的「此时已无监听者」只对**本件的**监听成立 ——
+   宿主若为同一信号另注册 handler，重新投递会交给它，仍不终止。注释收窄为该前提，并把
+   「要保证必死」指到 `onSecondSignal`（本件不替宿主决定，它可能还有最后一跳要跑）。
+8. **P3-6 `partialUsageOf`**：局部变量 `any` 遮蔽全局工具类型名 ⇒ 改名 `hasUsage`。
+
+**代价**：`async.ts` 749 → 755 代码行（仍是抽件后的净增 6 行，见 `source-size` 头注表）；
+`streamTask` 的 `pollMs` 语义收窄（`> 0` 不再表示「按这个间隔轮询」，间隔归 runner）；
+`jsonlTraceSink` 同路径 `fsync` 不一致时会多一条 `console.warn`（同路径只报一次）。
+
 ## 11. 开放项
 
 
