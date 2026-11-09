@@ -7563,6 +7563,32 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
 （恢复段预算 + abort 守卫）。MCP 反向桥的行为变化见 `McpServerOptions.exposeApprovalRequiredTools`
 （缺省 false）。
 
+### 2026-11-09 ① ref-resume-dropped-refs：**落库剥掉的「可执行选项」要留下痕迹；跳过一轮的返回值必须说真话**
+
+**决定**（0.10.5 之后深评的两条 P 级修复；**公共 API 零变化**）：
+
+1. **剥离清单可读**：`serializeTaskRecord` 一直会剥掉 `signal` / `client` / `tools` / 回调
+   （2026-11-07 ref-deep-review-2026-11-07），但文档口径只解释过 fallback 环「只保留
+   `model`」—— 主 `client` 与 `tools` 被剥这件事没有任何痕迹，而恢复段的
+   `buildRunCallOptions` 也无从区分「提交时本来没传」与「传了但落库时被剥掉了」（两种情况下
+   `rec.spec.options.client` 都是 `undefined`）。现在剥的时候把清单写进内部键
+   `__agentiaDroppedRefs`（**刻意不进 `RunInvocationOptions` 公共类型面**，读侧统一走
+   `droppedRuntimeRefsOf`），装配时读到就 `console.warn` 一次（按 taskId 去重、上限 1000
+   后整体清空），写明「本段已退回 runner client / 装配菜单」与出路。
+   **只出声，不改装配结果** —— 跨重启能成立的配置本来就只能放在 runner / 装配层
+   （与 `sessionId` 那条 ref-session-id-warn 同一纪律）。
+   连**非续跑段**也要判：重启后认领的 `queued` 任务同样丢 per-task client，而 `isResume`
+   的判据（`approvals` / `suspendedSince`）对那种记录两者皆无。
+2. **`expireIfExpired` 的返回值改成「是否真的起了这次恢复」**：`#expireAndResume` 在
+   `#inflight` 有在飞、或别的唤醒路径占着 `wakeGate` 时会**静默跳过本轮**，此前
+   `expireIfExpired` 仍返回 `true` ⇒ `resumePending` 的 `expired` 计数虚高；更实际的风险是
+   宿主若只在启动时调一次 `resumePending`，这次跳过就等于该任务的审批超时兜底丢了
+   （下一个重判入口只剩 `poll`）。
+
+**代价**：落库的 `options` 多一个内部键（装配前剔除，不进引擎）；`expireIfExpired` 的返回值
+语义收紧 —— 若外部有「只要过期就该 true」的用法，应自己按 `suspendedSince + 超时预算` 判，
+不要拿这个返回值当「已过期」用（它是「已接管」）。
+
 ## 11. 开放项
 
 
