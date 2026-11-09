@@ -17,6 +17,12 @@
  *
  * 纯件：不碰 store、不认识记录，只做「同一 key 的 Promise 串行」。单测见
  * `tests/transport/task-wake-gate.test.ts`。
+ *
+ * ⚠️ **隐含前提：`fn` 必须最终 settle**（2026-11-09 深评「待确认」）。等待链**没有超时** ——
+ * 若某条路径的 `fn` 永远挂着（典型：宿主 store 的 `save` 不返回），同任务后续所有唤醒会
+ * 永久排队，`cancel` 的 `await tail` 也会一起挂住。当前四个调用点的 `fn` 只碰 store，
+ * 属于「宿主必须把 store 实现成会 settle」的契约；要打破它得在闸上加超时，而超时语义
+ * （「超时后放行」= 互斥失效）比挂住更危险，所以这里选择写明前提而不是加计时器。
  */
 export class TaskWakeGate {
   /**

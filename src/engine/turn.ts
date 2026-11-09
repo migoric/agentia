@@ -362,9 +362,11 @@ function partialUsageOf(e: unknown): Usage | undefined {
     cacheCreationTokens: num(p.cacheCreationTokens),
   };
   if (p.costEstimate !== undefined) out.costEstimate = num(p.costEstimate);
-  const any =
+  // 2026-11-09 深评 P3-6：原来叫 `any` —— 遮蔽了全局工具类型 `any`，读这段时得先想一下
+  // 「这个标识符是类型还是变量」。改名只说它是什么：有没有**算得出的**用量。
+  const hasUsage =
     out.inputTokens + out.outputTokens + out.cacheReadTokens + out.cacheCreationTokens > 0;
-  return any || p.costEstimate !== undefined ? out : undefined;
+  return hasUsage || p.costEstimate !== undefined ? out : undefined;
 }
 
 /** 一回合的模型请求结果：turn span id + 成功时的 finalMessage；aborted 表示中途被取消 */

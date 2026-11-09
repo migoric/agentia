@@ -10,7 +10,7 @@
 无从区分「本来没传」与「被剥掉了」。**
 
 > 2026-11-09 追加：P1-1 与 P2-2 已按最小改动面落地（`ref-resume-dropped-refs`，公共 API 零变化），
-> 见 §3 两条标题后的 ✅ 与 §4 的落地标记。P2-1 / P2-3 / P3 六条仍开放。
+> 见 §3 各条标题后的 ✅ 与 §4 的落地标记。**本轮清单已全部收口**（P1-1 / P2-1 / P2-2 / P2-3 / P3 六条）。
 
 ---
 
@@ -151,7 +151,7 @@ Memory 水合失败禁回写。
 per-task client，而 `isResume` 对那种记录为 false），按 taskId 去重告警、上限 1000，装配前
 把键剔除。零 API 变化。
 
-### P2-1 `streamTask` 每连接一个定时器做跨进程兜底
+### P2-1（✅ 已修，2026-11-09 `ref-stream-janitor-singleton`）`streamTask` 每连接一个定时器做跨进程兜底
 
 **位置**：`src/transport/async.ts:320`（5s 常量）、`665-735`（每连接 `createStreamJanitor`）。
 
@@ -165,6 +165,11 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 **最小改动**：runner 级一个扫描器（一个 timer，遍历 `#streams` 的活跃 taskId 集合），
 单连接仍是「登记/注销」。`stream-janitor` 纯件可原样复用，只是把 `pollMs` 的持有者从
 「每个连接」提到 runner。
+
+**落地**：`stream-janitor.ts` 改成 `createStreamJanitorGroup`（`add(taskId, target)` /
+`close()`）：一拍里每个**任务**只读一次 `store`，再分发到该任务的各个订阅；定时器**有登记
+才存在**，最后一条注销即停。`streamTask` 的 `pollMs` 从此是开关（`<= 0` = 这条流不参与
+兜底），间隔只有一个来源。`async.ts` 749 → 755 代码行（抽掉的每连接 janitor 被单例取代）。
 
 ### P2-2（✅ 已修，2026-11-09 `ref-resume-dropped-refs`）`expireIfExpired` 的返回值与实际行为不一致
 
@@ -186,7 +191,7 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 `expireIfExpired` 直接 `return this.#expireAndResume(...)`。新增一条用例（闸被占 ⇒ false，
 闸空出来 ⇒ true，含阳性对照），`record.ts` 与本次改动均有直接单测。
 
-### P2-3 新件的故障分支覆盖不齐
+### P2-3（✅ 已修，2026-11-09 `ref-stream-janitor-singleton`）新件的故障分支覆盖不齐
 
 | 文件 | 行 | 分支 | 未覆盖行 |
 |---|---|---|---|
@@ -199,7 +204,13 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 故障分支没测」。这类分支的价值就在于出事时那一跳 —— 建议补三条小用例（65 行的现有测试
 文件里加即可）。
 
-### P3 级（可读性 / 边界口径）
+**落地**：重构后该件的故障面变成六条，全部有用例：异步 reject、**同步 throw**、记录消失、
+换主、`ownerId` 缺失、收口回调自己抛错；另加两条结构性不变量（同任务 N 个订阅一拍只读
+一次、注销幂等 + 最后一条注销后停止轮询）。行覆盖 88.31 → **100**，分支 68.75 → **89.36**
+（剩下的分支是「poll 进行中订阅被摘」这类需要精确插桩的窗口，已由 `live.has(target)`
+的二次检查兜住，但不值得为它造时序夹具）。
+
+### P3 级（✅ 全部已修，2026-11-09 `ref-stream-janitor-singleton`）可读性 / 边界口径
 
 | # | 位置 | 问题 | 建议 |
 |---|---|---|---|
@@ -209,6 +220,12 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 | P3-4 | `src/integrations/metrics.ts:285` | `intervalMs` 只挡 `NaN` 与 `>2^31-1`，**负数放行**（走 `<=0` 立即导出、不设 timer，行为等同 0） | 要么挡负数，要么在 `LIMIT_SEMANTICS` 里把负数读法写成 `0` |
 | P3-5 | `src/transport/serve.ts:152` | 注释断言「此时已无监听者」—— 那只对本件的监听成立；宿主若也注册了同信号 handler，二次投递会被宿主吞掉，仍不终止 | 注释收窄成「本件的监听已摘」，或改成 `process.exit(128+n)` 兜底 |
 | P3-6 | `src/engine/turn.ts:361` 附近 | `const any = ...`（局部变量名遮蔽全局工具类型名） | 改名 `hasUsage` |
+
+**落地**：P3-1 键仍按路径（键带 `fsync` 会让同一文件有两个写者 ⇒ 一次 run 落两行），改为
+不一致时 `console.warn` 一次；P3-2 判据换成**切出来的那一帧**（顺带加了「一帧 9M 连换行
+一起到达仍要拒」的对照，防修 P3-2 把 OOM 守卫换掉）；P3-3 收成单条件；P3-4 写进
+`LIMIT_SEMANTICS`（`zeroClause` = `0 = 立即导出，负数同 0`）并补负数用例；P3-5 注释收窄为
+「本件的监听已摘」并把「保证必死」指到 `onSecondSignal`；P3-6 改名 `hasUsage`。
 
 ### 待确认（不算缺陷，但是设计取舍该记一条）
 
@@ -221,14 +238,17 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 
 ## 4. 建议的最小改动面
 
-按投入产出排序，前两条建议在下一次 patch 里做：
+按投入产出排序（**全部已落地**，见 `docs/spec.md` §10 的 `ref-resume-dropped-refs` 与
+`ref-stream-janitor-singleton` 两条）：
 
-1. **P1-1**：`serializeTaskRecord` 留剥离标记 + `buildRunCallOptions` 警告一次（约 15 行）。
-   这是唯一一条「会安静地跑在错误配置上」的问题。**✅ 已落地（2026-11-09）**
-2. **P2-2**：`#expireAndResume` 返回 `boolean`（约 10 行），让计数与事实对齐。**✅ 已落地**
-3. **P2-3**：`stream-janitor` 补三条故障路径用例（约 20 行）。
-4. **P2-1**：janitor 提到 runner 级单例 —— 这是结构调整，建议单独一笔、与性能审计一起做。
-5. P3 六条随手改，可并入上面任一笔。
+1. **P1-1**：`serializeTaskRecord` 留剥离标记 + `buildRunCallOptions` 警告一次。**✅ 已落地**
+2. **P2-2**：`#expireAndResume` 返回 `boolean`，让计数与事实对齐。**✅ 已落地**
+3. **P2-3**：`stream-janitor` 补故障路径用例。**✅ 已落地** —— 实际补了 6 条（四类故障 +
+   两条结构性不变量），因为重构后这个件换成了「组」的形状，故障面跟着多出「注销 / close」。
+4. **P2-1**：janitor 提到 runner 级单例。**✅ 已落地** —— 与 P2-3 同一笔做（不变量与被测对象
+   是同一个件，分开做等于先把用例写在一个即将被替换的形状上）。
+5. P3 六条。**✅ 全部已落地**（P3-4 选了「写进表」而不是「挡负数」：`<= 0` 的读法在代码里
+   一直成立，缺的是把它登记成口径）。
 
 ---
 
@@ -246,3 +266,6 @@ SQLite 单写者场景下这是读锁压力，Redis 场景下是 N/5 QPS。跨�
 - `healRow` 拆两步 + json CAS：合并会让 CAS 永不命中，拆开是对的。
 - `redirect: 'manual'` 覆盖了全部五个出站 fetch，无遗漏。
 - `retryAfterMsOf` 同时支持秒数与 HTTP-date，且经 `clampTimerDelay` 夹到可兑现区间。
+- `TaskWakeGate` 的等待链**没有超时**（见 §3「待确认」）：这不是缺陷，是隐含契约 ——
+  「`fn` 必须最终 settle」。已写进 `task-wake-gate.ts` 的头注（零代码改动）：超时语义
+  （「超时后放行」= 互斥失效）比挂住更危险，所以选择写明前提而不是加计时器。

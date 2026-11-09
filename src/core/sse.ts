@@ -13,6 +13,19 @@ import { frameLimitText, MAX_FRAME_CHARS } from './line-framing.js';
  *
  * core 是叶子层：只 import 同层的 `line-framing.js`（纯常量），不依赖任何上层。
  */
+/**
+ * 「单帧超限」的错误（归入**上游故障**：server 一档可重试，与适配器的流内错误同口径）。
+ *
+ * 单源：判据落在**一条切出来的帧**上（见下方，2026-11-09 深评 P3-2）。
+ */
+function frameTooLarge(): Error {
+  const e = new Error(
+    `SSE 单行超过分帧上限（${frameLimitText()}）—— 对端持续发送不带换行的数据，已中止`,
+  );
+  (e as { status?: number }).status = 500;
+  return e;
+}
+
 export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -24,20 +37,21 @@ export async function* sseLines(body: ReadableStream<Uint8Array>): AsyncGenerato
       buf += decoder.decode(value, { stream: true });
       // 单条 `data:` 行无上限 = 坏 server 持续吐不带换行的字节就能把进程 OOM
       // （2026-11-07 深评）。与 MCP 两条桥共用同一个 8M 码元硬上限。
-      if (buf.length > MAX_FRAME_CHARS) {
-        const e = new Error(
-          `SSE 单行超过分帧上限（${frameLimitText()}）—— 对端持续发送不带换行的数据，已中止`,
-        );
-        // 归入「上游故障」：server 一档可重试（与适配器的流内错误同口径）。
-        (e as { status?: number }).status = 500;
-        throw e;
-      }
+      //
+      // ⚠️ 判据必须是**切出来的那一行**，不是整个 `buf`（2026-11-09 深评 P3-2）：此前先判
+      // `buf.length` 再切分，一个 9MB 但每行都很短的 chunk 会被误判成「单行超限」（假阳性，
+      // 且报的文案与事实相反）。先切后判同时也保住了原意 —— 一次 read 就把整条 9MB 行连
+      // 换行一起送来的情形，下面那条 `line.length` 照样拦得住。
       let idx = buf.indexOf('\n');
       while (idx >= 0) {
-        yield buf.slice(0, idx).replace(/\r$/, '');
+        const line = buf.slice(0, idx);
+        if (line.length > MAX_FRAME_CHARS) throw frameTooLarge();
+        yield line.replace(/\r$/, '');
         buf = buf.slice(idx + 1);
         idx = buf.indexOf('\n');
       }
+      // 切完之后剩下的，才是「还没等到换行」的那一条（跨 read 累积的那一半）
+      if (buf.length > MAX_FRAME_CHARS) throw frameTooLarge();
     }
     // 冲掉 TextDecoder 的尾字节（流若在码点中间结束，此前会静默丢掉最后半个字符）。
     buf += decoder.decode();

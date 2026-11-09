@@ -147,8 +147,13 @@ export function gracefulShutdown(opts: GracefulShutdownOptions): () => Promise<b
         for (const s of signals) process.off(s, onSignal);
         // Node 的默认终止动作是在**信号投递那一刻**按「有没有监听者」决定的；在 handler
         // 里替当前信号摘监听不会补做默认动作 ⇒ 第二次信号被吞掉，必须第三次才死
-        // （2026-11-07 深评 F10，实测第 2 次 SIGTERM 后进程仍存活）。重新投递一次，
-        // 此时已无监听者，Node 走默认终止。
+        // （2026-11-07 深评 F10，实测第 2 次 SIGTERM 后进程仍存活）。重新投递一次。
+        //
+        // ⚠️ 前提收紧（2026-11-09 深评 P3-5）：这里能走默认终止，是因为**本件的**监听已经
+        // 摘掉。宿主若为同一信号另注册了 handler，重新投递会交给它的 handler —— 它不退出
+        // 就还是不终止（`process.kill` 的返回值看不出这件事）。要在任何宿主下都保证「第二次
+        // 必死」，用 `onSecondSignal` 自己 `process.exit(128 + n)`；本件不替宿主决定这件事，
+        // 因为它可能还有自己的最后一跳要跑。
         process.kill(process.pid, signal);
         return;
       }

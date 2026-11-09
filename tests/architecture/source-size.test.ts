@@ -29,7 +29,7 @@ import { join, relative } from 'node:path';
  *
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
- * | `transport/async.ts` | **749** | 2026-11-07：唤醒互斥 / 取消意图 / 跨进程流收口（抽出 stream-janitor 后） |
+ * | `transport/async.ts` | **755** | 2026-11-09：跨进程流兜底提到 runner 级单例（登记/注销取代每连接建定时器） |
  * | `engine/turn.ts` | 599 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线 |
  * | `integrations/openai.ts` | 530 | 2026-11-07：部分 usage / Retry-After / 非 JSON 响应 |
  *
@@ -37,6 +37,9 @@ import { join, relative } from 'node:path';
  * 原 750 的余量只剩 1 行 ⇒ 上限显式抬到 **800**（仍远离合法长文件那一档；余量约 6.8%）。
  * 抬这一档的原因是本轮修的是**正确性**（P1/P2 并发与耐久），不是顺手加功能；
  * 已把方向正交的跨进程流收口抽成 `transport/stream-janitor.ts`，没有留在 `async.ts` 里。
+ * 2026-11-09 再做 P2-1（同一条流的兜底从「每连接一个定时器」改成 runner 级一个扫描器）：
+ * `async.ts` 749 → **755**（净增 6 行 = 字段 + 构造期装配 + 登记处注释，抽掉的每连接
+ * janitor 组被单例取代），仍在 800 以内。
  * 750 与第二名之间隔着一大截 —— 它是「单文件明显异常」的线，同时**远离**合法长文件那一档
  * （报告 §2 那批「不该拆」的大函数，最长 `metrics-render.ts` 也只有 260 行代码）⇒ 不会误伤。
  *

@@ -23,7 +23,8 @@ import { SignalSupervisor } from './signal-supervisor.js';
 import { ResumeScanner } from './resume-scanner.js';
 import type { ResumePendingOptions } from './resume-scanner.js';
 import { TaskWakeGate } from './task-wake-gate.js';
-import { createStreamJanitor } from './stream-janitor.js';
+import { createStreamJanitorGroup } from './stream-janitor.js';
+import type { StreamJanitorGroup } from './stream-janitor.js';
 import { timerDue } from './wake-policy.js';
 import type { SuspendedSummary } from './wake-policy.js';
 import { DrainGate } from './drain-gate.js';
@@ -431,6 +432,13 @@ export class AsyncRunner {
    */
   readonly #streams: TaskEventStreams;
   /**
+   * 跨进程流兜底的**单例扫描器**（2026-11-09 深评 P2-1）：此前 `streamTask` 给每个订阅
+   * 各建一个 5s 定时器去 `store.get`，N 个并发连接就是 N 个定时器 + N/5 QPS，无合并无上限 ——
+   * 而跨进程收口是低频事件，不值得按连接付这份成本。现在一拍里每个**任务**只读一次 store，
+   * 再把结论分发到该任务的各个订阅（见 stream-janitor.ts）。
+   */
+  readonly #streamJanitors: StreamJanitorGroup;
+  /**
    * **同进程内的幂等键认领表**（idempotencyKey → 在飞记录）。
    *
    * 为什么必须有它（2026-09-21 外部复核实测）：`submit` 是同步门面，**无法 await** 异步 store 的
@@ -508,6 +516,15 @@ export class AsyncRunner {
       );
     }
     this.ownerId = formatOwnerId(process.pid, this.#host, randomUUID().slice(0, 8));
+    // 跨进程流兜底（2026-11-09 深评 P2-1）：runner 级一个扫描器，一拍里每个任务只读一次 store。
+    // 用 `this.poll`（而不是裸 `store.get`）是为了保留惰性挂起闸 —— 审批超时 / 到期唤醒的
+    // 重判入口本来就搭在这条轮询上，换成裸 get 会让那两条兜底少一个触发点。
+    // 定时器**有订阅才存在**（见 stream-janitor.ts），空闲时零成本。
+    this.#streamJanitors = createStreamJanitorGroup({
+      poll: (taskId) => Promise.resolve(this.poll(taskId)),
+      ownerId: this.ownerId,
+      pollMs: STREAM_CROSS_PROCESS_POLL_MS,
+    });
     // 审批监督簇在 ownerId 就位后构造（它要用 store 与 ownerId）。`dispatch` 用**回调**
     // 注入而不是 import：派发入口 `#dispatch` 仍归本类（停机闸 + 唯一派发点 + 一次性告警），
     // 依赖保持单向（审批 → 派发），也避免两个模块互相 import。
@@ -715,21 +732,21 @@ export class AsyncRunner {
           );
         },
       );
-      // 跨进程收口（2026-11-07 深评 F5）：抽成 stream-janitor.ts 纯件（poll / 判定 / 收口由
-      // 回调注入），本类只负责接上 markDone 与 listener。
-      let janitorCleanup: () => void = () => {};
+      // 跨进程收口（2026-11-07 深评 F5；2026-11-09 P2-1 提到 runner 级）：登记到单例扫描器，
+      // 本流关闭时注销。`pollMs <= 0` = 这条流不参与兜底（真正的时间间隔只有一个来源，
+      // 即 runner 上那个扫描器 —— 单连接不再各建定时器）。
+      let janitorCleanup: () => void = noop;
       const cleanup = (): void => {
         off();
         janitorCleanup();
       };
-      janitorCleanup = createStreamJanitor({
-        poll: () => Promise.resolve(this.poll(taskId)),
-        isTerminal: (rec) => isTerminalTask(rec as TaskRecord),
-        ownerId: this.ownerId,
-        onTerminal: () => this.#streams.markDone(taskId),
-        onClosed: () => listener({ type: 'closed', reason: 'not-in-this-process' }),
-        pollMs: opts.pollMs ?? STREAM_CROSS_PROCESS_POLL_MS,
-      });
+      if ((opts.pollMs ?? STREAM_CROSS_PROCESS_POLL_MS) > 0) {
+        janitorCleanup = this.#streamJanitors.add(taskId, {
+          isTerminal: (rec) => isTerminalTask(rec as TaskRecord),
+          onTerminal: () => this.#streams.markDone(taskId),
+          onClosed: () => listener({ type: 'closed', reason: 'not-in-this-process' }),
+        });
+      }
       return cleanup;
     }
     const rec = await this.poll(taskId);
