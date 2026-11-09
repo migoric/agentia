@@ -3,6 +3,8 @@ import type { ModelClient } from '../core/tool.js';
 import type { TraceRecordEvent } from '../core/trace.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import type { TaskRecord } from '../store/store.js';
+import { DROPPED_REFS_KEY, droppedRuntimeRefsOf } from '../store/record.js';
+import type { DroppedRuntimeRefs } from '../store/record.js';
 
 /**
  * Agentia —— **一次 run 调用的选项装配**（2026-10-11 自 `transport/async.ts` 的
@@ -64,11 +66,23 @@ export interface RunCallOptionsInput {
  */
 export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions {
   const { rec, isResume, sessionStore, client, signal, bridgeTraceEvents } = input;
+  // 落库时被剥掉的进程内引用（2026-11-09 深评 P1）：标记只出现在「从 store 读回」的记录上，
+  // 因此这里命中就一定是跨进程/重启的那一段。**不论是不是续跑段都要说**：重启后认领的
+  // `queued` 任务同样会丢 per-task client（`isResume` 的判据只看 approvals / suspendedSince，
+  // 那种记录两者皆无 ⇒ 会被判成首段）。
+  const dropped = droppedRuntimeRefsOf(rec.spec.options);
+  // 三个都没命中就别出声：`serializeTaskRecord` 只在真剥了东西时写这个键，但手改过的记录
+  // 或将来换了键的形状都可能读到一个空清单 —— 那时打一条「被剥离：。」的日志还不如不打。
+  if (dropped !== undefined && (dropped.client || dropped.tools || dropped.fallbacks)) {
+    warnDroppedRuntimeRefs(rec.taskId, dropped);
+  }
   // sessionId 在本层**已被消费**（下面换成 session 注入；没配 sessionStore 的在 submit /
   // 派发处已响亮失败），**不随选项透传**：续跑段刻意不注入 session（见下），若让它原样
   // 进 app.run，会撞上那边「程序内直传 sessionId 不生效」的告警 —— 那是给外部调用方的
   // 出声闸（toolkit/module.ts），内部路径不该踩。
   const { sessionId, ...restOptions } = rec.spec.options ?? {};
+  // 剥离标记是本层的一次性提示，不进引擎（它不是 `RunInvocationOptions` 的字段）
+  delete (restOptions as Record<string, unknown>)[DROPPED_REFS_KEY];
   return {
     ...restOptions,
     // HITL 恢复段**不注入 session**（2026-09-20，spec §10 当日条）：恢复段的
@@ -135,4 +149,29 @@ export function adoptSucceededOutcome(rec: TaskRecord, existing: TaskRecord | un
   rec.error = existing.error;
   rec.finishedAt = Date.now();
   return true;
+}
+
+/**
+ * 「落库时剥掉了可执行选项」的一次性告警（2026-11-09 深评 P1）。
+ *
+ * 为什么按 taskId 去重：同一条带标记的记录会在每条唤醒路径上被 `store.get` 读回
+ * （approve / signalTask / 到期唤醒 / poll），逐次打会把日志刷满，而这件事对同一个任务
+ * 只说一次就够。**上限 1000 后整体清空**：有界比「记过就永远记着」重要 —— 漏一次重复
+ * 告警远好于一个随任务数无界增长的 Set。
+ */
+const warnedDroppedRefs = new Set<string>();
+
+function warnDroppedRuntimeRefs(taskId: string, dropped: DroppedRuntimeRefs): void {
+  if (warnedDroppedRefs.has(taskId)) return;
+  if (warnedDroppedRefs.size >= 1000) warnedDroppedRefs.clear();
+  warnedDroppedRefs.add(taskId);
+  const what: string[] = [];
+  if (dropped.client) what.push('任务级 client（本段已退回 runner 级 / 默认 client）');
+  if (dropped.tools) what.push('任务级 tools 菜单（本段已退回装配菜单 app.tools）');
+  if (dropped.fallbacks) what.push('fallback 环的 client（只保留了 model）');
+  console.warn(
+    `[agentia] task ${taskId} 的可执行选项在落库时被剥离：${what.join('；')}。` +
+      '这些是进程内对象，不能跨重启 —— 要让同一任务跨重启仍用同一份配置，' +
+      '请把它们配在 AsyncRunner 或装配层（对齐「client 由 runner/应用级配置兜住」的口径）。',
+  );
 }
