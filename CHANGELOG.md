@@ -5,6 +5,128 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.6] - 2026-11-09
+
+### 变更
+
+本版是一次**正确性收口**，不新增能力面：修掉八类「静默失效」，其中三处会改变调用方能观察到的
+行为，需要在升级前确认。两包同步 0.10.5 → 0.10.6。
+
+- ⚠️ **MCP 反向桥默认不再暴露 `approval: 'required'` 的工具**（安全修）。MCP 没有审批挂起通道，
+  暴露即等于绕过审批。需要这些人批工具的人显式设 `exposeApprovalRequiredTools: true`；
+  被隐藏时构造期会打一行 warn **点名数量**，不静默少工具。
+- ⚠️ **所有出站请求不再跟随重定向**（安全修）。307/308 会把鉴权头与请求体原样转到另一个
+  origin。依赖 3xx 跳转的外部端点现在会**报错**而不是静默跟过去，请把最终地址配进去。
+- ⚠️ **坏值从「静默忽略」改成「响亮拒绝」**：`maxEventChars: 0` 现在真的截到空串
+  （此前被当成「不限」）；`toolTimeoutMs` / `maxEventChars` / `maxToolResultChars` /
+  `awaitTask` 的 `timeoutMs`·`intervalMs` / OTLP·metrics 的 `timeoutMs` 在入口校验，
+  NaN·负数·小数直接抛。`metricsSink.intervalMs` 的负数与 `0` 同义（立即导出），已写进
+  `LIMIT_SEMANTICS` 表。
+- 四条唤醒路径（`approve × signalTask` / `wakeDue × signalTask`）共用一把 per-task 互斥闸，
+  同一任务不再被派发两遍；`cancel` 等同一张表的 tail。
+- 审批决定带作用域：只认 `requestedAt` 与本次挂起匹配的决定，同一 `tool_use_id` 每段只消费一次
+  —— 修掉 OpenAI 兼容端点复用 `call_1` 导致的审批绕过。
+- 失败尝试的部分 usage 落账：流中断前已收到的计量挂到错误上并写 `usage.partial`，
+  `maxCostUsd` / `maxTotalTokens` 不再系统性少算。
+- 跨进程 SSE 兜底从「每连接一个 5s 定时器」提到 runner 级单例：一拍里每个任务只读一次 store，
+  定时器有登记才存在；`streamTask` 的 `pollMs` 从此是开关（`<= 0` = 该流不参与兜底）。
+- 落库剥离 `client` / `tools` 时留下可读痕迹，恢复段按 taskId 告警一次 —— 此前 per-task 自定义
+  client 的任务重启续跑会**静默**打到 runner 的端点。
+- JSON / SQLite / Redis 三条 store 的恢复路径加固（读失败出声、半行写入回滚、迁移事务化、
+  SCAN 去重、水合失败跳过回写），详见 `docs/spec.md` §10。
+
+### ⚠️ 行为变更（安全修）：MCP 反向桥默认隐藏 HITL 工具（2026-11-07 ref-deep-review-2026-11-07）
+
+- **修的是什么**：`createMcpServer` 此前把 `app.tools` 整个交给 MCP 客户端。而
+  `@Tool({ approval: 'required' })` 的语义是「调用前必须有人批」，MCP 这条通道**没有**挂起与
+  回调的通道 —— 工具被列出去就等于「审批被绕过」，且没有任何一处会报错。
+- **现在**：默认过滤掉 `approval: 'required'` 的工具；确有需要（例如客户端自己实现了外部审批）
+  显式设 `exposeApprovalRequiredTools: true`。过滤发生时打一行 warn 说明数量与原因 ——
+  「明明写了 `@Tool`，MCP 客户端却看不到」不该靠猜。
+- **迁移**：升级后如果 MCP 客户端少了一批工具，先看启动日志里那行 warn。要恢复旧行为就开那个开关，
+  但请自行确保这些工具的人批在你的客户端侧成立。
+
+### ⚠️ 行为变更（安全修）：出站 `fetch` 不跟随重定向
+
+- **修的是什么**：默认的 `fetch` 跟 3xx，而 307/308 **保留方法与请求体** —— 一次被中间人控制或
+  被错误配置的重定向，会把 `Authorization` 头与 prompt 原文发到另一个 origin。这条链上没有一个
+  环节会报错，日志里只有一次成功的 `POST`。
+- **现在**：所有出站调用（模型适配器、OTLP/metrics 导出、MCP HTTP）一律 `redirect: 'error'`，
+  收到 3xx 直接失败。
+- **迁移**：如果你的模型网关 / OTLP collector 依赖 301/302/307 跳转，请把最终地址直接配进去。
+  报错信息里带原始状态码与 `Location`，照它改即可。
+
+### 唤醒互斥与取消优先（2026-11-07 ref-deep-review-2026-11-07）
+
+- **修的是什么**：`approve` 与 `signalTask`、`wakeDue` 与 `signalTask` 各自凭**同一份** suspended
+  快照判断「该我唤醒」，于是同一任务被派发两遍；两次执行都落库，后写的覆盖前写的，
+  审批决定可能凭空消失，而 usage 记了两份。
+- **现在**：四条唤醒路径共用 `transport/task-wake-gate.ts` 的 per-task 串行闸，同步段一次性登记
+  （无 await，无 TOCTOU 窗口）；`cancel` 排在同一个 key 的 tail 上，不会插进正在进行的唤醒。
+- **取消优先**：引擎的续跑段与主循环的 approval / deferred 出口统一补 abort 守卫；宿主在
+  suspended 分支再判一次取消意图 —— 修掉「cancel 等不到终态、超时定时器到点又跑一遍」。
+- **验证**：`tests/transport/wake-gate.test.ts`、`tests/transport/drain-gate.test.ts`；反向变异
+  确认「摘掉 gates」能复现双派发。
+
+### 审批决定的作用域（2026-11-07 ref-deep-review-2026-11-07）
+
+- **修的是什么**：审批决定此前只按 `tool_use_id` 匹配。OpenAI 兼容端点每次都从 `call_1` 开始编号，
+  于是**上一段**挂起时批过的 `call_1`，会被下一段的 `call_1` 当成「已批准」直接放行 ——
+  一次静默的审批绕过。
+- **现在**：`RunAgentOptions.approvalEpoch` 标出本次挂起的身份（异步宿主自动注入
+  `TaskRecord.suspendedSince`），只认 `requestedAt` 匹配的决定；同一段内每个 `tool_use_id` 也只
+  消费一次（`consumedApprovals`）。三处判据（写入时的 `requestedAt`、`fillTimeoutDenials` 的
+  stale 覆盖、`approvalsComplete(rec, since)`）用的是同一个 epoch。
+- **验证**：`tests/engine/approval-epoch.test.ts`（含「旧决定不得跨段复用」与「同段只消费一次」
+  两条正面用例）。
+
+### 失败尝试的计量落账（2026-11-07 ref-deep-review-2026-11-07）
+
+- **修的是什么**：适配器在流中断（网络断、上游 5xx、超时）时把整个 turn 判为失败，而**中断前已
+  收到的** `input_tokens` / `output_tokens` 随之丢掉。重试三次的实际花费是三次之和，
+  `maxCostUsd` 只看到最后一次 —— 预算闸系统性偏松。
+- **现在**：适配器把已收到的计量挂到错误对象上，引擎记进失败 turn 的 span 并写 `usage.partial`
+  事件；`usageTotal` 因此包含失败尝试。
+- **验证**：`tests/engine/review-fixes.test.ts` 覆盖「首两次失败 + 第三次成功」的总账。
+
+### 流生命周期与跨进程兜底（2026-11-07 / 2026-11-09 ref-stream-janitor-singleton）
+
+- **修的是什么（跨进程）**：任务被另一个副本接管或已落终态时，本进程那条 SSE 不会自己结束 ——
+  客户端永远等不到 `end` / `closed`。此前由 `streamTask` 给**每个订阅**各建一个 5s 定时器去
+  `store.get` 判断：N 个并发连接 = N 个定时器 + N/5 QPS，SQLite 下就是 N/5 次读锁；`unref()`
+  只保证不挂住进程，不减读放大。
+- **现在**：`transport/stream-janitor.ts` 改成「组」的形状 —— 一拍里每个**任务**只读一次 store，
+  再把结论分发到该任务的所有订阅；定时器**有登记才存在**，最后一条注销即停。一拍里的意外
+  （判据抛错）被 catch 住，不会变成 `unhandledRejection` 打死宿主。
+- **其余收口**：`streamTask` 的 `onDone` 补 rejection 处理（store 抖动不再打死进程）；
+  SSE 单行复用 8M 码元上限并 flush 尾字节；上限判据改成**切出来的那一帧**（此前判整个 `buf`，
+  一次 read 交付多行大 chunk 会被误报成「单行超限」）；MCP HTTP 的 SSE 改增量读
+  （server 不关流不再让 `tools/call` 永挂）。
+- **验证**：`tests/transport/stream-janitor.test.ts`（六条故障路径 + 两条结构不变量），
+  行覆盖 100%、分支 89.58%；`tests/core/sse-text-stats.test.ts` 含「单帧 9M 仍要拒」的对照。
+
+### 持久化与恢复（2026-11-07 / 2026-11-09 ref-resume-dropped-refs）
+
+- **修的是什么（落库）**：`JSON.stringify` 把 `AbortSignal` 变成 `{}`、把 `ModelClient` 变成
+  `{messages:{}}`、把 `tools` 里的 run 函数丢掉。读回后这些空壳会在恢复段被当成真对象使用
+  （`combineSignals({})` 直接 TypeError，工具菜单半残）。现在三条 JSON store 统一在落库前剥离。
+- **修的是什么（剥离的副作用）**：剥离之后，「提交时本来没传 `client`」与「传了但被剥掉」在
+  读回时**完全同形**，于是 per-task 自定义 client（典型是 OpenAI 兼容端点）的任务重启续跑时会
+  **静默**退回 runner 的端点。现在剥离时记下清单（`__agentiaDroppedRefs`），装配处按 taskId
+  去重告警一次，写明「本段已退回 runner client / 装配菜单」与出路；键在装配前剔除，不进引擎。
+- **其余加固**：FileTaskStore 读失败出声且禁止 compact、半行写入回滚；SQLite 迁移事务化、
+  `healRow` 用旧 json 做 CAS；Redis `list()` 对 SCAN 结果去重、单 key 错不再整表 reject；
+  Memory 水合失败跳过回写；runtime 的手工 HITL 续跑不再重复 load/append。
+- **验证**：`tests/store/serialize-options.test.ts`（剥离标记三态 + 告警只响一次）；
+  `tests/transport/resume-scanner.test.ts`。
+
+### 依赖
+
+- 官网构建链：`astro` 7.3.8 → 7.4.5、`gsap` 3.15.0 → 3.15.1、`lenis` 1.3.26 → 1.3.27。
+- 开发链：dev-dependencies 组 5 项升级；`@biomejs/biome` 适配到 2.6.4
+  （排除文档/YAML 格式化、`useMathMinMax`）。
+- 框架本身**运行时依赖仍为 0**。
+
 ## [0.10.5] - 2026-11-05
 
 ### 变更
@@ -4300,7 +4422,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/migoric/agentia/releases/tag/v0.10.6
 [0.10.5]: https://github.com/migoric/agentia/releases/tag/v0.10.5
 [0.10.4]: https://github.com/migoric/agentia/releases/tag/v0.10.4
 [0.10.3]: https://github.com/migoric/agentia/releases/tag/v0.10.3
