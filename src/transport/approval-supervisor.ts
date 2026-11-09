@@ -126,20 +126,25 @@ export class ApprovalSupervisor {
   }
 
   /**
-   * 惰性审批超时：`approvalExpired` 为真 ⇒ 进在飞闸 + 自动全拒 + 落库 + 派发。返回是否命中。
+   * 惰性审批超时：`approvalExpired` 为真 ⇒ 进在飞闸 + 自动全拒 + 落库 + 派发。
+   *
+   * **返回是否真的起了这次恢复**（2026-11-09 深评 P2）：「命中超时判定」不等于「已经恢复」
+   * —— cancel 在飞、同任务已有别的唤醒路径占着互斥闸时，这里只是**跳过本轮**。此前它在
+   * 两条跳过路径上都返回 true，`resumePending` 据此 `expired++` 会说「处理了 N 条」而实际
+   * 一条没动；更糟的是宿主若只在启动时调一次 `resumePending`，这次跳过就等于该任务的
+   * 审批超时兜底丢了（下一个重判机会只来自 `poll`）。
    *
    * 与原 `#lazyGates` / `#redispatch` 里那两句 `if (approvalExpired(...)) #expireAndResume(...)`
-   * **逐字等价** —— `approvalExpired` 内部已判 `status === 'suspended'` 与
+   * 的**判定**逐字等价 —— `approvalExpired` 内部已判 `status === 'suspended'` 与
    * `reason === 'approval'`（见 approval-policy.ts），所以 `#redispatch` 原写法里那句额外的
-   * `rec.status !== 'suspended'` 短路是冗余的，合并到本方法不改变任何可观测行为。
+   * `rec.status !== 'suspended'` 短路是冗余的。
    */
   expireIfExpired(rec: TaskRecord, now: number): boolean {
     if (!approvalExpired(rec, now, this.#deps.approvalTimeoutMs)) return false;
     // cancel 在飞 ⇒ 跳过本轮（2026-10-13 ref-run-root-close）：它马上把任务落成终态，超时恢复再来一脚
     // 就是「取消后照常执行」那条竞态。惰性路径不丢事：下一轮读还会再判（若取消没成）。
     if (this.#deps.cancelInflight?.(rec.taskId)) return false;
-    this.#expireAndResume(rec, now);
-    return true;
+    return this.#expireAndResume(rec, now);
   }
 
   /**
@@ -277,11 +282,12 @@ export class ApprovalSupervisor {
    * 里也有 approvalExpired 判定，见 approval-policy.ts），决定逐 id 幂等（第一次决定赢）。
    * 反之 approve 撞上在飞的超时恢复时共享其结果 —— 与人的决定竞速，先到先得。
    */
-  #expireAndResume(rec: TaskRecord, now: number): void {
-    if (this.#inflight.has(rec.taskId)) return;
+  #expireAndResume(rec: TaskRecord, now: number): boolean {
+    if (this.#inflight.has(rec.taskId)) return false;
     // 跨路径互斥（2026-11-07 深评 P1）：其它唤醒路径在飞 ⇒ 跳过本轮。
-    // 惰性路径不丢事：下一次 poll / resumePending 还会再判。
-    if (this.#wakeGate.busy(rec.taskId)) return;
+    // 惰性路径不丢事：下一次 poll / resumePending 还会再判。返回 false 让调用方知道
+    // 「这一轮什么都没做」（2026-11-09 深评 P2：此前无条件返回 true，计数与事实不符）。
+    if (this.#wakeGate.busy(rec.taskId)) return false;
     const run = this.#wakeGate
       .run(rec.taskId, () => this.#expireAndResumeInner(rec, now))
       .finally(() => {
@@ -290,6 +296,7 @@ export class ApprovalSupervisor {
     this.#inflight.set(rec.taskId, run);
     // poll / resumePending 路径没有调用方接 reject —— 订阅掉，不得逃逸成 unhandled rejection
     run.catch(() => undefined);
+    return true;
   }
 
   async #expireAndResumeInner(rec: TaskRecord, now: number): Promise<TaskRecord> {

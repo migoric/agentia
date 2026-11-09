@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { ApprovalSupervisor } from '../../src/transport/approval-supervisor.js';
 import { ResumeScanner } from '../../src/transport/resume-scanner.js';
 import type { ResumeScannerDeps } from '../../src/transport/resume-scanner.js';
+import { TaskWakeGate } from '../../src/transport/task-wake-gate.js';
 import type { TaskRecord, TaskStore } from '../../src/store/store.js';
 
 /**
@@ -256,5 +257,55 @@ describe('cancel 在飞时，惰性推进路径跳过本轮（cancel × 推进�
     assert.equal(supervisor.expireIfExpired(awaiting, 1_000), false, 'cancel 在飞 ⇒ 跳过本轮');
     await flush();
     assert.equal(dispatched.length, 0);
+  });
+
+  it('expireIfExpired：同任务的唤醒闸被别的路径占着 ⇒ 返回 false（这一轮真的什么都没做）', async () => {
+    // 2026-11-09 深评 P2：`#expireAndResume` 因 `wakeGate.busy` 静默跳过时，此前
+    // `expireIfExpired` 仍返回 true ⇒ `resumePending` 的 expired 计数虚高，宿主若只调
+    // 一次 resumePending，这次跳过就等于该任务的审批超时兜底丢了（没有别的重判入口）。
+    const awaiting = rec({
+      taskId: 'task_hitl',
+      status: 'suspended',
+      suspendedReason: 'approval',
+      suspendedSince: 100,
+      pendingApprovals: ['tu1'],
+    });
+    const dispatched: TaskRecord[] = [];
+    const wakeGate = new TaskWakeGate();
+    const supervisor = new ApprovalSupervisor({
+      store: {
+        get: () => awaiting,
+        save: () => {},
+        byIdempotency: () => undefined,
+        list: () => [],
+        clear: () => {},
+      },
+      ownerId: 'p1@h-self',
+      approvalTimeoutMs: 1,
+      dispatch: (r) => dispatched.push(r),
+      wakeGate,
+    });
+    // 占住闸：模拟 approve / signalTask 正在飞（不 await 它，只在收尾时 release）
+    let release!: () => void;
+    void wakeGate.run(
+      'task_hitl',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await flush();
+    assert.equal(wakeGate.busy('task_hitl'), true, '前置：闸确实被占着');
+    assert.equal(
+      supervisor.expireIfExpired(awaiting, 1_000),
+      false,
+      '闸被占 ⇒ 本轮跳过，返回值必须如实说「没做」',
+    );
+    await flush();
+    assert.equal(dispatched.length, 0, '跳过就是不派发');
+    release();
+    await flush();
+    // 闸空出来之后下一轮才真的接管（阳性对照：证明上面的 false 不是「永远 false」）
+    assert.equal(supervisor.expireIfExpired(awaiting, 1_000), true, '闸空了 ⇒ 照常接管');
   });
 });
