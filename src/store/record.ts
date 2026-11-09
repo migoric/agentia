@@ -68,11 +68,44 @@ export function normalizeLegacyRecord(rec: TaskRecord): boolean {
 }
 
 /**
- * bytes → 记录（**唯一入口**）：解析 + 形状守卫 + 读时归一。
+ * 「哪些进程内引用在落库时被剥掉了」的键。
  *
- * - 坏 JSON 照旧抛（调用方按自己的口径吞或冒泡，见文件头的边界）；
- * - 形状不合格（不是对象 / 没有 `taskId`）⇒ `undefined`（「这条不是记录」，与「解析失败」分开）。
+ * ⚠️ **内部键，刻意不进 `RunInvocationOptions` 公共类型面**（AGENTS.md「内部工具不进公共面」）：
+ * 它只在一条记录自「save」到「恢复段读回」之间活着，是给恢复路径的一句提示，不是使用者该
+ * 配置的东西。读侧一律走 `droppedRuntimeRefsOf`，别在别处直接摸这个键名。
  */
+export const DROPPED_REFS_KEY = '__agentiaDroppedRefs';
+
+/** 被剥掉的进程内引用（只有 `true` 的那些有意义；键名对应 `RunInvocationOptions` 上的位置） */
+export interface DroppedRuntimeRefs {
+  /** 主 `client`：恢复段会退回 runner 级 / 默认 client */
+  client: boolean;
+  /** `tools` 菜单：恢复段会退回装配菜单（`app.tools`） */
+  tools: boolean;
+  /** fallback 环里的 `client`：只保留 `model`，client 由 runner/应用级配置兜住 */
+  fallbacks: boolean;
+}
+
+/**
+ * 读一条落库记录上的剥离标记（2026-11-09 深评 P1）。
+ *
+ * 为什么需要标记：`serializeTaskRecord` 会剥掉主 `client` 与 `tools`，而恢复段的
+ * `buildRunCallOptions` 无从区分「提交时本来没传」与「传了但落库时被剥掉了」—— 两种情况下
+ * `rec.spec.options.client` 都是 `undefined`。没有这个标记，per-task 自定义 client（典型是
+ * OpenAI 兼容端点）的任务重启续跑时会**静默**打到 runner 的端点，自定义工具菜单也会静默
+ * 换回装配菜单。标记只用来让恢复段**出声**，不改变任何装配结果。
+ */
+export function droppedRuntimeRefsOf(options: object | undefined): DroppedRuntimeRefs | undefined {
+  if (options === undefined) return undefined;
+  const raw = (options as Record<string, unknown>)[DROPPED_REFS_KEY];
+  if (!Array.isArray(raw)) return undefined;
+  return {
+    client: raw.includes('client'),
+    tools: raw.includes('tools'),
+    fallbacks: raw.includes('fallbacks[].client'),
+  };
+}
+
 /**
  * 落库前的**可序列化清洗**（2026-11-07 深评）：`JSON.stringify` 会把 `AbortSignal` 变成
  * `{}`、把 `ModelClient` 变成 `{messages:{}}`、把 `tools` 里的 run 函数丢掉。读回后这些
@@ -80,7 +113,9 @@ export function normalizeLegacyRecord(rec: TaskRecord): boolean {
  *
  * 因此三条 JSON store 统一走这里：
  * - 去掉 `signal` / `client` / 回调 / `tools`（它们属于提交进程，不能跨重启）；
- * - fallback 环只保留 `model`（client 由 runner/应用级配置兜住，与文档口径一致）。
+ * - fallback 环只保留 `model`（client 由 runner/应用级配置兜住，与文档口径一致）；
+ * - 剥掉的「主 client / tools / fallback client」记进 `DROPPED_REFS_KEY`，让恢复段能出声
+ *   （2026-11-09 深评 P1：此前剥得比文档承诺的多，且恢复路径看不到这件事）。
  * 返回的是**新对象**，不改调用方记录。
  */
 export function serializeTaskRecord(rec: TaskRecord): string {
@@ -88,6 +123,13 @@ export function serializeTaskRecord(rec: TaskRecord): string {
   const options = copy.spec.options;
   if (options !== undefined) {
     const rest = { ...options };
+    // 剥之前先记：这几样是「提交进程的运行时引用」，恢复段只能退回配置兜底
+    const dropped: string[] = [];
+    if (options.client !== undefined) dropped.push('client');
+    if (options.tools !== undefined && options.tools.length > 0) dropped.push('tools');
+    if (options.fallbacks?.some((link) => link.client !== undefined)) {
+      dropped.push('fallbacks[].client');
+    }
     // 只摘「进程内对象」；纯数据（approvals / events / blackboard / 预算 / labels）保留。
     delete rest.signal;
     delete rest.client;
@@ -97,11 +139,20 @@ export function serializeTaskRecord(rec: TaskRecord): string {
     if (rest.fallbacks !== undefined) {
       rest.fallbacks = rest.fallbacks.map((link) => ({ model: link.model }));
     }
+    if (dropped.length > 0) {
+      (rest as unknown as Record<string, unknown>)[DROPPED_REFS_KEY] = dropped;
+    }
     copy.spec = { ...copy.spec, options: rest };
   }
   return JSON.stringify(copy);
 }
 
+/**
+ * bytes → 记录（**唯一入口**）：解析 + 形状守卫 + 读时归一。
+ *
+ * - 坏 JSON 照旧抛（调用方按自己的口径吞或冒泡，见文件头的边界）；
+ * - 形状不合格（不是对象 / 没有 `taskId`）⇒ `undefined`（「这条不是记录」，与「解析失败」分开）。
+ */
 export function parseTaskRecord(raw: string): TaskRecord | undefined {
   const rec = JSON.parse(raw) as TaskRecord;
   if (!rec || typeof rec.taskId !== 'string') return undefined;
