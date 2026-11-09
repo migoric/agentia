@@ -282,6 +282,12 @@ export function metricsSink(opts: MetricsSinkOptions = {}): MetricsSink {
   // Infinity 被 setInterval 钳到 1ms。timeoutMs 同 OTLP 导出器。
   // intervalMs 有「0 = 立即导出」的合法读法，所以不能直接复用 assertTimerDelay 的文案
   // （它不插 limits 表里的 zeroClause，而报错文案必须与表同源）。
+  //
+  // 2026-11-09 深评 P3-4：**负数放行，读法与 0 相同**（下面那两处判的都是 `<= 0`）——
+  // 此前这条读法只存在于代码里、没写进表，等于「同一形状两种口径」：这里静默当成 0，
+  // `Scheduler.every.intervalMs` 却对负数抛错。现在把「非正 = 立即导出」写进
+  // `LIMIT_SEMANTICS`（`metricsSink.intervalMs` 那行），并由
+  // `tests/integrations/metrics.test.ts` 的负数用例钉住。
   if (Number.isNaN(intervalMs) || intervalMs > 2_147_483_647) {
     throw new TypeError(
       `metricsSink: intervalMs 必须是可兑现的毫秒数（${zeroClauseOf('metricsSink.intervalMs')}），收到 ${String(intervalMs)}`,

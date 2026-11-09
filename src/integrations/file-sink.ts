@@ -28,14 +28,37 @@ import type { Trace, TraceSink } from '../core/trace.js';
  * `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写（各自都合理）⇒ 幂等让
  * 「两处都接」退化成「恰好一次」，而不是「谁也不知道对方也写了」。
  * ⚠️ 幂等的粒度是**进程内按解析后的绝对路径**；跨进程仍受上面「单进程写者」前提约束。
+ *
+ * ⚠️ **`fsync` 不是缓存键的一部分**（2026-11-09 深评 P3-1）：键带 `fsync` 会回到「同一文件两个
+ * 写者 ⇒ 一次 run 落两行」那个更贵的问题上。所以同路径永远共用一个 sink，而**第二次请求的
+ * `fsync` 与既有 sink 不一致时出一次声** —— 此前是静默忽略，于是「我明明开了 fsync」这类
+ * 持久性承诺会无声失效（`fsync` 只影响性能与耐久，不影响内容，所以不会有任何东西报错）。
  */
-const sinkByPath = new Map<string, TraceSink>();
+interface SinkEntry {
+  readonly sink: TraceSink;
+  readonly fsync: boolean;
+  /** 不一致告警是否已出过（同路径只说一次，别按 run 刷屏） */
+  warned: boolean;
+}
+
+const sinkByPath = new Map<string, SinkEntry>();
 
 export function jsonlTraceSink(options: { path: string; fsync?: boolean }): TraceSink {
   const path = resolve(options.path);
   const fsync = options.fsync === true;
   const existing = sinkByPath.get(path);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    if (existing.fsync !== fsync && !existing.warned) {
+      existing.warned = true;
+      console.warn(
+        `[agentia] jsonlTraceSink：同路径已存在一个 fsync=${existing.fsync} 的 sink（${path}），` +
+          `本次请求的 fsync=${fsync} 不会生效。` +
+          '同路径进程内只保留一个 sink（否则一次 run 会落两行同 traceId 的记录）；' +
+          '要换持久性口径，请在进程启动时统一整份配置。',
+      );
+    }
+    return existing.sink;
+  }
   mkdirSync(dirname(path), { recursive: true });
   const sink: TraceSink = {
     export(trace: Trace): void {
@@ -61,6 +84,6 @@ export function jsonlTraceSink(options: { path: string; fsync?: boolean }): Trac
       }
     },
   };
-  sinkByPath.set(path, sink);
+  sinkByPath.set(path, { sink, fsync, warned: false });
   return sink;
 }

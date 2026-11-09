@@ -128,4 +128,46 @@ describe('jsonlTraceSink（CLI report/diff/harvest 的输入格式）', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('fsync:true ⇒ 走同步落盘分支（内容仍是一行一条）', () => {
+    // 覆盖 opt-in 持久性那条分支：不加这条，`fsyncSync` 那几行只在类型检查里「存在」。
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'fsync.jsonl');
+      const sink = jsonlTraceSink({ path: file, fsync: true });
+      sink.export(makeTrace('run-1'));
+      sink.export(makeTrace('run-2'));
+      const lines = readFileSync(file, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l).traceId);
+      assert.deepEqual(lines, ['run-1', 'run-2']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('同路径第二次请求的 fsync 与既有 sink 不一致 ⇒ 出声一次，且仍是同一个 sink', () => {
+    // 2026-11-09 深评 P3-1：键若带上 `fsync`，同一文件就有两个写者 ⇒ 一次 run 落两行
+    // （比静默忽略更贵的错）。所以保持「同路径一个 sink」，但**不一致时要出声** ——
+    // 否则「我明明开了 fsync」这类耐久性承诺会无声失效。
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    const file = join(dir, 'trace.jsonl');
+    const warned: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args.join(' '));
+    try {
+      const first = jsonlTraceSink({ path: file });
+      const second = jsonlTraceSink({ path: file, fsync: true });
+      assert.equal(first, second, '同路径必须只有一个 sink（否则一次 run 落两行）');
+      assert.equal(warned.length, 1, 'fsync 口径不一致必须出声');
+      assert.match(warned[0]!, /fsync=true 不会生效/);
+      // 同路径只提醒一次：别按 run / 按连接刷屏
+      jsonlTraceSink({ path: file, fsync: true });
+      assert.equal(warned.length, 1, '同路径的不一致只报一次');
+    } finally {
+      console.warn = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

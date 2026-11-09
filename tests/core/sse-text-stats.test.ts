@@ -53,6 +53,38 @@ describe('core 单源原语', () => {
     );
   });
 
+  it('sseLines：多行短帧总量超上限 ⇒ 不误判（判据是单帧，不是整个 buf）', async () => {
+    // 2026-11-09 深评 P3-2：上限（8MiB 码元）此前判在**按行切分之前**，判的是整个 `buf`。
+    // 于是一次 read 交付 9M、但每行只有 1000 码元的 chunk 会被误判成「单行超限」。
+    //
+    // ⚠️ 必须做成**单个 chunk**：切成 10KB 的块时 `buf` 每次都被切空，旧判据也不会触发 ——
+    // 第一版就是这么写的，反向验证（退回旧判据）照样全绿，等于一条假守卫。
+    const line = 'x'.repeat(1_000);
+    const oneRead = `${line}\n`.repeat(9_000); // 9M 码元 / 9000 行，一次 read 到达
+    const lines: string[] = [];
+    for await (const l of sseLines(streamOf(oneRead))) lines.push(l);
+    assert.equal(lines.length, 9_000, '多行短帧应当逐行交出，而不是抛错');
+    assert.equal(lines[0]!.length, 1_000);
+    assert.equal(lines.at(-1)!.length, 1_000);
+  });
+
+  it('sseLines：一帧 9M 连换行一起到达 ⇒ 仍按单帧超限拒（先切后判不能放过它）', async () => {
+    // 与上一条互为对照：判据换成「单帧」之后，一次 read 就把整条超长行连 `\n` 送来的
+    // 情形必须照样拦下 —— 否则修 P3-2 就把 2026-11-07 的 OOM 守卫换掉了。
+    await assert.rejects(
+      async () => {
+        for await (const _ of sseLines(streamOf(`${'x'.repeat(9_000_000)}\n`))) {
+          /* 不应产出这一帧 */
+        }
+      },
+      (e: unknown) => {
+        assert.equal((e as { status?: number }).status, 500);
+        assert.match((e as Error).message, /分帧上限/);
+        return true;
+      },
+    );
+  });
+
   it('sseLines：提前 break 时取消底层流（读锁不释放就漏连接）', async () => {
     let cancelled = false;
     const enc = new TextEncoder();

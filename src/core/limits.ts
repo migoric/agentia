@@ -247,9 +247,9 @@ export const LIMIT_SEMANTICS = [
     where: 'integrations/metrics.ts',
     unit: 'ms',
     zero: 'immediate',
-    zeroClause: '0 = 立即导出',
+    zeroClause: '0 = 立即导出，负数同 0',
     badValue: 'throws',
-    note: '⚠️ **同名反义**：`Scheduler.every` 的 `intervalMs: 0` 是**配置错误**（抛错），这里却是「关掉定时器、每次累加后立即导出」。两个同名旋钮两种读法 —— 改任何一个之前先看这张表。NaN / Infinity / 超 2^31-1ms 在构造期拒（2026-11-07 深评：NaN 此前让定时器与立即导出**同时**不成立 ⇒ 永远不导出，且零信号）。',
+    note: '⚠️ **同名反义**：`Scheduler.every` 的 `intervalMs: 0` 是**配置错误**（抛错），这里却是「关掉定时器、每次累加后立即导出」。两个同名旋钮两种读法 —— 改任何一个之前先看这张表。NaN / Infinity / 超 2^31-1ms 在构造期拒（2026-11-07 深评：NaN 此前让定时器与立即导出**同时**不成立 ⇒ 永远不导出，且零信号）。**负数读同 0**（2026-11-09 深评 P3-4：代码判的是 `<= 0`，此前这条读法只在代码里、没进表 ⇒ 同一形状在 `Scheduler.every.intervalMs` 上却是抛错；现在两种口径都写明，负数由 `metrics.test.ts` 钉住）。',
   },
   {
     knob: 'RetryOptions.baseDelayMs',

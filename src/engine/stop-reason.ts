@@ -37,23 +37,19 @@ export function resolveStopReason(message: Message, maxTokens: number): StopReso
       error: { type: 'refusal', message: 'model refused the request', retryable: false },
     };
   }
-  if (
-    message.stop_reason === 'max_tokens' ||
-    message.stop_reason === 'model_context_window_exceeded'
-  ) {
-    const contextWindow = message.stop_reason === 'model_context_window_exceeded';
-    if (contextWindow) {
-      return {
-        kind: 'finish',
-        stopReason: 'model_context_window_exceeded',
-        finalText: textOf(message),
-        error: {
-          type: 'model_context_window_exceeded',
-          message: '模型上下文窗口已耗尽（model_context_window_exceeded）',
-          retryable: false,
-        },
-      };
-    }
+  if (message.stop_reason === 'model_context_window_exceeded') {
+    // 2026-11-09 深评 P3-3：此前写成 `if (max_tokens || model_context_window_exceeded)` 再
+    // 内部只对后者 return —— `max_tokens` 那半是空转，真正的处理在下面那条独立分支里。
+    return {
+      kind: 'finish',
+      stopReason: 'model_context_window_exceeded',
+      finalText: textOf(message),
+      error: {
+        type: 'model_context_window_exceeded',
+        message: '模型上下文窗口已耗尽（model_context_window_exceeded）',
+        retryable: false,
+      },
+    };
   }
   if (message.stop_reason === 'max_tokens') {
     // 与 budget_exceeded / refusal 同口径：非正常收尾都带结构化 error（进 run 根 span），

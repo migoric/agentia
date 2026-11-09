@@ -596,6 +596,21 @@ describe('E5 OTLP/JSON 指标导出', () => {
     }
   });
 
+  it('intervalMs 负数读同 0：export 时立即导出（与 LIMIT_SEMANTICS 同口径）', async () => {
+    // 2026-11-09 深评 P3-4：代码判的是 `<= 0`，所以负数一直等同于「立即导出」，但这读法
+    // 只活在代码里、没进表 —— 而 `Scheduler.every.intervalMs` 对负数抛错 ⇒ 同一形状两种口径。
+    // 现在表里写明「0 / 负数 = 立即导出」，这条用例把代码与表钉在一起。
+    const { server, base, bodies } = await startCollector(200);
+    try {
+      const m = metricsSink({ export: 'otlp', endpoint: base, intervalMs: -1 });
+      await m.export(traceOf({ durationMs: 5 }));
+      m.stop();
+      assert.equal(bodies.length, 1, '负数与 0 同读法：不设 timer，export 时立即导出');
+    } finally {
+      await close(server);
+    }
+  });
+
   it('flush 真发 POST /v1/metrics，结构是合法 OTLP（resourceMetrics→scopeMetrics→metrics）', async () => {
     const { server, base, bodies } = await startCollector(200);
     try {
