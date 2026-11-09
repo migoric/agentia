@@ -115,6 +115,9 @@ export function createStreamJanitorGroup(deps: StreamJanitorGroupDeps): StreamJa
     ticking = true;
     try {
       await Promise.all([...targets.keys()].map((taskId) => checkOne(taskId)));
+    } catch {
+      // 一拍里的意外不得外逃：`setInterval` 回调里的 rejection 就是 unhandledRejection
+      // （Node ≥15 终止宿主）—— 观测路径不允许有这种出口。下一拍照常继续。
     } finally {
       ticking = false;
       if (targets.size === 0) stopTimer();

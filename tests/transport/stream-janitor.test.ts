@@ -127,6 +127,32 @@ describe('createStreamJanitorGroup —— 跨进程 SSE 兜底收口', () => {
     group.close();
   });
 
+  it('一拍里的意外（isTerminal 抛）不外逃，也不耽误同拍其它任务', async () => {
+    // `setInterval` 回调里的 rejection = unhandledRejection（Node ≥15 终止宿主）。
+    // `isTerminal` 是本进程的判据（不是宿主的回调），所以它抛错**不**走 safe()，
+    // 由 tick 的 catch 兜住 —— 这条同时是那个 catch 的用例。
+    let closed = 0;
+    const group = createStreamJanitorGroup({
+      poll: async () => undefined,
+      ownerId: 'me',
+      pollMs: 5,
+    });
+    group.add('bad', {
+      isTerminal: () => {
+        throw new Error('判据炸了');
+      },
+      onTerminal: () => {},
+      onClosed: () => {},
+    });
+    group.add('good', {
+      isTerminal: () => false,
+      onTerminal: () => {},
+      onClosed: () => closed++,
+    });
+    await waitFor(() => closed === 1, '同拍的另一个任务照常收口');
+    group.close();
+  });
+
   it('pollMs <= 0 ⇒ 不起定时器（整组关掉兜底）', async () => {
     let polls = 0;
     const group = createStreamJanitorGroup({
