@@ -133,7 +133,10 @@ describe('createStreamJanitorGroup —— 跨进程 SSE 兜底收口', () => {
     // 由 tick 的 catch 兜住 —— 这条同时是那个 catch 的用例。
     let closed = 0;
     const group = createStreamJanitorGroup({
-      poll: async () => undefined,
+      // ⚠️ `bad` 必须读到**一条记录**，否则 `checkOne` 先走 `rec === undefined` 的收口分支、
+      // 根本调不到 `isTerminal` —— 第一版就是这么写的，那个 catch 一行没跑到（覆盖率当场
+      // 报 119-120 未覆盖），等于这条用例在测别的东西。
+      poll: async (taskId) => (taskId === 'bad' ? rec('me') : undefined),
       ownerId: 'me',
       pollMs: 5,
     });
