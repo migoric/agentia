@@ -34,6 +34,10 @@
   client 的任务重启续跑会**静默**打到 runner 的端点。
 - JSON / SQLite / Redis 三条 store 的恢复路径加固（读失败出声、半行写入回滚、迁移事务化、
   SCAN 去重、水合失败跳过回写），详见 `docs/spec.md` §10。
+- 构建面：四个 `package-lock.json` 的 `resolved` 从第三方镜像站改回官方 registry（共 463 处），
+  两个示例 `Dockerfile` 加拉包重试。此前 2026-11-09 镜像站 5xx 让「构建 deploy 示例镜像」连挂
+  两轮（`ER_NO_SUCH_TABLE` / `504`）；改后该 job 从 174–368s 降到 20s。⚠️ 它与 `src/` 无关，
+  但影响**从零安装**：`npm ci` 的 tarball 来源现在是官方源（镜像站用户仍可由自己的 npm 配置改写）。
 
 ### ⚠️ 行为变更（安全修）：MCP 反向桥默认隐藏 HITL 工具（2026-11-07 ref-deep-review-2026-11-07）
 
