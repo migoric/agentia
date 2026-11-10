@@ -17,6 +17,11 @@
 FROM node:24-slim AS build
 WORKDIR /repo
 
+# 拉包重试：两段 npm install 都要连公网，抖动一次就整层失败（2026-11-09 镜像站 5xx 让本 job 连挂两轮）。
+# 走 ENV 而不是命令行开关：重试类参数在 npm 上没有稳定的 CLI 形式，环境变量各版本都认。
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_maxtimeout=120000
+
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
