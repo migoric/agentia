@@ -14,6 +14,11 @@
 FROM node:24-slim AS build
 WORKDIR /repo
 
+# 拉包重试：三段 npm install 都要连公网，抖动一次就整层失败（2026-11-09 镜像站 5xx 让 CI 连挂两轮）。
+# 走 ENV 而不是命令行开关：重试类参数在 npm 上没有稳定的 CLI 形式，环境变量各版本都认。
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_maxtimeout=120000
+
 # 1) 框架本体。它零运行时依赖（公共消息类型自有，厂商 SDK 只做构建期类型门禁），
 #    这里装的是构建期的 tsc。
 COPY package.json package-lock.json tsconfig.json ./
