@@ -217,3 +217,147 @@
   word-break: break-word;
   min-width: 0;
 }
+
+/* —— 结构化正文（2026-11-11）：`full` 是对象/数组时，展开行**下方**多一个兄弟块 ——
+   此前只有一条展开路：整串无缩进的 JSON 塞进 `.tr-io` 再靠 `.tr-open` 换行，20 个键就在
+   400px 宽的右栏里折成十几行连续文本（页面不报错、无溢出，只是人读不了）。
+
+   为什么是兄弟块、不是 `.tr-io` 的子节点：`.tr-row` 是 flex + nowrap，往里塞块级内容会把
+   树的列对齐打乱；独立成块才能自己换行、自己缩进、自己滚。
+
+   为什么 `.tr-io` 只是**隐藏**而不是不渲染：它仍持有原文（`textContent` = `JSON.stringify`），
+   `test/view.test.js` 的「展开拿到的是原文、不是摘要」与用户选中复制都靠它 ——
+   这里改的是画法，不是数据。 */
+.tr-row.tr-structured .tr-io {
+  display: none;
+}
+.tr-full {
+  margin: 2px 0 8px 2.2em; /* 与 `.tr-pre` 的树形前缀对齐，不跟父行抢左侧 */
+  border-left: 2px solid #2a2a31;
+  padding: 4px 0 4px 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  /* 与 `.tr-row.tr-open .tr-io` 同一个高度上限：出参动辄上千行，不限高会把整棵树推出屏幕 */
+  max-height: 60vh;
+  overflow: auto;
+  white-space: normal;
+}
+.tr-full-head {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 2px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.tr-full-copy {
+  color: var(--ice);
+  cursor: pointer;
+}
+.tr-full-copy:hover {
+  text-decoration: underline;
+}
+/* 每一行自己换行：长字符串（工具出参常见）必须能折，否则横向滚动条把缩进吃掉 */
+.tr-full-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 3px;
+}
+/* 可折叠的行（有 data-fold）才给 hover 反馈 —— 叶子行点了没事发生，就不该有可点的样子 */
+.tr-full-line[data-fold] {
+  cursor: pointer;
+}
+.tr-full-line[data-fold]:hover {
+  background: #17171a;
+}
+/* 折叠箭头与 .tr-caret 不同：它不是「这一行能展开」的唯一指示（同一行还写着 `{ object · 4 项 }`，
+   折叠态的值本身就说明了一切），所以不做常显的对比度承诺，跟着 hover 走。
+   **定宽**：叶子行也占这一格（见 full-view.js 的 caretSlot），否则同层键名会在有无箭头之间
+   左右跳 —— 一列键名对齐是这类面板最基本的可读性。 */
+.tr-full-caret {
+  display: inline-block;
+  width: 10px;
+  text-align: center;
+  color: var(--faint);
+  font-size: 10px;
+  margin-right: 3px;
+}
+.tr-full-hint {
+  color: var(--faint);
+}
+/* `⧉` 复制路径：hover 才露。与 .tr-caret 的区别是**它暴露的是动作、不是信息** ——
+   路径的内容（键名）始终写在行里，常显只会给每行多一个字形噪声。
+   没有剪贴板实现时照样显示、点了不谎报成功（见 full-view.js 的 copyInto）。 */
+.tr-full-path {
+  opacity: 0;
+  color: var(--ice);
+  cursor: pointer;
+  font-size: 10px;
+  margin: 0 4px;
+  transition: opacity 0.12s;
+}
+.tr-full-line:hover .tr-full-path,
+.tr-full-table th:hover .tr-full-path {
+  opacity: 1;
+}
+/* —— 同构对象数组 → 表格（2026-11-11 晚）——
+   3 行 `{name,score}` 在树形里要花 9 行重复键名，成表后是 1 行表头 + 3 行数据，
+   而且列天然对齐。只在「真同构且全标量列」时启用（判据在 full-view.js 的 tableColsOf），
+   否则回落树形 —— 表格里没法逐层展开，判错一次就是丢数据。 */
+.tr-full-table {
+  border-collapse: collapse;
+  margin: 2px 0 4px;
+  font-size: 11.5px;
+}
+/* 缩进：列数/行数都是动态的，没有能写死的 inline style（stub 里也没有 style 字段），
+   所以按层级给属性选择器 —— 0 层不写 data-depth，自然不缩进。 */
+.tr-full-table[data-depth="1"] {
+  margin-left: 2ch;
+}
+.tr-full-table[data-depth="2"] {
+  margin-left: 4ch;
+}
+.tr-full-table[data-depth="3"] {
+  margin-left: 6ch;
+}
+.tr-full-table[data-depth="4"] {
+  margin-left: 8ch;
+}
+.tr-full-table[data-depth="5"] {
+  margin-left: 10ch;
+}
+.tr-full-table th {
+  text-align: left;
+  font-weight: 500;
+  color: #71717a;
+  padding: 0 12px 1px 0;
+  border-bottom: 1px solid #27272a;
+  white-space: nowrap;
+}
+.tr-full-table td {
+  padding: 1px 12px 1px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tr-full-table tbody tr:hover {
+  background: #17171a;
+}
+/* 缩进用真空格 + `pre`，不靠 padding —— 嵌套层级要能被**选中复制**带出去 */
+.tr-full-indent {
+  white-space: pre;
+}
+.tr-full-key {
+  color: #a1a1aa;
+  margin-right: 2px;
+}
+.tr-full-str {
+  color: #9ece6a;
+}
+.tr-full-num {
+  color: #e0af68;
+}
+.tr-full-bool {
+  color: #7dcfff;
+}
+.tr-full-null {
+  color: var(--faint);
+}

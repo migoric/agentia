@@ -14,7 +14,7 @@
  *   3. usage 只由 llm.turn 累计（capability span 的 usage 是子 span 聚合，计入会双算）。
  */
 
-import { fmtArg, rawArg, capabilityTypeOf, CAP_ICO } from './view.js';
+import { fmtArg, capabilityTypeOf, CAP_ICO } from './view.js';
 
 /** 从 span.attributes 认能力类型（框架用 `setAttribute(capabilityId, 'subagent', name)` 记类型） */
 function spanType(s) {
@@ -68,15 +68,24 @@ function eventText(ev) {
 }
 
 /**
- * 事件全文（展开态用）。
+ * 事件全文（展开态用）—— **给原值，不预先序列化**。
  *
- * 只有 `tool.input` 需要单独取：`fmtArg` 把入参摘要**砍到 4 个键 / 每值 21 字符 / 整串 62 字符**，
- * 直接拿摘要当全文就是「假展开」—— 点开看到的还是那 62 个字符。出参与其他事件本身就是原文
- * （`eventText` 原样返回 content），无需二次处理。
- * 原文口径统一在 view.js 的 `rawArg`：官网 playground 的模拟回放也要用它，两处一处定义。
+ * 2026-11-11 起 `full` 的类型本身携带语义：字符串 ⇒ 渲染器走 `.tr-io` 的纯文本换行；
+ * 对象/数组 ⇒ 交给 `full-view.js` 铺成带缩进的结构化块。所以这里必须把**原值**递下去 ——
+ * 若仍在这里 `rawArg` 成字符串，「一大坨 JSON」那条路就永远回不来了（渲染器只能看到字符串）。
+ *
+ * 口径：
+ * - `tool.input` → 入参原值（`fmtArg` 的摘要砍到 4 键 / 每值 21 字符 / 整串 62 字符，
+ *   拿摘要当全文就是「假展开」）；
+ * - `tool.output` → `content` 原值：字符串就是纯文本（含图片块时会是非字符串，正好结构化）；
+ * - 其余事件 → `eventText` 的字符串（它们的体本来就是给人看的一小段说明）。
  */
 function eventFull(ev) {
-  if (ev.name === 'tool.input') return rawArg(ev.body?.input);
+  if (ev.name === 'tool.input') return ev.body?.input ?? '';
+  if (ev.name === 'tool.output') {
+    const c = ev.body?.content;
+    return c == null ? '' : c;
+  }
   return eventText(ev);
 }
 
