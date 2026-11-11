@@ -17,6 +17,13 @@
  * 宿主需提供的 CSS 变量：--ice --faint --text（见 trace-view.css）。
  */
 
+/* 展开态的正文有两种形状，由 `full` 的类型决定（2026-11-11）：
+ *   - 字符串 → 老路：`.tr-io` 里放原文，靠 `.tr-open` 换行（纯文本正文、官网模拟回放）；
+ *   - 对象/数组 → 追加一个 `.tr-full` 结构化块（折叠 / 成表 / 路径复制），`.tr-io` 由 CSS 隐藏。
+ * 两档并存是刻意的：字符串那条路有 test/style.test.js 的两个不变量守着（最小宽度、caret 常显），
+ * 全换成本件会让那两个守卫失去落点。 */
+import { createFullView } from './full-view.js';
+
 export const CAP_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
 
 /** 能力类型取自名字前缀（tool: / skill: / prompt: / subagent:） */
@@ -88,6 +95,9 @@ export function createTraceView(rootEl, opts = {}) {
   /* 展开态的行 key 集合 + 事件 key 发号器。两者都必须活在 renderTrace 之外：
      渲染是【全量重建】（rootEl.innerHTML = ''），状态放进 DOM 或渲染过程里就活不过下一次事件。 */
   const expanded = new Set();
+  /* 结构化块内部的折叠状态，按事件键一份（`ev.key` → 路径 → 是否展开）。
+     与 `expanded` 同一条理由，而且更硬：块本身每次重建都会 new 一个，状态只能挂在树上。 */
+  const folds = new Map();
   let evSeq = 0;
 
   /** 正在选文本时不要收起/展开 —— 鼠标拖选到行外松手会补一次 click，否则选完就自己合上了 */
@@ -136,20 +146,35 @@ export function createTraceView(rootEl, opts = {}) {
         // 非 tool.* 事件（usage.unpriced / llm.retry / budget.* / context.budget）没有工具名 ——
         // 这一格整个不渲染，别把「无工具」显示成假工具名（.tr-name 是 flex:none，.tr-io 自然占满）
         if (ev.tool) row.appendChild(el('span', 'tr-name', ev.tool));
-        // 展开态用全文（ev.full），折叠态用摘要（ev.text）—— 折叠态因此与加展开之前逐字一致
-        const io = el('span', 'tr-io', (open ? ev.full : ev.text) || '');
+        // 展开态用全文（ev.full），折叠态用摘要（ev.text）—— 折叠态因此与加展开之前逐字一致。
+        // `full` 是对象/数组时（2026-11-11）：`.tr-io` 仍放**原文**（结构化块挂在行后、由 CSS
+        // 隐藏本格），所以「展开拿到的是原文而不是 62 字符摘要」这条不变量原样成立。
+        const structured = ev.full !== null && typeof ev.full === 'object';
+        const fullText = structured ? rawArg(ev.full) : ev.full || '';
+        const io = el('span', 'tr-io', (open ? fullText : ev.text) || '');
         // 展开后正文已在行里，再挂一个占满整行的原生 tooltip 只会挡视线
         io.title = open ? '' : ev.text || '';
         row.appendChild(io);
         if (ev.full) {
           row.dataset.expandable = '1'; // 可展开标记：CSS 靠它出 caret / cursor，测试靠它找行
           row.appendChild(el('span', 'tr-caret', open ? '▾' : '▸'));
-          if (open) row.className += ' tr-open';
+          if (open) row.className += ' tr-open' + (structured ? ' tr-structured' : '');
           row.addEventListener('click', () => {
             if (!hasSelection()) toggleExpand(ev.key);
           });
         }
         rootEl.appendChild(row);
+        // 结构化正文是**兄弟块**而不是 `.tr-io` 的子节点：行是 flex + nowrap，
+        // 塞进去会把树的列对齐打乱；独立成块才能自己换行、自己缩进。
+        // 折叠状态按事件键取一份带进去（2026-11-11 晚）：块每次重建都 new，状态不能放块里。
+        if (open && structured) {
+          let fold = folds.get(ev.key);
+          if (!fold) {
+            fold = new Map();
+            folds.set(ev.key, fold);
+          }
+          rootEl.appendChild(createFullView(ev.full, { fold }));
+        }
         return;
       }
 
@@ -224,6 +249,7 @@ export function createTraceView(rootEl, opts = {}) {
     spanMap.clear();
     spanMap.set('root', traceRoot);
     expanded.clear(); // 展开态属于上一棵树：reset 开新树时一并清掉
+    folds.clear(); // 块内折叠同理：留着只会在下一次点开时出现"莫名已折叠"的状态
     usageAcc.input = 0;
     usageAcc.output = 0;
     usageAcc.cacheRead = 0;

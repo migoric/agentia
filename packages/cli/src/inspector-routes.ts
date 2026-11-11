@@ -179,6 +179,10 @@ const STATIC = new Map<string, string>([
   ['index.js', join(ASSETS, 'index.js')],
   ['view.js', join(ASSETS, 'view.js')],
   ['fromTrace.js', join(ASSETS, 'fromTrace.js')],
+  /* 结构化展开正文（2026-11-11）：`full` 是对象/数组时，view.js 用它铺缩进/着色/复制块。
+   * 与上面四个同性质 —— 渲染器的一部分，页面**会** import 它（view.js 的静态 import 被
+   * 剥成页面级 import 时它必须可达），漏登记 = 浏览器 404 = 面板整块模块求值失败。 */
+  ['full-view.js', join(ASSETS, 'full-view.js')],
   ['summary.js', join(ASSETS, 'summary.js')],
   ['trace-view.css', join(ASSETS, 'trace-view.css')],
   /* 单文件 bundle（`agentia view` 内联进自包含 HTML 用）。⚠️ **页面不 import 它** ——
