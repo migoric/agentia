@@ -43,6 +43,20 @@ it('收尾原因为空时不拼分隔符：老 trace 不该在行尾挂一个孤
   );
 });
 
+it('打开一条 run 失败必须出声（裸 return 会把上一条的树留在右栏）', () => {
+  const at = PAGE.indexOf('async function open(id)');
+  assert.ok(at >= 0, '找不到 open(id) —— 改名了？那这条守卫要跟着改');
+  const end = PAGE.indexOf('async function openLatest', at);
+  assert.ok(end > at, '找不到 openLatest —— 解析范围错了');
+  const body = PAGE.slice(at, end);
+  assert.ok(/打开 run 失败/.test(body), '失败分支必须有用户可见的提示（本档最忌张冠李戴）');
+  assert.ok(
+    !/if \(!res\.ok\) return;/.test(body),
+    '不许裸 return：右栏仍是上一条的树，而用户以为「打开的就是这条」',
+  );
+  assert.ok(/catch \(e\)/.test(body), '网络异常也要出声 —— 否则只是一个 unhandled rejection');
+});
+
 it('run 列表形状是 RunSummary 的投影，不是手抄的 interface', () => {
   assert.ok(
     /export type ConversationRunLike = Pick<\s*RunSummary,/.test(LOGIC),

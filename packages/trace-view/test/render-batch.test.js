@@ -352,3 +352,76 @@ describe('树内检索：只高亮 + 跳转，不改结构', () => {
     assert.equal(node.querySelectorAll('.tr-hit-cur').length, 1, '只能有一处是「当前」');
   });
 });
+
+/**
+ * 全量重画会把**属于这棵树、不属于这一次渲染**的状态一起清掉：展开态、检索位置、滚动位置。
+ * 在飞时 `playTrace` 每帧被调一次（SSE 增量）⇒ 这三样每 16ms 归零一次。
+ *
+ * 这些失败态的共同点是「页面看着能动」：树照样画出来、命中数照样对，只是用户刚做的操作
+ * 无声撤销 —— 所以只能靠这组断言咬住。
+ */
+describe('重画不吃视图状态（在飞时每帧重画）', () => {
+  const openRows = (node) => allNodes(node).filter((n) => String(n.className).includes('tr-open'));
+
+  it('同一棵树再回放一次，展开态保留', () => {
+    const { node } = makeCountedRoot();
+    const view = createTraceView(node);
+    const t = traceFixture(3);
+    playTrace(view, t);
+    const row = allNodes(node).find(
+      (n) => n.dataset && n.dataset.expandable === '1' && String(n.className).includes('tr-ev'), // 事件行（span 行的 attributes 块是另一套标记）
+    );
+    assert.ok(row, '前提：有可展开的事件行');
+    row.click();
+    assert.equal(openRows(node).length, 1, '展开生效');
+
+    playTrace(view, t); // 在飞的下一帧
+    assert.equal(
+      openRows(node).length,
+      1,
+      '同一 rootId 重画后仍展开 —— 否则用户每展开一个节点，下一帧就自己合上',
+    );
+  });
+
+  it('换一条 run 才回顶部（同一棵树的重画保留滚动位置）', () => {
+    const { node } = makeCountedRoot();
+    const view = createTraceView(node);
+    const t = traceFixture(3);
+    playTrace(view, t);
+    node.scrollTop = 200;
+    playTrace(view, t);
+    assert.equal(node.scrollTop, 200, '同一棵树重画要搬回滚动位置');
+
+    view.reset('run · b', 'run2', 1000);
+    assert.equal(node.scrollTop, 0, '换 run 回顶部 —— 新树从头读');
+  });
+
+  it('重画后 nextHit 接着上次的位置（序号不跳回第一处）', () => {
+    const { node } = makeCountedRoot();
+    const view = createTraceView(node);
+    const t = traceFixture(3);
+    playTrace(view, t);
+    assert.equal(view.setQuery('claude-x'), 3);
+    assert.equal(view.nextHit(1), 1);
+    assert.equal(view.nextHit(1), 2);
+
+    playTrace(view, t);
+    assert.equal(view.nextHit(1), 3, '重画不能把序号打回 1（那正是「检索序号跳回」）');
+  });
+
+  it('重画后「当前命中」的标记还在', () => {
+    const { node } = makeCountedRoot();
+    const view = createTraceView(node);
+    const t = traceFixture(3);
+    playTrace(view, t);
+    view.setQuery('claude-x');
+    view.nextHit(1);
+
+    playTrace(view, t);
+    assert.equal(
+      node.querySelectorAll('.tr-hit-cur').length,
+      1,
+      '行是重建出来的，标记必须一起补回去 —— 否则序号还在、视觉上「第几处」没了',
+    );
+  });
+});
