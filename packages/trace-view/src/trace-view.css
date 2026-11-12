@@ -284,6 +284,18 @@
 .tr-full-hint {
   color: var(--faint);
 }
+/* 「这个字符串里装着 JSON」的标记。它不是装饰，是**事实的一部分**：没有它，读者会以为
+   工具真的返回了对象。所以常显、不等 hover，也不跟 .tr-full-hint 一样隐形 —— 但保持
+   低对比度，避免每行都在喊。 */
+.tr-full-json {
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.4;
+  border: 1px solid #2c2c32;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 4px;
+}
 /* `⧉` 复制路径：hover 才露。与 .tr-caret 的区别是**它暴露的是动作、不是信息** ——
    路径的内容（键名）始终写在行里，常显只会给每行多一个字形噪声。
    没有剪贴板实现时照样显示、点了不谎报成功（见 full-view.js 的 copyInto）。 */

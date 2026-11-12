@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFullView } from '../src/full-view.js';
+import { createFullView, hasStructuredBody } from '../src/full-view.js';
 import { createTraceView } from '../src/view.js';
 import { playTrace } from '../src/fromTrace.js';
 
@@ -321,6 +321,152 @@ function traceFixture() {
 const evRows = (root) => root.children.filter((r) => (r.className || '').includes('tr-ev'));
 const isOpen = (row) => (row.className || '').includes('tr-open');
 
+/**
+ * 字符串里套着的 JSON（2026-11-12）。
+ *
+ * 业务里「结构被序列化后塞回文本字段」是常态：`tool.output.content` 常是
+ * `JSON.stringify(...)` 的结果、MCP 的 text block、SSE 的 `data:`。这些值的类型是**字符串**，
+ * 此前只能显示成 `{\"a\":1` 的反斜杠汤 —— 比无缩进的 JSON 更难读。
+ *
+ * 这一组钉的**不是**「能解析就行」，而是三条容易被做丢的：
+ *   1. **必须标出来**（`str→json`）—— 不标，读者会以为工具真的返回了对象，事实被改写；
+ *   2. **判据是首尾字符，不是 parse 成功** —— `"123"`/`"null"`/`"true"` 都能 parse，
+ *      显示成数字/null/布尔就是换了类型；
+ *   3. **只解析一层** —— 一层套一层是真实现象，逐层展开会让 10KB 放大成十万个节点。
+ */
+describe('字符串里套着 JSON：按容器铺开，但如实标出它原本是字符串（2026-11-12）', () => {
+  const badges = (box) => allByClass(box, 'tr-full-json');
+
+  it('嵌套字符串（`content: "{\\"rows\\":[...]}"`）⇒ 铺成容器，行里打 str→json 标记', () => {
+    const box = createFullView({ content: JSON.stringify({ rows: [{ f: 'a.ts' }] }) });
+    const s = textOf(box);
+    assert.ok(!s.includes('\\"rows\\"'), '不该再看到反斜杠汤');
+    assert.ok(s.includes('rows:'), '内层键名要铺出来');
+    assert.equal(badges(box).length, 1, '必须标出它原本是字符串');
+  });
+
+  it('根字符串（工具出参 content 就是 JSON）⇒ 铺开，且头部同时写出「原本是字符串」与解析后的规模', () => {
+    const raw = JSON.stringify({ rows: [{ f: 'a.ts' }] });
+    const box = createFullView(raw);
+    const head = allByClass(box, 'tr-full-type')[0];
+    assert.match(head.textContent, /^string · \d+ 字符 → object · 1 项$/, '两件事都要写出来');
+    assert.ok(textOf(box).includes('rows:'), '正文按对象铺');
+    assert.equal(badges(box).length, 1);
+  });
+
+  it('标记带说明：原文在哪、内部路径要先 parse（这两件最容易误会）', () => {
+    const box = createFullView({ content: '[1,2]' });
+    const badge = badges(box)[0];
+    assert.match(badge.title, /字符串/);
+    assert.match(badge.title, /JSON\.parse/);
+  });
+
+  it('判据是首尾字符：能 parse 成功的标量字符串一律不认（那会改写工具返回的事实）', () => {
+    for (const s of ['123', 'null', 'true', ' 42 ', '0.5', '"x"']) {
+      const box = createFullView({ v: s });
+      assert.equal(badges(box).length, 0, `${s} 不该被当成 JSON`);
+      assert.ok(textOf(box).includes(JSON.stringify(s)), `${s} 要按字符串原样显示`);
+    }
+  });
+
+  it('首尾不吻合 / 解析失败 ⇒ 静默回落成原样字符串（普通文本占绝大多数）', () => {
+    for (const s of ['{not json}', '[1,2', '{"a":1} 后面还有字', '{ }x', '']) {
+      const box = createFullView({ v: s });
+      assert.equal(badges(box).length, 0, `${JSON.stringify(s)} 不该被当成 JSON`);
+      assert.ok(textOf(box).includes(JSON.stringify(s)), '原样显示，不吞不改');
+    }
+  });
+
+  it('只解析一层：解析结果内部的字符串不再二次解析（防嵌套放大）', () => {
+    const box = createFullView({ a: JSON.stringify({ nested: JSON.stringify({ deep: 1 }) }) });
+    assert.ok(textOf(box).includes('nested:'), '第一层要铺开');
+    assert.equal(badges(box).length, 1, '只有一个 str→json 标记');
+    assert.ok(
+      textOf(box).includes('\\"deep\\"'),
+      '内层字符串保持原样 —— 逐层解析会把 10KB 放大成十万个节点',
+    );
+  });
+
+  it('空容器字符串（"{}" / "[]"）也照原样标出来（否则「解析失败」与「里面真是空的」分不清）', () => {
+    const box = createFullView({ a: '{}', b: '[]' });
+    assert.equal(badges(box).length, 2);
+    assert.ok(textOf(box).includes('{}'));
+    assert.ok(textOf(box).includes('[]'));
+  });
+
+  it('普通文本连 parse 都不试（首尾字符先筛；绝大多数值走这条负路径）', () => {
+    const real = JSON.parse;
+    let calls = 0;
+    JSON.parse = (s) => {
+      calls++;
+      return real(s);
+    };
+    try {
+      createFullView({ a: '普通的说明文字', b: '123', c: 'null', d: 'a: b', e: '一段中文' });
+      assert.equal(calls, 0, '看着不像 JSON 的字符串不该付反序列化成本');
+
+      createFullView({ a: '{"k":1}' });
+      assert.equal(calls, 1, '像 JSON 的才试一次（也只试一次）');
+    } finally {
+      JSON.parse = real;
+    }
+  });
+
+  it('谓词与块内判据同源：能 parse 的标量字符串在 `hasStructuredBody` 里也是 false', () => {
+    // ⚠️ 这条不是重复：渲染分支会把「123 被当成数字」悄悄盖住（叶子一律显示原字符串），
+    // 真正会漏到用户面前的是**接线** —— 谓词说 true 就会给一条纯文本事件挂上结构化块。
+    for (const s of ['123', 'null', 'true', '0.5', '"x"', '普通文本', '']) {
+      assert.equal(hasStructuredBody(s), false, `${JSON.stringify(s)} 没有结构化正文`);
+    }
+    for (const v of ['{"a":1}', '[1]', '[]', {}, [], { a: 1 }]) {
+      assert.equal(hasStructuredBody(v), true, `${JSON.stringify(v)} 有结构化正文`);
+    }
+  });
+
+  it('超长字符串不尝试解析（100k 以上连 parse 都不做）', () => {
+    const box = createFullView({ a: JSON.stringify({ pad: 'x'.repeat(120_000) }) });
+    assert.equal(badges(box).length, 0);
+  });
+
+  it('表格单元格不解析（同构表已放弃逐层展开，单元格里放不下嵌套块）', () => {
+    const box = createFullView({
+      rows: [
+        { k: '1', j: JSON.stringify({ z: 1 }) },
+        { k: '2', j: JSON.stringify({ z: 2 }) },
+      ],
+    });
+    assert.equal(allByClass(box, 'tr-full-table').length, 1, '仍然成表');
+    assert.equal(badges(box).length, 0, '单元格里的 JSON 字符串保持原样');
+  });
+
+  it('解析出来的容器照样能折叠（标记不破坏折叠交互）', () => {
+    const box = createFullView({ a: JSON.stringify({ x: 1, y: 2 }) }, { fold: new Map() });
+    assert.ok(textOf(box).includes('x:'), '默认铺开');
+    foldRows(box)
+      .find((r) => r.dataset.fold === 'a')
+      .click();
+    assert.ok(!textOf(box).includes('x:'), '收起后子行消失');
+    assert.equal(badges(box).length, 1, '收起态也要留着标记 —— 否则看不出这是个字符串');
+  });
+
+  it('根字符串的「复制」复制的是**原文**（拿到直接能喂 jq，而不是缩进后的重排）', async () => {
+    const wrote = [];
+    globalThis.navigator = {
+      clipboard: {
+        writeText(s) {
+          wrote.push(s);
+          return Promise.resolve();
+        },
+      },
+    };
+    const raw = '{"a":1,"b":[2,3]}';
+    const box = createFullView(raw);
+    allByClass(box, 'tr-full-copy')[0].click();
+    await Promise.resolve();
+    assert.deepEqual(wrote, [raw]);
+  });
+});
+
 describe('接线：对象入参挂结构化块，字符串出参仍走老路', () => {
   it('对象入参展开 ⇒ 有 .tr-full 块、行标 tr-structured、.tr-io 仍持原文', () => {
     const root = makeNode();
@@ -355,6 +501,48 @@ describe('接线：对象入参挂结构化块，字符串出参仍走老路', (
       false,
       '字符串正文不挂块',
     );
+  });
+
+  it('工具出参 content 是**装着 JSON 的字符串** ⇒ 照样挂块（此前是一串反斜杠汤）', () => {
+    const root = makeNode();
+    const view = createTraceView(root);
+    const trace = traceFixture();
+    const raw = JSON.stringify({ rows: [{ f: 'a.ts' }] });
+    trace.spans[1].events[1].body.content = raw;
+    playTrace(view, trace);
+
+    evRows(root)[1].click();
+    const row = evRows(root)[1];
+    assert.ok(row.className.includes('tr-structured'), '装着 JSON 的字符串也要走结构化');
+    const block = root.children.find((r) => (r.className || '') === 'tr-full');
+    assert.ok(block, '展开行之后必须有结构化块');
+    assert.ok(textOf(block).includes('rows:'), '按对象铺开');
+    assert.ok(textOf(block).includes('str→json'), '并且标出它原本是字符串');
+
+    // 原文仍在 .tr-io：复制出去的是工具真正返回的那个字符串，不是重排后的 JSON
+    const io = row.children.find((c) => c.className === 'tr-io');
+    assert.equal(io.textContent, raw);
+  });
+
+  it('出参是「看着像 JSON 的普通文本」（"123" / "null"）⇒ 仍走老路，不挂块', () => {
+    for (const raw of ['123', 'null']) {
+      const root = makeNode();
+      const view = createTraceView(root);
+      const trace = traceFixture();
+      trace.spans[1].events[1].body.content = raw;
+      playTrace(view, trace);
+
+      evRows(root)[1].click();
+      assert.ok(
+        !evRows(root)[1].className.includes('tr-structured'),
+        `${raw} 是字符串，不该被当成结构化正文（挂上块等于把类型换掉了）`,
+      );
+      assert.equal(
+        root.children.some((r) => (r.className || '') === 'tr-full'),
+        false,
+        `${raw} 不该挂块`,
+      );
+    }
   });
 
   it('收起后结构化块消失（不留孤儿节点）', () => {

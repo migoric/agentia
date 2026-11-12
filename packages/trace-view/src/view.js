@@ -17,12 +17,15 @@
  * 宿主需提供的 CSS 变量：--ice --faint --text（见 trace-view.css）。
  */
 
-/* 展开态的正文有两种形状，由 `full` 的类型决定（2026-11-11）：
- *   - 字符串 → 老路：`.tr-io` 里放原文，靠 `.tr-open` 换行（纯文本正文、官网模拟回放）；
- *   - 对象/数组 → 追加一个 `.tr-full` 结构化块（折叠 / 成表 / 路径复制），`.tr-io` 由 CSS 隐藏。
- * 两档并存是刻意的：字符串那条路有 test/style.test.js 的两个不变量守着（最小宽度、caret 常显），
+/* 展开态的正文有两种形状，由 `full` 的类型决定（2026-11-11，2026-11-12 扩了一档）：
+ *   - 纯文本字符串 → 老路：`.tr-io` 里放原文，靠 `.tr-open` 换行（纯文本正文、官网模拟回放）；
+ *   - 对象/数组 → 追加一个 `.tr-full` 结构化块（折叠 / 成表 / 路径复制），`.tr-io` 由 CSS 隐藏；
+ *   - **装着 JSON 的字符串**（`content: "{\"rows\":[...]}"`，工具把结构序列化后塞回文本字段）
+ *     → 同上一档，块头写明「string · N 字符 → object · M 项」并打 `str→json` 标记。
+ * 判据与块内完全同源（`hasStructuredBody`），「挂不挂块」与「块里画什么」因此不会跑偏。
+ * 前两档并存是刻意的：纯文本那条路有 test/style.test.js 的两个不变量守着（最小宽度、caret 常显），
  * 全换成本件会让那两个守卫失去落点。 */
-import { createFullView } from './full-view.js';
+import { createFullView, hasStructuredBody } from './full-view.js';
 
 export const CAP_ICO = { tool: '⚙', skill: '◆', prompt: '¶', subagent: '⊕' };
 
@@ -147,9 +150,10 @@ export function createTraceView(rootEl, opts = {}) {
         // 这一格整个不渲染，别把「无工具」显示成假工具名（.tr-name 是 flex:none，.tr-io 自然占满）
         if (ev.tool) row.appendChild(el('span', 'tr-name', ev.tool));
         // 展开态用全文（ev.full），折叠态用摘要（ev.text）—— 折叠态因此与加展开之前逐字一致。
-        // `full` 是对象/数组时（2026-11-11）：`.tr-io` 仍放**原文**（结构化块挂在行后、由 CSS
-        // 隐藏本格），所以「展开拿到的是原文而不是 62 字符摘要」这条不变量原样成立。
-        const structured = ev.full !== null && typeof ev.full === 'object';
+        // `full` 是对象/数组、或**装着 JSON 的字符串**时（2026-11-11 / 2026-11-12）：`.tr-io`
+        // 仍放**原文**（结构化块挂在行后、由 CSS 隐藏本格），所以「展开拿到的是原文而不是
+        // 62 字符摘要」这条不变量原样成立。
+        const structured = hasStructuredBody(ev.full);
         const fullText = structured ? rawArg(ev.full) : ev.full || '';
         const io = el('span', 'tr-io', (open ? fullText : ev.text) || '');
         // 展开后正文已在行里，再挂一个占满整行的原生 tooltip 只会挡视线

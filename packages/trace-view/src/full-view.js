@@ -16,6 +16,10 @@
  *    吃掉 9 行。同构且各列都是标量时改成表格，表头一行、数据一行。
  * 3. **路径拿不到**：想引用 `results[0].name` 只能用手数层级。每个键悬停出一个 `⧉`，
  *    点一下把路径写进剪贴板（表头写的是 `results[*].name`，因为它是一整列）。
+ * 4. **字符串里套着的 JSON 读不了**（2026-11-12）：MCP 的 text block、SSE 的 `data:`、把结果
+ *    序列化后又塞回 `content` 的工具 —— 这些值的类型是**字符串**，此前只显示成一串
+ *    `{\"a\":1` 的反斜杠汤，比无缩进的 JSON 更难读。现在首尾是 `{`…`}` / `[`…`]` 且解析成功的
+ *    字符串按容器铺开，并在行里打 `str→json` 标记 —— 不标出来，读者会以为工具真的返回了对象。
  *
  * ## 边界（都是「不这么做就会坏」的地方，不是口味）
  *
@@ -35,6 +39,11 @@
  *   会原样复现（这正是 `view.js` 的 `expanded` 集合存在的原因）。
  * - **表格化只在"真的同构"时发生**：元素必须全是普通对象、键集完全一致、列数 1..6、
  *   每列都是标量。任一不满足就回落树形 —— 表格里没法逐层展开，判错一次就是**丢数据**。
+ * - **字符串里的 JSON 只解析一层，且必须标出来**：判据是**首尾字符**（`{`…`}` / `[`…`]`），
+ *   不是「`JSON.parse` 成功」—— `"123"` / `"null"` / `"true"` 都能 parse 成功，显示成
+ *   数字/空值/布尔就是**改写工具返回的事实**。解析结果内部的字符串**不再二次解析**：
+ *   一层套一层是业务里的真实现象（SSE data 里再套 JSON），逐层展开会让 10KB 变成十万个节点。
+ *   表格单元格也不解析 —— 同构表已经放弃了逐层展开，单元格里放不下嵌套块。
  *
  * 零依赖、纯 DOM 构造（只用 createElement / appendChild / textContent / className /
  * dataset / innerHTML=''），与 view.js 共用同一套 DOM stub 跑测试。
@@ -50,6 +59,8 @@ const MAX_DEPTH = 6;
 const OPEN_DEPTH = 2;
 /** 表格最多几列：再多横向就没法看了，回落树形 */
 const MAX_COLS = 6;
+/** 多长的字符串才值得尝试从里面解析 JSON。再长的话，parse 与随后的渲染成本都不值得 */
+const MAX_JSON_STR = 100_000;
 
 function fvEl(tag, cls, text) {
   const node = document.createElement(tag);
@@ -71,6 +82,18 @@ function safeStringify(v) {
 /** 该值是否值得走结构化视图（字符串交给 .tr-io 的老路） */
 function isStructured(v) {
   return v !== null && typeof v === 'object';
+}
+
+/**
+ * 有没有「结构化正文」可铺 —— 容器，或者**装着 JSON 的字符串**。
+ *
+ * 后者是业务里的常态：`tool.output` 的 `content` 常常就是 `JSON.stringify(...)` 的结果
+ * （工具把结构序列化后塞回文本字段，MCP 的 text block 更是如此）。此前这种值是字符串 ⇒
+ * 走纯文本老路 ⇒ 展开后是一串 `{\"a\":1` 的反斜杠汤。判据与 `jsonInString` 完全同一套，
+ * 所以「挂不挂块」与「块里画什么」不会跑偏。
+ */
+export function hasStructuredBody(v) {
+  return isStructured(v) || jsonInString(v) !== null;
 }
 
 /** 普通对象（排除数组与 null）—— 表格化与"容器"判定都只要这一种 */
@@ -112,6 +135,39 @@ function oneLine(v) {
   const s = safeStringify(v).replace(/\s+/g, ' ');
   const clipped = s.length > MAX_STR ? s.slice(0, MAX_STR) + '…' : s;
   return `<${kind} · ${sizeOf(v)} 项> ${clipped}`;
+}
+
+/**
+ * 「字符串里套着 JSON」：返回解析出来的容器，其余（普通文本、标量字符串、坏 JSON）一律 `null`。
+ *
+ * 判据是**首尾字符**而不是「parse 成功」，这一条是这段代码的全部要害：`"123"`、`"null"`、
+ * `"true"` 都能被 `JSON.parse` 吃下去，但把它们显示成数字/空值/布尔，等于把工具返回的
+ * 字符串改写成另一种类型 —— 调试面板的第一职责是如实。所以先看 trim 后的首尾一个字符，
+ * 不吻合就连 parse 都不试（普通文本占绝大多数，省掉无谓的反序列化）。
+ * 截断过的 JSON（尾部被切掉）在这里自然失败，回落成原样字符串。
+ */
+function jsonInString(v) {
+  if (typeof v !== 'string' || v.length < 2 || v.length > MAX_JSON_STR) return null;
+  const t = v.trim();
+  if (t.length < 2) return null;
+  const head = t[0];
+  const tail = t[t.length - 1];
+  if (!((head === '{' && tail === '}') || (head === '[' && tail === ']'))) return null;
+  try {
+    // 首尾判据已经保证了这里解析出来的必然是对象或数组（`{`…`}` / `[`…`]`），
+    // 所以不再重复判类型 —— 那会是一条永远走不到的防御分支（变异测试实测盖不住）。
+    return JSON.parse(t);
+  } catch {
+    return null;
+  }
+}
+
+/** 「这个字符串里装着 JSON」的标记。**必须显眼**：不标出来，读者会以为工具真的返回了对象。
+ *  title 顺带交代两件容易误会的事 —— 原文还在（`.tr-io` 与块内原值），路径需先 parse 这一层。 */
+function jsonBadge() {
+  const b = fvEl('span', 'tr-full-json', 'str→json');
+  b.title = '这个值是字符串，内容是 JSON（已按对象展示；内部路径需先 JSON.parse 这一层）';
+  return b;
 }
 
 /** 子键的 JSON 路径：对象用 `.key`，数组用 `[i]`。根是空串，所以 `[0]` 不会变成 `.[0]` */
@@ -246,8 +302,9 @@ function startRow(depth, caret) {
  * @param {any} v         值
  * @param {number} depth  当前缩进层级（根为 0）
  * @param {string} path   当前值的 JSON 路径（根为空串）
+ * @param {boolean} [allowParse] 还允许不允从字符串里解析 JSON（进了「解析出来的子树」就为 false）
  */
-function renderInto(ctx, v, depth, path) {
+function renderInto(ctx, v, depth, path, allowParse = true) {
   const box = ctx.body;
 
   if (!isStructured(v)) {
@@ -272,14 +329,19 @@ function renderInto(ctx, v, depth, path) {
     const child = isArr ? v[Number(k)] : v[k];
     const keyText = isArr ? `[${k}]` : `${k}:`;
     const childPath = pathOf(path, k, isArr);
+    // 字符串里套着的 JSON（`content: "{\"rows\":[...]}"`）⇒ 按容器铺。`allowParse` 只在
+    // 「刚从一个字符串里解析出来」的那棵子树上为 false —— 一层套一层会放大成十万个节点。
+    const parsed = allowParse ? jsonInString(child) : null;
+    const val = parsed ?? child;
+    const fromJson = parsed !== null;
     // 「能否折叠」只看三件事：是容器、非空、没到深度上限 —— 与下面几个分支同一套判据。
     // 先算出来是为了让箭头槽位在起行时就有正确字形（叶子行留空格位，键名才会对齐）。
-    const foldable = isStructured(child) && sizeOf(child) > 0 && depth < MAX_DEPTH;
+    const foldable = isStructured(val) && sizeOf(val) > 0 && depth < MAX_DEPTH;
     const open = foldable && isOpen(ctx.fold, childPath, depth);
     const row = startRow(depth, foldable ? (open ? '▾' : '▸') : '');
 
     // 叶子：同一行里写完（缩进 + 键名 + 路径 + 值）
-    if (!isStructured(child)) {
+    if (!isStructured(val)) {
       const p = primitive(child);
       row.appendChild(fvEl('span', 'tr-full-key', keyText));
       row.appendChild(pathBtn(childPath));
@@ -291,28 +353,31 @@ function renderInto(ctx, v, depth, path) {
     // 深度用尽 ⇒ 整体压成一行（并标明它是个容器），避免缩进吃掉全部宽度
     if (depth >= MAX_DEPTH) {
       row.appendChild(fvEl('span', 'tr-full-key', keyText));
-      row.appendChild(fvEl('span', 'tr-full-null', ' ' + oneLine(child)));
+      if (fromJson) row.appendChild(jsonBadge());
+      row.appendChild(fvEl('span', 'tr-full-null', ' ' + oneLine(val)));
       box.appendChild(row);
       continue;
     }
 
-    // 空容器：留一对括号，别让它看起来像"展开失败"
-    if (sizeOf(child) === 0) {
+    // 空容器：留一对括号，别让它看起来像"展开失败"（`"{}"` / `"[]"` 这类字符串也走这里）
+    if (sizeOf(val) === 0) {
       row.appendChild(fvEl('span', 'tr-full-key', keyText));
-      row.appendChild(fvEl('span', 'tr-full-null', Array.isArray(child) ? ' []' : ' {}'));
+      if (fromJson) row.appendChild(jsonBadge());
+      row.appendChild(fvEl('span', 'tr-full-null', Array.isArray(val) ? ' []' : ' {}'));
       box.appendChild(row);
       continue;
     }
 
     row.appendChild(fvEl('span', 'tr-full-key', keyText));
     row.appendChild(pathBtn(childPath));
+    if (fromJson) row.appendChild(jsonBadge());
     if (!open) {
-      const kind = Array.isArray(child) ? 'array' : 'object';
-      row.appendChild(fvEl('span', 'tr-full-hint', ` { ${kind} · ${sizeOf(child)} 项 }`));
-    } else if (Array.isArray(child) && tableColsOf(child)) {
+      const kind = Array.isArray(val) ? 'array' : 'object';
+      row.appendChild(fvEl('span', 'tr-full-hint', ` { ${kind} · ${sizeOf(val)} 项 }`));
+    } else if (Array.isArray(val) && tableColsOf(val)) {
       // 成表时行内不铺子项，只在键名后标一句规模 —— 否则 `▾ targets:` 后面直接跟着表格，
       // 看不出这是个数组、也看不出表格是不是全部内容（是不是被截断了）
-      row.appendChild(fvEl('span', 'tr-full-hint', ` array · ${child.length} 项`));
+      row.appendChild(fvEl('span', 'tr-full-hint', ` array · ${val.length} 项`));
     }
     row.dataset.fold = childPath;
     row.addEventListener('click', (e) => {
@@ -323,7 +388,7 @@ function renderInto(ctx, v, depth, path) {
     });
     box.appendChild(row);
 
-    if (open) renderInto(ctx, child, depth + 1, childPath);
+    if (open) renderInto(ctx, val, depth + 1, childPath, fromJson ? false : allowParse);
   }
 
   if (keys.length > show.length) {
@@ -344,14 +409,28 @@ function renderInto(ctx, v, depth, path) {
 export function createFullView(value, opts = {}) {
   const fold = opts.fold instanceof Map ? opts.fold : new Map();
 
+  // 根是字符串 ⇒ 只有「里面装着 JSON」才会进来（调用方用 hasStructuredBody 先筛过）。
+  // 头部同时写出**两件事**：它原本是字符串（字符数）、解析后是什么规模 —— 只写后者，
+  // 读者会以为工具真的返回了对象。
+  const parsedRoot = jsonInString(value);
+  const root = parsedRoot ?? value;
+  const fromJson = parsedRoot !== null;
+
   const box = fvEl('div', 'tr-full');
-  box.dataset.kind = Array.isArray(value) ? 'array' : 'object';
+  box.dataset.kind = Array.isArray(root) ? 'array' : 'object';
 
   const head = fvEl('div', 'tr-full-head');
-  head.appendChild(fvEl('span', 'tr-full-type', typeLabelOf(value)));
+  const label = typeLabelOf(root);
+  head.appendChild(
+    fvEl('span', 'tr-full-type', fromJson ? `string · ${value.length} 字符 → ${label}` : label),
+  );
+  if (fromJson) head.appendChild(jsonBadge());
   const copy = fvEl('span', 'tr-full-copy', '复制');
   copy.dataset.copy = '1';
-  copy.addEventListener('click', () => copyInto(copy, safeStringify(value), '已复制'));
+  // 字符串根复制的是**原文**（拿到手能直接喂 jq）；容器根复制的是缩进后的 JSON
+  copy.addEventListener('click', () =>
+    copyInto(copy, fromJson ? String(value) : safeStringify(root), '已复制'),
+  );
   head.appendChild(copy);
   box.appendChild(head);
 
@@ -360,7 +439,8 @@ export function createFullView(value, opts = {}) {
   // 只重画正文（不动头部）：折叠不需要重建整棵树，滚动位置与头部反馈都留着
   ctx.repaint = () => {
     body.innerHTML = '';
-    renderInto(ctx, value, 0, '');
+    // 根若是从字符串解析来的，它的子树不再二次解析（只解析一层，防嵌套放大）
+    renderInto(ctx, root, 0, '', !fromJson);
   };
   ctx.repaint();
 
