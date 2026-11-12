@@ -20,6 +20,11 @@
  *    序列化后又塞回 `content` 的工具 —— 这些值的类型是**字符串**，此前只显示成一串
  *    `{\"a\":1` 的反斜杠汤，比无缩进的 JSON 更难读。现在首尾是 `{`…`}` / `[`…`]` 且解析成功的
  *    字符串按容器铺开，并在行里打 `str→json` 标记 —— 不标出来，读者会以为工具真的返回了对象。
+ * 5. **一整篇 Markdown 的字符串正文**（2026-11-12 晚）：工具出参的另一种常见形态就是一份
+ *    SKILL.md / 错误汇总报告，类型仍是字符串 ⇒ 展开后是 `# 标题`、`|---|---|`、
+ *    `<!-- 迁移自 … -->` 的源文。本件**不**自带解析器 —— 那会是仓库里的第二份，必然与宿主
+ *    那份漂移，所以只接受宿主渲染好的元素（`opts.body`），自己负责头部
+ *    （`string · N 字符 · md` + `md` 标记）与「复制取原文」。
  *
  * ## 边界（都是「不这么做就会坏」的地方，不是口味）
  *
@@ -44,6 +49,8 @@
  *   数字/空值/布尔就是**改写工具返回的事实**。解析结果内部的字符串**不再二次解析**：
  *   一层套一层是业务里的真实现象（SSE data 里再套 JSON），逐层展开会让 10KB 变成十万个节点。
  *   表格单元格也不解析 —— 同构表已经放弃了逐层展开，单元格里放不下嵌套块。
+ * - **宿主正文不再解析**：`opts.body` 给了就**原样用**。同一段内容既渲染又铺树，读者会看到
+ *   两套互相矛盾的呈现 —— 那比不做这一档更糟。所以这条判据只有一处（`createFullView`）。
  *
  * 零依赖、纯 DOM 构造（只用 createElement / appendChild / textContent / className /
  * dataset / innerHTML=''），与 view.js 共用同一套 DOM stub 跑测试。
@@ -167,6 +174,14 @@ function jsonInString(v) {
 function jsonBadge() {
   const b = fvEl('span', 'tr-full-json', 'str→json');
   b.title = '这个值是字符串，内容是 JSON（已按对象展示；内部路径需先 JSON.parse 这一层）';
+  return b;
+}
+
+/** 「这段正文被渲染过」的标记。同样**必须显眼**：Markdown 源文与渲染结果差得很远，
+ *  不标出来，读者会以为工具返回的就是排好版的样子（而它返回的是一串 `#` 与 `|`）。 */
+function mdBadge() {
+  const b = fvEl('span', 'tr-full-md', 'md');
+  b.title = '这个字符串按 Markdown 渲染（原文仍在 .tr-io 与「复制」里，一字未改）';
   return b;
 }
 
@@ -401,48 +416,62 @@ function renderInto(ctx, v, depth, path, allowParse = true) {
 /**
  * 建一个结构化正文块。
  * @param {any} value  `ev.full` 的**原值**（不是序列化后的字符串）
- * @param {{fold?: Map<string, boolean>}} [opts]
+ * @param {{fold?: Map<string, boolean>, body?: Element}} [opts]
  *   `fold` 是**调用方持有**的折叠状态（路径 → 是否展开）。省略时本块自建一份，
  *   此时折叠状态活不过下一次「全量重建」—— 只对一次性渲染（测试、静态快照）够用。
+ *   `body` 是**宿主已经渲染好的正文**（如 Markdown）：给了就原样用，不再走缩进/折叠，
+ *   本件只负责头部（类型 / `md` 标记 / 复制）与挂载位置。
  * @returns {Element}  `.tr-full` 块；调用方负责 append 到展开行之后
  */
 export function createFullView(value, opts = {}) {
   const fold = opts.fold instanceof Map ? opts.fold : new Map();
+  /* 宿主渲染好的正文。**判据只此一处**：给了它就不解析、不铺树 —— 否则会同时出现
+     两套呈现（宿主渲染的正文 + 本件又在旁边铺一遍原值），那比不渲染更糟。 */
+  const injected = opts.body && typeof opts.body === 'object' ? opts.body : null;
 
-  // 根是字符串 ⇒ 只有「里面装着 JSON」才会进来（调用方用 hasStructuredBody 先筛过）。
-  // 头部同时写出**两件事**：它原本是字符串（字符数）、解析后是什么规模 —— 只写后者，
-  // 读者会以为工具真的返回了对象。
-  const parsedRoot = jsonInString(value);
+  // 根是字符串 ⇒ 只有「里面装着 JSON」或「宿主认得的正文」才会进来。
+  // 头部同时写出**两件事**：它原本是字符串（字符数）、以及它是怎么被展示的 —— 只写后者，
+  // 读者会以为工具真的返回了对象 / 排好版的正文。
+  const parsedRoot = injected ? null : jsonInString(value);
   const root = parsedRoot ?? value;
   const fromJson = parsedRoot !== null;
 
   const box = fvEl('div', 'tr-full');
-  box.dataset.kind = Array.isArray(root) ? 'array' : 'object';
+  box.dataset.kind = injected ? 'md' : Array.isArray(root) ? 'array' : 'object';
 
   const head = fvEl('div', 'tr-full-head');
   const label = typeLabelOf(root);
-  head.appendChild(
-    fvEl('span', 'tr-full-type', fromJson ? `string · ${value.length} 字符 → ${label}` : label),
-  );
+  let typeText = label;
+  if (fromJson) typeText = `string · ${value.length} 字符 → ${label}`;
+  // 注入正文时不写「→ md」：紧跟其后的 `md` 标记已经说了这件事，
+  // 同一行说两遍只会让人以为其中一个另有含义（字符数才是头部真正要补的信息）
+  else if (injected) typeText = `string · ${value.length} 字符`;
+  head.appendChild(fvEl('span', 'tr-full-type', typeText));
   if (fromJson) head.appendChild(jsonBadge());
+  if (injected) head.appendChild(mdBadge());
   const copy = fvEl('span', 'tr-full-copy', '复制');
   copy.dataset.copy = '1';
-  // 字符串根复制的是**原文**（拿到手能直接喂 jq）；容器根复制的是缩进后的 JSON
+  // 字符串根复制的是**原文**（拿到手能直接喂 jq / 贴回上游）；容器根复制的是缩进后的 JSON
   copy.addEventListener('click', () =>
-    copyInto(copy, fromJson ? String(value) : safeStringify(root), '已复制'),
+    copyInto(copy, fromJson || injected ? String(value) : safeStringify(root), '已复制'),
   );
   head.appendChild(copy);
   box.appendChild(head);
 
   const body = fvEl('div', 'tr-full-body');
-  const ctx = { body, fold, repaint: null };
-  // 只重画正文（不动头部）：折叠不需要重建整棵树，滚动位置与头部反馈都留着
-  ctx.repaint = () => {
-    body.innerHTML = '';
-    // 根若是从字符串解析来的，它的子树不再二次解析（只解析一层，防嵌套放大）
-    renderInto(ctx, root, 0, '', !fromJson);
-  };
-  ctx.repaint();
+  if (injected) {
+    // 宿主正文自带排版；本件的缩进/折叠那一套对散文没有意义（它也没有「路径」可复制）
+    body.appendChild(injected);
+  } else {
+    const ctx = { body, fold, repaint: null };
+    // 只重画正文（不动头部）：折叠不需要重建整棵树，滚动位置与头部反馈都留着
+    ctx.repaint = () => {
+      body.innerHTML = '';
+      // 根若是从字符串解析来的，它的子树不再二次解析（只解析一层，防嵌套放大）
+      renderInto(ctx, root, 0, '', !fromJson);
+    };
+    ctx.repaint();
+  }
 
   box.appendChild(body);
   return box;

@@ -15,15 +15,22 @@
  *
  * 支持的子集（刻意不做的都在「不做」里）：
  * - 块：`#` 标题（1–6 级）、围栏码块（``` / ~~~，带语言标注）、无序/有序列表（**一层**）、
- *   引用（合并成一段正文）、`---` 分隔线、段落
+ *   引用（合并成一段正文）、`---` 分隔线、**GFM 表格**（表头 / 分隔行 / 对齐 / `\|` 转义）、段落
  * - 行内：行内码、`**粗**`、`*斜*`、`[文字](链接)`、`<https://…>` 自动链接
+ * - **HTML 注释被丢弃**（`<!-- … -->`，可跨行）：注释不是正文。真实素材里最常见的就是
+ *   「迁移自 …」「TODO: 这条规则已废弃」这类作者旁注，让它们以字面文本占掉开头三四行，
+ *   比不渲染更糟。原文一个字节都不改（调用方手里仍是原串）⇒ 「隐藏」只发生在**渲染视图**里。
  *
  * 不做（都是刻意的，不是漏）：
- * - **不做 HTML 透传**（安全前提，见上）
- * - 不做表格 / 任务列表 / 嵌套列表 / 脚注 / 数学 —— 面板是调试视图，不是文档站
+ * - **不做 HTML 透传**（安全前提，见上）—— 注释是唯一的例外，且是**丢掉**而不是渲染
+ * - **不做任务列表 / 嵌套列表 / 脚注 / 数学** —— 面板是调试视图，不是文档站
  * - 不做 setext 标题（`===` 下划线式）—— 与分隔线歧义大、收益小
  * - 不做图片（`![]()`）—— 面板**不去外网取图**：一次 run 的正文不该触发网络请求
  * - 不做**词内** `_` 强调（`read_file_tool` 原样显示）—— 与 CommonMark 同口径，见 `parseInline`
+ *
+ * ⚠️ 表格是 2026-11-12 补的（原先明写「不做表格」）。**那个判断是错的**：agent 的产出里
+ * 「错误汇总 / 逐项统计 / 参数对照」天然就是表，砍掉表格等于把最有信息量的几种结果打回
+ * 一行行 `| a | b |` 加上 `|---|---|` 的源文 —— 面板的读者被迫在脑子里做列对齐。
  */
 
 export type MdInline =
@@ -33,12 +40,16 @@ export type MdInline =
   | { type: 'em'; children: MdInline[] }
   | { type: 'link'; href: string; text: string };
 
+/** 格子对齐（GFM 的 `:---` / `---:` / `:---:`）；`null` = 没标，交给宿主决定 */
+export type MdAlign = 'left' | 'right' | 'center' | null;
+
 export type MdBlock =
   | { type: 'p'; inline: MdInline[] }
   | { type: 'h'; level: number; inline: MdInline[] }
   | { type: 'code'; lang: string; text: string }
   | { type: 'list'; ordered: boolean; items: MdInline[][] }
   | { type: 'quote'; inline: MdInline[] }
+  | { type: 'table'; align: MdAlign[]; header: MdInline[][]; rows: MdInline[][][] }
   | { type: 'hr' };
 
 /**
@@ -60,6 +71,14 @@ const QUOTE = /^\s{0,3}>\s?(.*)$/;
 const UL = /^(\s*)([-*+])\s+(.*)$/;
 const OL = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
 const BLANK = /^\s*$/;
+/**
+ * 表格的分隔行：`| --- | :--: |` / `--- | ---` 两种写法都收。
+ * 至少**两列**（`(\|…)+` 强制的）—— 单列「表格」在面板里就是一段带竖线的文本，
+ * 成表只会白占一行表头，还容易被 `a | b` 这种正文误判。
+ */
+const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
+/** 「这个字符串值不值得渲染」的长度上限（见 `looksLikeMarkdown`）—— 几百 KB 逐行建 DOM 只会卡住面板 */
+const MAX_RENDER_CHARS = 100_000;
 /** 「单词字符」：`_` 的词内排除用它判边界（与 CommonMark 的 intraword 规则同口径） */
 const WORD_CHAR = /[A-Za-z0-9_]/;
 
@@ -71,15 +90,18 @@ function isWordChar(ch: string | undefined): boolean {
 /**
  * 把一段 Markdown 文本解析成块序列。
  *
- * 三条与「真 Markdown」不同但**刻意**的口径：
+ * 四条与「真 Markdown」不同但**刻意**的口径：
  * - 缩进 ≥2 空格的续行归上一条列表项（列表只解析**一层**：更深一层当正文，不递归建树）；
  * - 未闭合的围栏码块吃掉到文末（**不静默丢内容** —— 模型被截断时最常见的就是这个形态）；
- * - 引用（`>`）合并成**一段正文**（面板里引用几乎总是模型在引日志，逐行建块只会更碎）。
+ * - 引用（`>`）合并成**一段正文**（面板里引用几乎总是模型在引日志，逐行建块只会更碎）；
+ * - 表格按**表头**宽度对齐：缺的列补空、多出来的列丢掉（与 GFM 同口径）。表格之后紧接的
+ *   非 `|` 行立刻收尾 —— 表格没有围栏，边界只能靠「下一行还像不像表格」来判断。
  */
 export function parseMarkdown(text: string): MdBlock[] {
   const src = String(text ?? '').replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
   const blocks: MdBlock[] = [];
+  const comment = { open: false };
   let i = 0;
   let para: string[] = [];
 
@@ -91,7 +113,9 @@ export function parseMarkdown(text: string): MdBlock[] {
   };
 
   while (i < lines.length) {
-    const line = lines[i] as string;
+    // 注释先剥掉再看这一行是什么（围栏码块的内容由下面的内层循环整段吞掉，不会走到这里 ⇒
+    // 码块里的 `<!-- … -->` 原样保留，这正是「代码是字面量」的意思）
+    const line = stripComments(lines[i] as string, comment);
 
     // —— 围栏码块 ——
     const fence = FENCE.exec(line);
@@ -185,12 +209,145 @@ export function parseMarkdown(text: string): MdBlock[] {
       continue;
     }
 
+    // —— 表格（GFM）：表头行 + 分隔行**同时**成立才算 ——
+    // 两条都要，是这条判据的全部要害：只要「行里有 `|`」就成表，`a | b` 这种正文会被
+    // 吞成一行表头；只要「下一行像分隔行」就成表，`---` 分隔线下面那段会被吃掉。
+    if (isTableStart(line, lines[i + 1])) {
+      flushPara();
+      const header = splitRow(line).map((c) => parseInline(c, 0));
+      const align = splitRow(stripComments(lines[i + 1] as string, { open: comment.open })).map(
+        alignOf,
+      );
+      const rows: MdInline[][][] = [];
+      i += 2;
+      while (i < lines.length) {
+        // 表格没有围栏：边界只能靠「下一行还像不像表格」。空白、另一个块的起始、
+        // 不含 `|` 的行，三者任一条都收尾（否则后面的正文会被当成格子吃掉）。
+        const raw = lines[i] as string;
+        if (!raw.includes('|') || BLANK.test(raw)) break;
+        if (FENCE.test(raw) || HR.test(raw) || HEADING.test(raw) || QUOTE.test(raw)) break;
+        if (UL.test(raw) || olAt(raw)) break;
+        const cells = splitRow(raw).slice(0, header.length);
+        while (cells.length < header.length) cells.push('');
+        rows.push(cells.map((c) => parseInline(c, 0)));
+        i++;
+      }
+      blocks.push({ type: 'table', align, header, rows });
+      continue;
+    }
+
     // —— 其余：段落（连续非空行合并，行内换行保留） ——
     para.push(line.trim());
     i++;
   }
   flushPara();
   return blocks;
+}
+
+/**
+ * 剥掉 HTML 注释（可跨行）。`state.open` 跨行携带 —— 块级解析是逐行扫的，
+ * 没有这个开关，一段被空行隔开的三行注释会被当成三段正文（每段都带着半截 `<!--`）。
+ *
+ * 只在**非码块**的行上调用。码块内容由围栏那段内层循环整段吞掉，走不到这里 ——
+ * 所以「代码里的 `<!-- -->` 原样保留」不是靠额外判断，是靠调用点。
+ */
+function stripComments(line: string, state: { open: boolean }): string {
+  let s = line;
+  for (;;) {
+    if (state.open) {
+      const end = s.indexOf('-->');
+      if (end < 0) return '';
+      s = s.slice(end + 3);
+      state.open = false;
+      continue;
+    }
+    const start = s.indexOf('<!--');
+    if (start < 0) return s;
+    const end = s.indexOf('-->', start + 4);
+    if (end < 0) {
+      state.open = true;
+      return s.slice(0, start);
+    }
+    s = s.slice(0, start) + s.slice(end + 3);
+  }
+}
+
+/**
+ * 一行表格 → 格子文本（已 trim，`\|` 解成 `|`）。
+ * 首尾的定界竖线去掉；**但**以 `\|` 结尾时不能去 —— 那是最后一个格子里的字面竖线。
+ */
+function splitRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let buf = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i] as string;
+    if (c === '\\' && s[i + 1] === '|') {
+      buf += '|';
+      i++;
+      continue;
+    }
+    if (c === '|') {
+      cells.push(buf.trim());
+      buf = '';
+      continue;
+    }
+    buf += c;
+  }
+  cells.push(buf.trim());
+  return cells;
+}
+
+/** 分隔行的单个格子 → 对齐方式 */
+function alignOf(cell: string): MdAlign {
+  const t = cell.trim();
+  const left = t.startsWith(':');
+  const right = t.endsWith(':');
+  if (left && right) return 'center';
+  if (right) return 'right';
+  if (left) return 'left';
+  return null;
+}
+
+/** 这一行是不是表格的开头：表头含 `|`、下一行是分隔行、且两行列数**相等** */
+function isTableStart(head: string, sep: string | undefined): boolean {
+  if (sep === undefined || !head.includes('|') || !TABLE_SEP.test(sep)) return false;
+  return splitRow(head).length === splitRow(sep).length;
+}
+
+/**
+ * 这段正文「值不值得按 Markdown 渲染」—— 给**宿主**用（trace 树里展开的工具出参）。
+ *
+ * 判据只认**块级**记号，且要求**至少两分**（围栏码块与表格各算两分，其余各一分）：
+ * 标题 + 列表 = 2 分 ✅；只有一堆 `#` 注释 ❌；只有一处围栏码块 ✅。
+ *
+ * 为什么这么严：判错的代价不是「少渲染一点」，而是**把一段本来好读的文本毁掉** ——
+ * 日志行被并成段落、原有缩进被吃掉、行首的 `#` 与 `|` 凭空消失。所以宁可漏（保持原文），
+ * 不可错。
+ *
+ * 刻意**不**看行内记号（`**粗**` / `[x](y)`）：`**kwargs` / `*args` 是 Python 源码里最常见
+ * 的东西，按行内记号判会把整份源码判成 Markdown —— 而那正是工具出参的另一种常见形态。
+ *
+ * 超过 `MAX_RENDER_CHARS` 一律不渲染：几百 KB 的正文逐行建 DOM 只会把面板卡住，
+ * 而这种长度的东西本来就该用「复制」拿走。
+ */
+export function looksLikeMarkdown(text: string): boolean {
+  if (typeof text !== 'string' || text.length > MAX_RENDER_CHARS) return false;
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const kinds = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
+    if (FENCE.test(line)) kinds.add('fence');
+    else if (isTableStart(line, lines[i + 1])) kinds.add('table');
+    else if (HEADING.test(line)) kinds.add('h');
+    else if (QUOTE.test(line)) kinds.add('q');
+    else if (UL.test(line) || olAt(line)) kinds.add('list');
+  }
+  let score = 0;
+  for (const k of kinds) score += k === 'fence' || k === 'table' ? 2 : 1;
+  return score >= 2;
 }
 
 /** 有序列表标记（`1.` / `1)`），返回与 UL 同形的三组：缩进 / 标记 / 正文 */

@@ -57,7 +57,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-05（**A/B 闭环补最后一跳**）：1477 → 1493（+16）= 收尾帧 `onmessage` 里
     //   `autoPairTarget` 判定 + 自动进双栏 + 列表高亮跟着左栏走 + 一条说明用处的 notice。
     //   判定本身在 panel-logic（可单测），本文件只留接线。
-    'inspector-page.html': 1568,
+    // 2026-11-12（**表格 + 把 Markdown 正文接进 trace 树**）：1493 → 1562（+69）。
+    //   +29 `renderMarkdownInto` 的 table 分支（表头/表体/对齐类名，全走 createElement）；
+    //   +12 `.md-table` 与 `.md-trace` 两组 CSS；+18 `traceTextBody`（宿主注入给 trace-view
+    //   的正文渲染器，含它「为什么是注入、不是让 trace-view 自带解析器」的口径注）；
+    //   +10 两处 `createTraceView(..., { textBody })` 接线与注释。判据仍在 markdown.ts（有单测），
+    //   本文件只留渲染与接线。基线 = ceil(1562 × 1.05) = 1641。
+    'inspector-page.html': 1641,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -117,7 +123,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     // 2026-10-05（档 A，**新功能**）：323 → 337（+14）= `TRACE_LOG_REL` 常量 + 它的
     // 「为什么」注（含「只增不减」这个代价的如实标注）。**只是数据，零行为。**
     'dev-protocol.ts': 354,
-    'markdown.ts': 311,
+    // 2026-11-12（**补表格 + 丢 HTML 注释 + 判据 `looksLikeMarkdown`**）：296 → 453（+157）。
+    //   +58 表格（`TABLE_SEP` 判据、`splitRow` 含 `\|` 转义、`alignOf`、`isTableStart`、表体扫描）；
+    //   +30 `stripComments`（可跨行，靠 state 携带「还没闭合」）；
+    //   +34 `looksLikeMarkdown`（给宿主判「值不值得按 Markdown 渲染」，宁漏不错）；
+    //   +35 头注与各处口径注（原来那句「不做表格」是**错的判断**，改它得把理由留下）。
+    //   基线 = ceil(453 × 1.05) = 476。
+    'markdown.ts': 476,
     // 2026-10-09（脚手架服务入口 start:server）：259 → 271（+12 = serverTs accessor +
     //   它的口径注「无条件生成 / 不许旁路 createApp」）
     // 2026-10-09 同日（脚手架默认入口翻成服务 —— **默认值翻转**，不是新功能）：271 → 280（+9）。

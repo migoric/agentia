@@ -17,11 +17,14 @@
  * 宿主需提供的 CSS 变量：--ice --faint --text（见 trace-view.css）。
  */
 
-/* 展开态的正文有两种形状，由 `full` 的类型决定（2026-11-11，2026-11-12 扩了一档）：
+/* 展开态的正文有三种形状（2026-11-11，2026-11-12 扩了两档）：
  *   - 纯文本字符串 → 老路：`.tr-io` 里放原文，靠 `.tr-open` 换行（纯文本正文、官网模拟回放）；
  *   - 对象/数组 → 追加一个 `.tr-full` 结构化块（折叠 / 成表 / 路径复制），`.tr-io` 由 CSS 隐藏；
  *   - **装着 JSON 的字符串**（`content: "{\"rows\":[...]}"`，工具把结构序列化后塞回文本字段）
- *     → 同上一档，块头写明「string · N 字符 → object · M 项」并打 `str→json` 标记。
+ *     → 同上一档，块头写明「string · N 字符 → object · M 项」并打 `str→json` 标记；
+ *   - **一整篇 Markdown 的字符串**（工具出参就是一份 SKILL.md / 报告）→ 由宿主注入的
+ *     `opts.textBody(text)` 渲染成正文块，块头打 `md` 标记。注入是刻意的：本包是独立
+ *     发布单元，解析器只有一份（在宿主里），两边各带一份必然漂移。
  * 判据与块内完全同源（`hasStructuredBody`），「挂不挂块」与「块里画什么」因此不会跑偏。
  * 前两档并存是刻意的：纯文本那条路有 test/style.test.js 的两个不变量守着（最小宽度、caret 常显），
  * 全换成本件会让那两个守卫失去落点。 */
@@ -91,6 +94,9 @@ export function createTraceView(rootEl, opts = {}) {
   let price = opts.price ?? null;
   const onUsage = opts.onUsage ?? null;
   const usageEls = opts.usage ?? null;
+  /* 字符串正文的宿主渲染器（可选）：`(text) => Element | null`。返回 null = 「不是那种
+     正文，保持原文」。本包不自带 Markdown 解析器 —— 见文件头注。 */
+  const textBody = typeof opts.textBody === 'function' ? opts.textBody : null;
 
   let traceRoot = null;
   const spanMap = new Map();
@@ -116,6 +122,17 @@ export function createTraceView(rootEl, opts = {}) {
     if (expanded.has(key)) expanded.delete(key);
     else expanded.add(key);
     renderTrace();
+  }
+
+  /** 宿主渲染器包一层：**只在展开时调用**（折叠态每条事件都会重画，挂在那儿等于白解析
+   *  一遍所有历史正文）；宿主抛错也不许让整棵树白屏 —— 回落原文即可。 */
+  function textBodyOf(v) {
+    if (!textBody || typeof v !== 'string') return null;
+    try {
+      return textBody(v) || null;
+    } catch {
+      return null;
+    }
   }
 
   function renderTrace() {
@@ -150,11 +167,13 @@ export function createTraceView(rootEl, opts = {}) {
         // 这一格整个不渲染，别把「无工具」显示成假工具名（.tr-name 是 flex:none，.tr-io 自然占满）
         if (ev.tool) row.appendChild(el('span', 'tr-name', ev.tool));
         // 展开态用全文（ev.full），折叠态用摘要（ev.text）—— 折叠态因此与加展开之前逐字一致。
-        // `full` 是对象/数组、或**装着 JSON 的字符串**时（2026-11-11 / 2026-11-12）：`.tr-io`
-        // 仍放**原文**（结构化块挂在行后、由 CSS 隐藏本格），所以「展开拿到的是原文而不是
-        // 62 字符摘要」这条不变量原样成立。
+        // `full` 是对象/数组、装着 JSON 的字符串、或宿主认得的正文（Markdown）时
+        // （2026-11-11 / 2026-11-12）：`.tr-io` 仍放**原文**（结构化块挂在行后、由 CSS 隐藏本格），
+        // 所以「展开拿到的是原文而不是 62 字符摘要」这条不变量原样成立。
         const structured = hasStructuredBody(ev.full);
-        const fullText = structured ? rawArg(ev.full) : ev.full || '';
+        const mdBody = open && !structured ? textBodyOf(ev.full) : null;
+        const blocked = structured || mdBody !== null;
+        const fullText = blocked ? rawArg(ev.full) : ev.full || '';
         const io = el('span', 'tr-io', (open ? fullText : ev.text) || '');
         // 展开后正文已在行里，再挂一个占满整行的原生 tooltip 只会挡视线
         io.title = open ? '' : ev.text || '';
@@ -162,7 +181,7 @@ export function createTraceView(rootEl, opts = {}) {
         if (ev.full) {
           row.dataset.expandable = '1'; // 可展开标记：CSS 靠它出 caret / cursor，测试靠它找行
           row.appendChild(el('span', 'tr-caret', open ? '▾' : '▸'));
-          if (open) row.className += ' tr-open' + (structured ? ' tr-structured' : '');
+          if (open) row.className += ' tr-open' + (blocked ? ' tr-structured' : '');
           row.addEventListener('click', () => {
             if (!hasSelection()) toggleExpand(ev.key);
           });
@@ -171,13 +190,15 @@ export function createTraceView(rootEl, opts = {}) {
         // 结构化正文是**兄弟块**而不是 `.tr-io` 的子节点：行是 flex + nowrap，
         // 塞进去会把树的列对齐打乱；独立成块才能自己换行、自己缩进。
         // 折叠状态按事件键取一份带进去（2026-11-11 晚）：块每次重建都 new，状态不能放块里。
-        if (open && structured) {
+        // `body` 是宿主渲染好的正文（Markdown），交给同一条挂载路径：块头、复制、`.tr-io`
+        // 隐藏这些行为必须一致，否则「哪种正文」会从**外观**上分叉成两套。
+        if (open && blocked) {
           let fold = folds.get(ev.key);
           if (!fold) {
             fold = new Map();
             folds.set(ev.key, fold);
           }
-          rootEl.appendChild(createFullView(ev.full, { fold }));
+          rootEl.appendChild(createFullView(ev.full, { fold, body: mdBody }));
         }
         return;
       }

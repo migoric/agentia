@@ -180,6 +180,20 @@
       .md blockquote { margin: 0 0 6px; padding-left: 9px; border-left: 2px solid var(--border); color: var(--muted); }
       .md a { color: var(--ice); }
       .md hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
+      /* 表格（2026-11-12）：右栏只有 ~400px，内边距压到 3px 6px，列多时还能读；
+         对齐用类名，不用 inline style（与「innerHTML 只许一处」同类纪律）。 */
+      .md-table { border-collapse: collapse; margin: 0 0 6px; font-size: 11.5px; }
+      .md-table:last-child { margin-bottom: 0; }
+      .md-table th, .md-table td { border: 1px solid var(--border); padding: 3px 6px; }
+      .md-table th { background: var(--card); color: var(--text); font-weight: 600; }
+      .md-table .md-right { text-align: right; }
+      .md-table .md-center { text-align: center; }
+      .md-table .md-left { text-align: left; }
+      /* trace 树里的 Markdown 正文（2026-11-12）：树本身是 11px，正文块跟着收紧一档；
+         字体不换 —— 一块正文突然换成无衬线，会和相邻的行错开视觉基线。 */
+      .md-trace { font-size: 11.5px; line-height: 1.55; }
+      .md-trace .md-h { font-size: 12px; margin: 8px 0 3px; }
+      .md-trace .md-table { font-size: 11px; }
       /* 正文用无衬线正文栈（模型输出是散文，等宽栈读它更累）；码块与行内码仍是等宽。
          挂在 `.md-wrap`（渲染器的包装节点）而不是 `#reply .md, .turn .md`：单一类选择器
          既不用管特异性排序，也让「哪块是模型正文」只由一处决定。 */
@@ -352,7 +366,7 @@
 
     <script type="module">
       import { createTraceView, playTrace, summarizeTrace, renderSummary } from './index.js';
-      import { parseMarkdown } from './markdown.js';
+      import { parseMarkdown, looksLikeMarkdown } from './markdown.js';
       import {
         HISTORY_DRAFT,
         applyTraceEvent,
@@ -423,12 +437,17 @@
       const view = createTraceView(traceEl, {
         // 无公开单价 → 不估算成本；只展示 token
         usage: { in: $('u-in'), out: $('u-out') },
+        // 展开的工具出参若是 Markdown（SKILL.md / 报告），渲染成正文而不是源文；
+        // 判据与解析器只有一份（markdown.ts），见 traceTextBody 的口径注
+        textBody: traceTextBody,
       });
 
       // 并排 A/B 的**第二棵**树。刻意不共用 `view`：`createTraceView` 绑一个容器 +
       // 一个 usage 出口，两棵树塞进同一容器会互相清空（trace-view 的 `playTrace` 是
       // 整容器替换式的）。共用 `u-in`/`u-out` 也无意义 —— 那两个读数属于「正在看的那条」。
-      const view2 = createTraceView(trace2El);
+      // `textBody` 与主树用**同一个**：同一份 trace 在两栏里必须长成同一个样子，
+      // 否则「并排看差异」会先看见渲染差异。
+      const view2 = createTraceView(trace2El, { textBody: traceTextBody });
 
       // ---------- 并排 A/B（档 B） ----------
 
@@ -871,6 +890,37 @@
               list.appendChild(li);
             }
             el.appendChild(list);
+          } else if (b.type === 'table') {
+            /* 表格（2026-11-12）：错误汇总 / 逐项统计天然成表，一律渲染。
+               对齐走类名（`md-left` / `md-right` / `md-center`），不写 inline style ——
+               全页对 style 属性的写入为 0，这条和「innerHTML 只许一处」同一类纪律。 */
+            const table = document.createElement('table');
+            table.className = 'md-table';
+            const thead = document.createElement('thead');
+            const htr = document.createElement('tr');
+            b.header.forEach((cell, ci) => {
+              const th = document.createElement('th');
+              const al = b.align[ci];
+              if (al) th.className = 'md-' + al;
+              appendInline(th, cell);
+              htr.appendChild(th);
+            });
+            thead.appendChild(htr);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            for (const row of b.rows) {
+              const tr = document.createElement('tr');
+              row.forEach((cell, ci) => {
+                const td = document.createElement('td');
+                const al = b.align[ci];
+                if (al) td.className = 'md-' + al;
+                appendInline(td, cell);
+                tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            el.appendChild(table);
           } else if (b.type === 'quote') {
             const q = document.createElement('blockquote');
             appendInline(q, b.inline);
@@ -883,6 +933,25 @@
             el.appendChild(node);
           }
         }
+      }
+
+      /**
+       * trace 树里「一整篇 Markdown」的字符串正文 —— 挂给 trace-view 的 `textBody` 钩子。
+       *
+       * 工具出参的另一种常见形态就是一份 SKILL.md / 错误汇总报告：类型是**字符串** ⇒
+       * 之前只能走 `.tr-io` 的原文，展开后是 `<!-- 迁移自 … -->`、`# 标题`、`|---|---|`
+       * 的源文。这里把它渲染成正文（`<!-- -->` 已在解析层丢弃）。
+       *
+       * 返回 `null` 表示「这不是 Markdown，保持原文」。判据与解析器都只有一份，在
+       * `markdown.ts`：trace-view 是**独立发布包**，不能反向依赖 CLI，所以走**注入**
+       * 而不是让它自己再带一份解析器 —— 两份必然漂移。
+       */
+      function traceTextBody(text) {
+        if (!looksLikeMarkdown(text)) return null;
+        const box = document.createElement('div');
+        box.className = 'md md-trace';
+        renderMarkdownInto(box, text);
+        return box;
       }
 
       /**

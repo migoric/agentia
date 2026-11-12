@@ -73,16 +73,23 @@ describe('trace-view 结构守卫（W1 规模棘轮）', () => {
      * 刻意后放）；真要抽，先说清哪些是状态、哪些能算纯函数，别为了减行数而搬。
      * 而 `test/tree.test.js` 已经能**直接跑真实渲染器**验这三条行为 ⇒ 抽纯判定的
      * 边际价值进一步下降（行为覆盖不靠它）。
+     *
+     * 2026-11-12 晚（**宿主注入的正文 / Markdown**）：360 → 385（+25）。构成：`opts.textBody`
+     * 的取用与「为什么必须是注入」的头注（+5）、`textBodyOf` 包装（只在展开时调用 + 宿主
+     * 抛错回落原文，+11）、事件分支里 `mdBody` / `blocked` 两行与口径注（+9）。
+     * ⚠️ 这里**仍然没有解析器**：多出来的每一行都是「哪种正文走哪条路」的判定。
      */
-    'view.js': 364,
+    'view.js': 385,
     /**
      * 375 行纯 CSS（2026-11-11 晚：283 → 363，表格与折叠/路径的样式，对账见上；
-     * 2026-11-12：363 → 375，`.tr-full-json` 标记，12 行）。
+     * 2026-11-12：363 → 375，`.tr-full-json` 标记，12 行；同一日晚：375 → 386，
+     * `.tr-full-md` 标记 11 行 —— 与 `str→json` 同一套外观，样式分叉会让人以为它们是
+     * 不同性质的东西）。
      * 它有**自己**的不变量门禁（`test/style.test.js`：窄缝压扁、
      * caret 藏进 hover 这两处**只存在于 CSS** 的已发布缺陷），但那守的是**规则存在**、
      * 不守体量 ⇒ 行数这道还得另设。
      */
-    'trace-view.css': 375,
+    'trace-view.css': 386,
     /**
      * 173 行。`playTrace` 81 行**不该按行数判大**：它是「把线性 span 事件序列应用成
      * 一棵树」的状态机式回放，行数来自分支（start/end/event × 类型识别 × usage 归一），
@@ -128,8 +135,14 @@ describe('trace-view 结构守卫（W1 规模棘轮）', () => {
      * （「只解析一层」的实现）、`createFullView` 的字符串根分支（头部写「string · N 字符
      * → object · M 项」、复制取原文）。代码约 45 行，其余是口径注 —— 这一段每个判据都
      * 对应一类会被读错的事实，删注释比删代码更容易出事故。
+     *
+     * 2026-11-12 晚（**宿主注入的正文 / Markdown**）：449 → 478（+29）。构成：`opts.body`
+     * 一档（注入就原样挂、**不再铺树**，+10）、`mdBadge`「你看到的不是原样」的告示（+7）、
+     * 头部第三档「string · N 字符」与复制取原文（+6）、头注第 5 条与边界（+6）。
+     * ⚠️ 本文件**没有 Markdown 解析器**，也永远不该有：解析器只有一份（在宿主里），
+     * 这里多出来的行只做「把宿主节点挂上去」+「标出来它被渲染过」。
      */
-    'full-view.js': 449,
+    'full-view.js': 478,
   };
 
   it('W1 规模棘轮：单文件不超基线、每个文件都登记在表', () => {
@@ -164,10 +177,10 @@ describe('trace-view 结构守卫（W1 规模棘轮）', () => {
     // 变异实测（在表尾补一行重复键）时「单文件不超基线」那条**照样绿**（后写的值覆盖前者，
     // 反而更宽松），只有这里会红。
     const src = readFileSync(fileURLToPath(import.meta.url), 'utf8');
-    const body = src.slice(
-      src.indexOf('const LINE_BUDGET = {'),
-      src.indexOf('const LINE_BUDGET = {') + 2000,
-    );
+    // ⚠️ 原先按 `+ 2000` 字符切窗口：表一长，尾部条目就滑出射程而这条断言照样绿 ——
+    // 那正是「守卫看起来在管、实际不管」。按对象字面量的结束位置切，与表长解耦。
+    const start = src.indexOf('const LINE_BUDGET = {');
+    const body = src.slice(start, src.indexOf('};', start));
     const keys = [...body.matchAll(/^\s*'([^']+)':\s*\d+/gm)].map((m) => m[1]);
     assert.equal(new Set(keys).size, keys.length, `LINE_BUDGET 有重复键：${keys.join(', ')}`);
   });
