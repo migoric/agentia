@@ -5,6 +5,43 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.8] - 2026-11-12
+
+### 变更
+
+调试面板展开态的**第二档**：字符串里套着的 JSON 也铺开。无破坏性变更、无迁移动作。
+两包同步 0.10.7 → 0.10.8；`@migor/agentia` 此次仍只有版本常量变化（`src/` 未动）。
+
+- **上一档解决的是「容器长什么样」，但真实 payload 里最常见的那一层不是容器**：工具把结构
+  `JSON.stringify` 后塞回文本字段（`tool.output.content`、MCP 的 text block、SSE 的 `data:`、
+  `content[0].text`）。这些值的类型是字符串 ⇒ 走纯文本老路 ⇒ 展开后是一串 `{\"a\":1`
+  的反斜杠汤，比 0.10.7 之前那个「一坨」更劝退。
+- **现在这类字符串也按容器铺开**，但**如实标出它原本是字符串**：行内打 `str→json` 标记，
+  根级头部写 `string · 232 字符 → object · 3 项`。只写解析后的规模，读者会以为工具真返回了对象。
+- **判据是首尾字符，不是「`JSON.parse` 成功」**：`"123"` / `"null"` / `"true"` 都能 parse，
+  把它们显示成数字 / 空值 / 布尔就是**改写工具返回的事实**。trim 后首尾须是 `{`…`}` 或
+  `[`…`]`，不吻合连 parse 都不试（普通文本占绝大多数，负路径不付反序列化成本）；超 100k 字符
+  不解析。
+- **只解析一层**：进了「解析出来的子树」就不再往下解析。一层套一层是真实现象，逐层展开会把
+  10KB 放大成十万个节点。
+- **表格里的格子不解析**：同构表已经放弃逐层展开，格子里放不下嵌套块。
+- 字符串根上点「复制」拿到的是**原始字符串**（能直接喂 `jq`），不是重排后的 JSON。
+
+### 新增：字符串里的 JSON 也铺开（2026-11-12 ref-trace-json-string）
+
+- **判据同源**：新导出 `hasStructuredBody(v)` 与块内共用同一份 `jsonInString`；`view.js` 用它
+  取代原先的 `typeof v === 'object'` ⇒「挂不挂块」与「块里画什么」不会分叉。
+  `createFullView` 与 `hasStructuredBody` 都进公共导出（bundle 导出面必须与 `src/index.js`
+  逐字一致，有 `test/bundle.test.js` 守着）。
+- **宿主侧无需改动**：本次没有新增静态件 —— `full-view.js` / `view.js` / `index.js` 都已在
+  CLI inspector 的 STATIC 白名单里，`dist/inspector` 随构建更新即可。
+- **验证**：trace-view 测试 75 → 90（+15）；反向验证 6 条各自咬住（摘标记 ⇒ 7 条红；
+  去「只解析一层」⇒ 嵌套用例红；接线退回「只认容器」⇒ 字符串出参挂块用例红；去 100k 上限 ⇒
+  超长用例红；去首尾先筛 ⇒ parse 计数与谓词两条红；头部只写解析后类型 ⇒ 头部用例红）。
+  另记一条**等价变异**的教训：第一版里「parse 结果再判类型」那段代码永远走不到（首尾判据
+  已经挡住标量字符串），任何用例都咬不住，已删除 —— 留着只会让下一个人以为那里有守卫。
+  决策见 `docs/spec.md` §10 2026-11-12 ref-trace-json-string，守卫登记见 `docs/guards.md` §1。
+
 ## [0.10.7] - 2026-11-12
 
 ### 变更
@@ -4472,7 +4509,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.7...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.8...HEAD
+[0.10.8]: https://github.com/migoric/agentia/releases/tag/v0.10.8
 [0.10.7]: https://github.com/migoric/agentia/releases/tag/v0.10.7
 [0.10.6]: https://github.com/migoric/agentia/releases/tag/v0.10.6
 [0.10.5]: https://github.com/migoric/agentia/releases/tag/v0.10.5
