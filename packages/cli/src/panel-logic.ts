@@ -12,6 +12,8 @@
  * 「取值 → 调这里 → 写回」，不再自己判断业务规则。
  */
 import type { SessionMessageLike, TraceRecordEventLike, TraceSpanLike } from './dev-protocol.js';
+/** 形状单源：run 列表的**生产形状**在服务端（`/api/runs` 的响应类型），不在这里手抄 */
+import type { RunSummary } from './inspector.js';
 
 // ---------- 能力多选（D8） ----------
 
@@ -181,26 +183,19 @@ export interface ConversationTurn {
 /** 会话文件里的一条消息（形状的单源在 dev-protocol，这里只是给面板侧一个短名字） */
 export type { SessionMessageLike };
 
-/** run 列表里与对话有关的那几列（= 面板已知的 RunSummary + CLI 侧记账） */
-export interface ConversationRunLike {
-  traceId: string;
-  ok: boolean;
-  /**
-   * 收尾原因（`end_turn` / `aborted` / `budget_exceeded` / …），来自 run 根 span 的
-   * `stop_reason` attribute。**判别中止的唯一判据**（理由见 `runIsFailure`）。
-   */
-  stopReason?: string | null;
-  /** run 根 span 的 `session.id`；没开会话的 run 没有这个键 */
-  sessionId?: string | null;
-  /**
-   * CLI 侧记账（`RunSummary.note`）。**prompt 在这里，不在顶层** ——
-   * `/api/runs` 的每一项是 `{ traceId, ok, stopReason, sessionId, note: { prompt, … } }`。
-   * 早先这里写的是顶层 `prompt?`，而生产形状里从来没有那个键 ⇒ 对不上 ⇒
-   * 失败轮 / 中止轮**一轮都 join 不出来**（症状是「模型好像没回过」，看不出是漏数据）。
-   * 单测当时喂的正是那个不存在的形状，所以一直是绿的。
-   */
-  note?: { prompt?: string | null } | null;
-}
+/**
+ * run 列表里与对话有关的那几列 —— **从 `RunSummary` 投影，不再手抄一份**。
+ *
+ * 为什么改成投影（2026-11-12 二次修）：这里原先手写着 `prompt?: string | null`，
+ * 而 `/api/runs` 的真实形状是 `note: { prompt }` ⇒ 类型上「编译得过」、单测里
+ * 「喂的也是手抄的形状」，于是失败轮 / 中止轮**一轮都 join 不出来**也没人发现。
+ * 手抄的形状就是那次 bug 的根因：它不会随生产形状一起变。用 `Pick` 之后，服务端
+ * 改字段名 / 挪位置，`tsc` 当场红 —— 不再靠「记得同步」。
+ */
+export type ConversationRunLike = Pick<
+  RunSummary,
+  'traceId' | 'ok' | 'stopReason' | 'sessionId' | 'note'
+>;
 
 /**
  * 收尾原因在**看板上的四类**（`AgentStopReason` 有 14 个成员，一色一个没法认：

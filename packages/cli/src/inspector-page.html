@@ -176,7 +176,9 @@
          在替用户下结论；空心 = 「这一轮还悬着」，与右栏那句「停在审批」同一件事 */
       .run.suspended .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
       .run .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .run .r2, .run .r3 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
+      /* `display:block` 不是装饰：`.r2`/`.r3` 是 `<button>` 的直接子节点（裸 span），inline
+         元素不吃 `overflow` / `text-overflow`，也不吃垂直 `margin` ⇒ 省略号与 3px 间距从未生效 */
+      .run .r2, .run .r3 { display: block; margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
       .run .r2, .run .r3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .empty { color: var(--faint); padding: 16px; }
       /* —— 列表检索（2026-11-13）：环里 50 条 run，此前只能靠肉眼扫 —— */
@@ -1004,7 +1006,10 @@
           r2.className = 'r2';
           // 非正常收尾把**原因**写在第二行：`budget_exceeded` / `max_iterations` 的 run
           // 与 `end_turn` 的 run 在旧版看起来一模一样（同样蓝点亮着），而前者根本没跑完。
-          const why = cls === 'ok' ? '' : ` · ${stopReasonText(r.stopReason)}`;
+          // 老 trace 没有 `stop_reason` attribute ⇒ `stopReason` 为 null，此时**不拼分隔符**：
+          // 直接按模板拼会留一个孤立的「 · 」挂在行尾（`stopReasonText(null)` 是空串）。
+          const whyText = cls === 'ok' ? '' : stopReasonText(r.stopReason);
+          const why = whyText ? ` · ${whyText}` : '';
           r2.textContent = `${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}${why}`;
 
           b.append(r1, r2);

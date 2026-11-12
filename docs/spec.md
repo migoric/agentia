@@ -7887,6 +7887,19 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
 `trace.truncated` 与 `score`；**切到另一条 run 再切回来，回复（266 字符）仍在**。最后这条是
 在夹具**不推** `run-done` 的条件下验的 —— 否则测到的仍是那条 SSE，而不是落账这条路。
 
+**二次修**（同日复核代码时发现的三处残留，都还没造成错误显示，但都是「下一次会说谎」的地基）：
+
+- **形状改投影，不再手抄**：`ConversationRunLike` 原先是一份手写 interface（`prompt?` 在顶层）。
+  这次修的是它**写错的内容**，而「手抄」这个做法本身还在 —— 服务端改字段，它不会跟着变，
+  下次照样漂。改为 `Pick<RunSummary, 'traceId' | 'ok' | 'stopReason' | 'sessionId' | 'note'>`，
+  形状单源在 `inspector.ts` 的 `RunSummary`，`tsc` 当场咬住。
+- **第二行的省略号此前不生效**：`.r2` / `.r3` 是 `<button>` 的直接子节点（裸 `<span>`），
+  inline 元素不吃 `overflow` / `text-overflow`，也不吃垂直 `margin` —— 旧规则里的省略号与
+  3px 间距从未生效，第二行加了「 · 撞到预算护栏」后更早顶出按钮右边界。补 `display: block`。
+- **老 trace 不再挂孤立的「 · 」**：没有 `stop_reason` attribute 的 trace（`stopReason` 为
+  null、`ok` 又是 false）会走进「非正常收尾」分支，模板直接拼出 ` · ${''}`，行尾多一个点。
+  改为「短语非空才拼分隔符」。
+
 **刻意没做**（批次 B/C）：run 级总账（cache / 成本 / 预算 / iterations / `typed`）、span
 attributes（`model` / `retry.attempt` / `handoff`）、搜索与过滤、深链 / 重跑 / 导出、时间轴；
 以及树渲染的 O(N²)（50 span 触发 151 次全树重建，在飞时每帧一次）—— 它是「在飞」那条路的
@@ -8030,8 +8043,14 @@ combo 必须是 `model=,source=,tenant=acme`，不许借别的属性填空。反
 **代价**：`src/core/tool.ts` / `core/schema.ts` / `core/limits.ts` / `engine/policy.ts` /
 `engine/turn.ts` / `engine/types.ts` / `integrations/file-sink.ts` 七个文件，公共面只多一个
 **可选**参数（`rotate`）与一个**可选**回调字段（`onCompactionFailure`），无新依赖。
-公共 API 形状向后兼容，但 **`maxItems` 是行为收紧**：已声明它的工具会从「超长放行」变为
-「回 `is_error`」。发布说明必须单列这一点，不能用「无破坏性变更」把它盖过去。
+公共 API 形状向后兼容，但**两处是行为收紧**，发布说明必须单列，不能用「无破坏性变更」盖过去：
+
+- **`maxItems`**：已声明它的工具会从「超长放行」变为「回 `is_error`」。
+- **`createBudgetPolicy` 的数量旋钮**：`budgetTokens: Number.POSITIVE_INFINITY`（旧行为 = 预算永不超
+  ＝事实上的「不限」）与 `budgetTokens: 60_000.5` 这类小数，从前能跑、现在构造期抛 TypeError。
+  理由是 token 记账本就按整数算，而 `Infinity` 会让 `countTokens(...) <= budgetTokens` 恒真、
+  把护栏彻底关掉 —— 要「不限」请直接不传 policy，不要传一个能骗过闸的值。其余三个旋钮原先对
+  坏值的表现是「静默失效」，没有可依赖的旧行为。
 
 **2026-11-12 复核修正（ref-invalid-trace-time-fallback）**：`dayKeyOf` 除了 NaN/缺字段，
 还须处理「有限但超出 Date 可表示区间」的 startedAt；非法值回退写盘时刻。新增真实 export
