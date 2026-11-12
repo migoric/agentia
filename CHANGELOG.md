@@ -5,6 +5,52 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.7] - 2026-11-12
+
+### 变更
+
+本版只改**调试面板的展开呈现**，无破坏性变更、无迁移动作。两包同步 0.10.6 → 0.10.7；
+`@migor/agentia` 此次只有版本常量变化（`src/` 一行未动），实际改动全在调试面板与
+`agentia view` 的产物面。
+
+- **展开态不再是一大坨 JSON**：`tool.input` / `tool.output` 是对象或数组时，展开行下方追加
+  一个**结构化正文块** —— 缩进、四类值着色、头部写类型与规模（`object · 6 项`）。
+  此前唯一的展开方式是把整串 JSON 折行，20 个键在 400px 宽的右栏里就是十几行连续的
+  `{"a":"b","c":{"d":`：页面不报错、无溢出、构建与 e2e 全绿，只是人读不了 ——
+  而「展开看工具到底收到/返回了什么」正是这块面板的主用途。
+- **逐层折叠**：容器默认只铺两层，更深的折成 `▸ watch: { object · 2 项 }`，点一下铺开。
+  折叠状态由调用方持有，所以**实时 run 里刚折起的容器不会被下一条事件弹开**。
+- **同构数组成表**：元素键集完全相等、且各列都是标量时铺成表（`targets[*].file` 这种表头），
+  3 行 `{name, score}` 从 9 行重复键名压到 1 行表头 + 3 行数据。判据刻意从严 ——
+  表格里没法逐层展开，判错一次就是**静默丢列**，所以任一条件不满足就回落树形。
+- **键路径可复制**：悬停键名出 `⧉`，点一下写入 `results[0].name`。没有剪贴板实现时
+  点击不生效、也不显示「已复制」—— 不把没做到的事显示成做到了。
+- **三处宿主同时生效**：CLI 的 `agentia dev` 面板、`agentia view` 生成的单文件 HTML、
+  官网 Playground 共用这份渲染器。
+- 字符串形态的展开（`tool.output` 的文本正文、官网模拟回放）**照旧**走原来的纯文本换行 ——
+  那一档有两个 CSS 不变量守着，刻意保留两档并存，不做统一。
+
+### 新增：展开态结构化渲染（2026-11-11 ref-trace-full-view）
+
+- **新件 `packages/trace-view/src/full-view.js`**：入参任意值、出参一个元素，与树的构建与
+  状态机无关（零依赖、纯 DOM 构造、无内部状态）。默认铺两层（`OPEN_DEPTH = 2`）。
+- **数据侧递原值**：`fromTrace.eventFull` 对 `tool.input` / `tool.output` 返回**原值**而非
+  `JSON.stringify` 结果 —— 此前在数据层就序列化了，渲染器根本看不到对象，结构化无从发生。
+  `rawArg` 保留（`.tr-io` 的正文与既有展开断言都靠它）。
+- **原文仍然在场**：结构化时给行打 `tr-structured`，CSS 只是隐藏 `.tr-io`，它依旧持有
+  `JSON.stringify` 原文 ⇒ 既有 9 条展开断言一条都不用改，用户选中复制也照旧。
+  改的是**画法**，不是数据。
+- **截断必须说出来**：单值超 240 字符写「还有 N 字符」，一层超 40 项写「还有 N 项未展开」，
+  嵌套超 6 层压平但仍标出「它是个容器」。静默截断比糊成一坨更坏 —— 它会让人以为工具
+  就返回了这么点东西。循环引用不抛（调试面板不该因一条坏数据白屏）。
+- **CLI 侧**：`inspector-routes.ts` 的 STATIC 白名单加 `full-view.js`（漏登记的后果是浏览器
+  404、面板整块求值失败），`packages/cli/test/structure.test.mjs` 的 W5 守着这条。
+- **验证**：trace-view 测试 +19（渲染件 15、接线 4），跑真 `createTraceView` + `playTrace`；
+  反向验证 5 条（不传 `fold` ⇒ 折叠跨重建用例红；摘掉「键数相等」判定 ⇒ 成表边界红；
+  摘掉挂块那一行 ⇒ 两处接线红；`eventFull` 退回 `JSON.stringify` ⇒ 结构化用例红；
+  `copyInto` 写 `title` 而非路径 ⇒ 复制用例红）。决策与判据见 `docs/spec.md` §10
+  2026-11-11 ref-trace-full-view，守卫登记见 `docs/guards.md` §1。
+
 ## [0.10.6] - 2026-11-09
 
 ### 变更
@@ -4426,7 +4472,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.6...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.7...HEAD
+[0.10.7]: https://github.com/migoric/agentia/releases/tag/v0.10.7
 [0.10.6]: https://github.com/migoric/agentia/releases/tag/v0.10.6
 [0.10.5]: https://github.com/migoric/agentia/releases/tag/v0.10.5
 [0.10.4]: https://github.com/migoric/agentia/releases/tag/v0.10.4
