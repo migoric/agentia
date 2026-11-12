@@ -483,7 +483,15 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //         `?.` 与口径注（+3）
   //     +9  panel-logic.ts —— 全是 `biome --write` 的换行（长参数表按 100 列折断），代码零变化
   //   ⚠️ 这条数字只能靠**跑一遍数出来**：`biome --write` 也会改行数，手算必错。
-  const TOTAL_BUDGET = 11402;
+  // 2026-11-13 二次修（**在飞重画吃状态 / 读 run 失败不出声 / 总账缺耗时**）：11402 → 11443（+41）=
+  //     +26 panel-logic.ts —— `fmtMs` 抽出并导出（列表 / 总账 / 在飞共用一份，+10，含「两套格式
+  //         会让同一个数在两处长得不一样」的注）、总账「耗时」项（根 span 的 `endedAt − startedAt`，
+  //         含「两端都必须有、在飞不显示」的口径注与 `st > 0` 判据，+16）
+  //     +15 inspector-page.html —— `open()` 失败出声（`try/catch` + `!res.ok` 两个分支各给一句
+  //         用户可见的话，含「右栏仍是上一条」的注，+17）、`fmtMs` 改从 panel-logic import
+  //         （删本地定义 -1、import 列表 +1）、其余零碎 -2
+  //   ⚠️ 本笔**没有新增视图**：改的是「用户刚做的操作在下一帧被自己撤销」与「读失败静默留白」。
+  const TOTAL_BUDGET = 11443;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

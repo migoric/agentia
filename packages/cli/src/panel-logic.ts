@@ -635,6 +635,9 @@ export interface LedgerTraceLike {
     status?: string;
     attributes?: Record<string, unknown>;
     events?: Array<{ name?: string }>;
+    /** 根 span 上的这两个数就是「这一趟跑了多久」的唯一来源（别从 usage / 事件推） */
+    startedAt?: number;
+    endedAt?: number;
   }> | null;
 }
 
@@ -645,6 +648,16 @@ export interface LedgerItem {
   /** 悬停才显示的**口径**说明：读数与它的算法必须一起给，否则「77%」是没法核对的 */
   title?: string;
   tone?: 'err' | 'warn';
+}
+
+/**
+ * 时长显示（**唯一一份**）：run 列表第二行、总账的「耗时」、在飞占位共用。
+ * `>= 1s` 用两位小数秒（`12.40s`），否则毫秒 —— 1.5 秒显示成 `1500ms` 比 `1.50s` 难读。
+ * 负数 / NaN 一律当 0（宁可显示 `0ms`，也不让 `NaNs` 出现在账上）。
+ */
+export function fmtMs(ms: number): string {
+  const n = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  return n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${Math.round(n)}ms`;
 }
 
 function ledNum(n: unknown): number {
@@ -701,6 +714,20 @@ export function runLedger(
     items.push({ key: '失败', value: `${fmtCount(errors)} 个 span`, tone: 'err' });
   }
 
+  /* 耗时：根 span 的 `endedAt − startedAt`。此前总账里没有这一项（review P1-1 点名的
+     「12.4s」），而它是「这一趟到底花在哪儿」的基线 —— 没有它，8.1k in / 1.5k out 是
+     悬空的。**缺任一端就不显示**（在飞的 trace 没有 endedAt）：记 0 会被读成「瞬间跑完」。 */
+  const root = spans.find((s) => s && s.kind === 'run') ?? spans[0];
+  const st = ledNum(root?.startedAt);
+  const en = ledNum(root?.endedAt);
+  if (st > 0 && en > st) {
+    items.push({
+      key: '耗时',
+      value: fmtMs(en - st),
+      title: 'run 根 span 的 endedAt − startedAt（含等待与重试；在飞时不显示）',
+    });
+  }
+
   const u = trace.totalUsage ?? null;
   if (u) {
     const inTok = ledNum(u.inputTokens);
@@ -733,7 +760,6 @@ export function runLedger(
     }
   }
 
-  const root = spans.find((s) => s && s.kind === 'run') ?? spans[0];
   const model = root?.attributes?.model;
   if (typeof model === 'string' && model.length > 0) items.push({ key: '模型', value: model });
 

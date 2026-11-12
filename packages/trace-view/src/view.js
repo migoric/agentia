@@ -125,7 +125,10 @@ export function createTraceView(rootEl, opts = {}) {
   /* 结构化块内部的折叠状态，按事件键一份（`ev.key` → 路径 → 是否展开）。
      与 `expanded` 同一条理由，而且更硬：块本身每次重建都会 new 一个，状态只能挂在树上。 */
   const folds = new Map();
-  let evSeq = 0;
+  /* 上一次 reset 的根 id。**同一棵树的重画不能清展开态**：在飞时 `playTrace` 每帧调一次
+     reset，而 reset 原先无条件 clear ⇒ 用户每展开一个节点，下一帧就自己合上。
+     「换了一条 run」才该清（新树的节点不是同一批）。 */
+  let lastRootId = null;
 
   /** 正在选文本时不要收起/展开 —— 鼠标拖选到行外松手会补一次 click，否则选完就自己合上了 */
   function hasSelection() {
@@ -185,8 +188,13 @@ export function createTraceView(rootEl, opts = {}) {
   }
 
   function drawTree() {
+    /* 重画是**全量重建**（`innerHTML = ''`），它会把两样「属于这棵树、不属于这一次渲染」的
+       状态一起清掉：滚动位置、检索的当前位置。在飞时 playTrace 每帧重画 ⇒ 用户滚到中间、
+       按 Enter 跳到第 5 处，下一帧就跳回顶部、序号归零。重建前后自己把它们搬回来。 */
+    const keepTop = typeof rootEl.scrollTop === 'number' ? rootEl.scrollTop : 0;
     rootEl.innerHTML = '';
-    hitIndex = -1;
+    // 位置只在**查询清空**时归零；查询不变时（在飞每帧重画）保留用户按到的第 N 处
+    if (!query) hitIndex = -1;
     // 还没 reset 过（视图刚建出来）：清空即返回。setTimeline / setQuery 可能先于第一棵树
     // 被调用 —— 没有这一条，`traceRoot.order` 会抛，而调用方只是在设一个开关。
     if (!traceRoot) return;
@@ -360,6 +368,17 @@ export function createTraceView(rootEl, opts = {}) {
         rootEl.appendChild(errLine);
       }
     });
+    /* 重画后把「当前命中」补回去：`nextHit` 标的是 DOM 行，而重建把行全换了 ——
+       不补的话序号还在、视觉上的「第几处」没了。命中数变少（在飞时常有）按绕回落第一处。 */
+    if (hitIndex >= 0) {
+      const list = hitRows();
+      if (list.length === 0) hitIndex = -1;
+      else {
+        if (hitIndex >= list.length) hitIndex = 0;
+        setFlag(list[hitIndex], 'tr-hit-cur', true);
+      }
+    }
+    if (keepTop > 0) rootEl.scrollTop = keepTop;
   }
 
   function renderUsage(acc) {
@@ -413,8 +432,16 @@ export function createTraceView(rootEl, opts = {}) {
     spanMap.clear();
     spanMap.set('root', traceRoot);
     if (rootId && rootId !== 'root') spanMap.set(rootId, traceRoot);
-    expanded.clear(); // 展开态属于上一棵树：reset 开新树时一并清掉
-    folds.clear(); // 块内折叠同理：留着只会在下一次点开时出现"莫名已折叠"的状态
+    /* 展开态只在**换了一棵树**时清：在飞时同一 rootId 会被 reset 几十次（每帧一次），
+       无条件 clear 等于「用户展开的节点每帧自己合上」。切到别的 run（id 不同）才清 ——
+       新树的节点不是同一批，留着只会让新树「莫名有几个已展开的块」。 */
+    const sameTree = lastRootId !== null && lastRootId === traceRoot.id;
+    lastRootId = traceRoot.id;
+    if (!sameTree) {
+      expanded.clear();
+      folds.clear();
+      rootEl.scrollTop = 0; // 换 run 回顶部；同一棵树的重画在 drawTree 里自己搬回去
+    }
     usageAcc.input = 0;
     usageAcc.output = 0;
     usageAcc.cacheRead = 0;
@@ -463,7 +490,11 @@ export function createTraceView(rootEl, opts = {}) {
       text,
       ok: ok !== false,
       full: full === undefined ? text : full,
-      key: 'ev' + ++evSeq,
+      /* 展开状态的稳定标识，**必须跨重画不变**：原先用模块级自增序号 `ev' + ++evSeq`，
+         每次 playTrace 重建都会发新号 ⇒ 即使 expanded 被保住了，键也对不上（展开态照样丢）。
+         这里用「spanId + 该 span 内第几个事件」：同一条 trace 重放时两者都稳定，
+         跨 span 靠 spanId 区分。 */
+      key: `${id}#ev${node.events.length}`,
     };
     node.events.push(e);
     node.order.push({ t: 'ev', e });
@@ -555,6 +586,7 @@ export function createTraceView(rootEl, opts = {}) {
       const next = typeof q === 'string' ? q.trim() : '';
       if (next === query) return hitRows().length;
       query = next;
+      hitIndex = -1; // 换了查询 ⇒ 从第一处重新数（保留旧序号会指向另一批命中）
       renderTrace();
       return hitRows().length;
     },

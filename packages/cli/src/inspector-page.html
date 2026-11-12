@@ -539,6 +539,7 @@
         emptyTraceAccumulator,
         filterRuns,
         filterSelected,
+        fmtMs,
         formatToolSources,
         historyStep,
         historyText,
@@ -823,7 +824,7 @@
         trace: null,
       };
 
-      const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
+      // fmtMs 在 panel-logic（列表 / 总账 / 在飞共用一份；两套格式会让同一个数在两处长得不一样）
       const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
       const ago = (t) => {
         const s = Math.max(0, Math.round((Date.now() - t) / 1000));
@@ -1569,8 +1570,22 @@
       }
 
       async function open(id) {
-        const res = await fetch('/api/runs/' + encodeURIComponent(id));
-        if (!res.ok) return;
+        /* ⚠️ 失败必须出声：`/api/runs` 只回内存 ring 里的 50 条，深链指向已淘汰的 run、
+           token 过期（403）都会走到这里。旧实现是裸 `if (!res.ok) return` —— 右栏留在
+           上一条的树上、`state.current` 也不动，用户会以为「打开的就是这条」（本档最忌的
+           张冠李戴）；网络异常那支连 unhandled rejection 都没有。 */
+        let res;
+        try {
+          res = await fetch('/api/runs/' + encodeURIComponent(id));
+        } catch (e) {
+          setNotice(`打开 run 失败：${e.message}（右栏仍是上一条）`, true);
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setNotice(`打开 run 失败：${body.error || 'HTTP ' + res.status}（右栏仍是上一条）`, true);
+          return;
+        }
         const trace = await res.json();
         state.current = id;
         // 总账要的是 trace 本体（`state.current` 只有 id）—— 重跑 / 导出也靠它

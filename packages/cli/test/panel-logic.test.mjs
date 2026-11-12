@@ -1003,6 +1003,8 @@ describe('run 级总账（2026-11-13）', { skip: SKIP }, () => {
         status: 'ok',
         attributes: { model: 'claude-x', stop_reason: 'end_turn' },
         events: [],
+        startedAt: 1_000,
+        endedAt: 12_400,
       },
       {
         kind: 'llm.turn',
@@ -1026,6 +1028,7 @@ describe('run 级总账（2026-11-13）', { skip: SKIP }, () => {
     );
     assert.equal(item(items, '失败').value, '1 个 span');
     assert.equal(item(items, '失败').tone, 'err');
+    assert.equal(item(items, '耗时').value, '11.40s', '根 span 的 endedAt − startedAt');
     assert.equal(item(items, 'in / out').value, '3k / 1.5k');
     assert.equal(item(items, '模型').value, 'claude-x');
     assert.equal(item(items, '成本').value, '$0.0140 / $1', '有预算时把上限一起给');
@@ -1047,6 +1050,26 @@ describe('run 级总账（2026-11-13）', { skip: SKIP }, () => {
     assert.equal(item(items, '成本'), undefined);
     assert.equal(item(items, 'cache'), undefined, '没有缓存读数时整项不出现，不显示 0%');
     assert.equal(item(items, '失败'), undefined, '没人失败时不留一行「0 失败」');
+  });
+
+  it('在飞（根 span 没有 endedAt）不显示耗时 —— 记 0 会被读成「瞬间跑完」', () => {
+    const flying = {
+      totalUsage: { inputTokens: 10, outputTokens: 5 },
+      spans: [{ kind: 'run', status: 'ok', attributes: {}, events: [], startedAt: 1_000 }],
+    };
+    assert.equal(item(L.runLedger(flying), '耗时'), undefined, '只有起点 ⇒ 还不知多久');
+    const half = {
+      spans: [{ kind: 'run', status: 'ok', attributes: {}, events: [], endedAt: 9_000 }],
+    };
+    assert.equal(item(L.runLedger(half), '耗时'), undefined, '只有终点 ⇒ 算不出跨度');
+  });
+
+  it('fmtMs：秒/毫秒分界与坏值（列表与总账共用一份，别让同一个数两处不一样）', () => {
+    assert.equal(L.fmtMs(999), '999ms');
+    assert.equal(L.fmtMs(1_000), '1.00s');
+    assert.equal(L.fmtMs(12_400), '12.40s');
+    assert.equal(L.fmtMs(Number.NaN), '0ms');
+    assert.equal(L.fmtMs(-5), '0ms');
   });
 
   it('空 trace / null 返回空账（面板据此不画那一行）', () => {
