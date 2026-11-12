@@ -20,7 +20,8 @@ Turn 0 起内建。框架本体只负责**产出**这条 trace 的数据结构�
 | `playTrace(view, trace)` | 把一条真实 `Trace` **一次性同步回放**给视图（用于 run 结束后的静态展示）。trace 为空时返回 `false` 且不渲染 |
 | `summarizeTrace(trace)` | 从 trace 算**能力排行**：`{ capability, calls, errors, totalMs, maxMs, tokens, costUsd }`，按 `totalMs` 降序 |
 | `renderSummary(rows)` | 把上面的排行渲成小表格（返回 HTML 字符串，样式由 `trace-view.css` 提供） |
-| `createFullView(value, opts?)` | 把任意值铺成**结构化正文块**：嵌套容器可折叠（默认铺两层）、同构对象数组成表、键旁 `⧉` 复制 JSON 路径、类型着色。`full` 是对象或数组时，渲染器自动把它挂在展开行下方；字符串正文仍走 `.tr-io` 的纯文本换行（那条路有两个 CSS 不变量守着）。`opts.fold` 传一份 `Map<路径, 是否展开>` 让折叠状态活在重建之外（渲染器内部按事件键存一份） |
+| `createFullView(value, opts?)` | 把任意值铺成**结构化正文块**：嵌套容器可折叠（默认铺两层）、同构对象数组成表、键旁 `⧉` 复制 JSON 路径、类型着色。`full` 是容器、或**装着 JSON 的字符串**时，渲染器自动把它挂在展开行下方（后者行内打 `str→json` 标记）；纯文本正文仍走 `.tr-io` 的老路（那条路有两个 CSS 不变量守着）。`opts.fold` 传一份 `Map<路径, 是否展开>` 让折叠状态活在重建之外（渲染器内部按事件键存一份） |
+| `hasStructuredBody(value)` | 该值有没有结构化正文可铺（容器，或首尾是 `{}`/`[]` 且解析成功的字符串）。与 `createFullView` 用的是**同一个判据**，宿主自己决定要不要挂块时用它，别另写一份 |
 | `capabilityTypeOf(name)` / `CAP_ICO` | 能力类型判定与其图标 |
 | `fmtArg` / `rawArg` | 入参展示的一对：`fmtArg` 给**折叠态摘要**（砍到 62 字符），`rawArg` 给**序列化原文**（展开行的 `.tr-io` 正文与「展开拿到的是原文、不是摘要」这条不变量都靠它） |
 | `fmtNum` / `fmtMs` | 数字 / 耗时的展示格式化 |
