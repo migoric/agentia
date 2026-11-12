@@ -8126,7 +8126,12 @@ $0.0213 / $1 · claude-sonnet-4-5`；「预算」能搜到「撞到预算护栏�
     同时成立且列数相等）、调用树展开的工具出参能把**一整篇 Markdown** 渲染出来 —— 解析器由
     宿主经 `textBody` 注入，官网 Playground 刻意不注入；**无破坏性变更、无迁移动作**，
     `src/` 仍未动，改动全在 CLI 面板与 trace-view 渲染件内）；
-  `AGENTIA_VERSION = '0.10.9'`。决策均见 §10。
+  → v0.10.10（调试面板从「看得见一棵树」推进到「看得到这一趟 run 的账、找得到那一条、
+    带得走」：三块可折叠 / 修掉五处在说谎的地方（回复落账、note.prompt、根 span 事件、
+    run 命名、四类终态）/ 批量渲染把 O(N²) 收到 1 次 / 总账 · 属性含根 · 时间轴 ·
+    树内与列表检索 · 深链 · 回填不自动跑 · 导出 JSONL；**无破坏性变更、无迁移动作**，
+    `src/` 仍未动，改动全在 CLI 面板与 trace-view 渲染件内）；
+  `AGENTIA_VERSION = '0.10.10'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
