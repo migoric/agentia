@@ -82,6 +82,10 @@
          等于逼用户先折掉别的块才发现内容被裁了。比例是弹性的（basis 为 0 ⇒ 不会撑破容器），
          窗口再矮也只是各自更小，不会溢出到下面的用量行。 */
       #pane-reply[data-open='1'] { flex-grow: 1.5; }
+      /* 树按 2 份。三块**都开着**时平分的话它只有 134px ≈ 三行（1440×900 实测：23 行里
+         只看得到 3 行），而树里还塞着工具条。树是这个页面存在的理由，亏待它会让人以为
+         「这条 run 就这么点东西」。取 2 而不是更极端：回复仍要比它大（结论优先）。 */
+      #pane-trace[data-open='1'] { flex-grow: 2; }
       /* 排行是一张**有界**的表：按自己内容的高度放，长过 45% 才在它自己那块里滚。
          给它也按份分剩余高度的话，短表下面会空出一片 —— 那块空白本该属于树或回复。 */
       #pane-summary[data-open='1'] { flex: 0 1 auto; max-height: 45%; }
@@ -109,10 +113,17 @@
          第一版没加，结果折叠后树照样铺满（面板里"收了等于没收"，比不折叠更糟）。 */
       #pane-trace[data-open='1'] > .pane-body { display: flex; flex-direction: column; overflow: hidden; }
       #trace { flex: 1 1 auto; min-height: 120px; overflow: auto; }
+      /* 树工具条（树内检索 + 时间轴开关）：不塞进 `.pane-head`（那是个 button，嵌输入框点一下
+         就折叠了）。⚠️ 基础规则必须排在 `.cmp-on #tree-bar` **之前** —— 低特异性的规则写在后面
+         会被规则引擎判成「可能不生效」（`noDescendingSpecificity`），而那条告警在本仓是失败。 */
+      #tree-bar { flex: none; display: flex; gap: 6px; align-items: center; padding-bottom: 6px; }
       .usage { flex: none; }
       /* 并排 A/B：两棵树各占一半、**各自独立滚**（一棵树很长时不该把另一棵推出屏幕）。
          `#trace2` 只在并排时存在（单run 时 hidden）。 */
-      .cmp-on #pane-trace > .pane-body { flex-direction: row; }
+      .cmp-on #pane-trace > .pane-body { flex-direction: row; flex-wrap: wrap; }
+      /* 并排时 body 是 row ⇒ 树工具条必须自己占满一整行，否则它会挤在两棵树左边。
+         单栏时 body 是 column，`flex: none` 就够（写成 100% 会变成「占满高度」）。 */
+      .cmp-on #tree-bar { flex: 0 0 100%; }
       .cmp-on #trace { flex: 1 1 50%; }
       .tr-compare {
         flex: 1 1 50%; min-height: 120px; overflow: auto;
@@ -168,6 +179,40 @@
       .run .r2, .run .r3 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
       .run .r2, .run .r3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .empty { color: var(--faint); padding: 16px; }
+      /* —— 列表检索（2026-11-13）：环里 50 条 run，此前只能靠肉眼扫 —— */
+      #list-bar {
+        flex: none; display: flex; gap: 6px; padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      #list-q {
+        flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
+        border-radius: 4px; color: var(--text); padding: 4px 7px; font: inherit; font-size: 11.5px;
+      }
+      #list-q:focus { outline: 1px solid var(--ice); border-color: var(--ice); }
+      /* 「只看异常」是**开关**，用 aria-pressed 表示按下（同时给读屏软件） */
+      #list-abn[aria-pressed='true'] { border-color: var(--warn); color: var(--warn); }
+      /* —— run 级总账（2026-11-13）：打开一条 run，先给「这一趟的账」，再给树 ——
+         此前页面上只有 footer 的两个数（in / out），而 cache 命中率与成本 —— 最直接对应
+         账单的两个数 —— 一个都没有。 */
+      #ledger {
+        flex: none; display: flex; align-items: baseline; gap: 10px;
+        margin-bottom: 8px; font-size: 11.5px; color: var(--muted); flex-wrap: wrap;
+      }
+      #ledger[hidden] { display: none; }
+      #ledger-items { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+      #ledger-items .lg { color: var(--faint); }
+      #ledger-items .lg b { color: var(--text); font-weight: 500; margin-left: 4px; }
+      #ledger-items .lg.err b { color: var(--err); }
+      #ledger .acts { margin-left: auto; display: flex; gap: 6px; }
+      /* —— 树工具条：树内检索 + 时间轴开关 ——
+         基础规则在上面的 `#trace` 旁边（要排在 `.cmp-on` 那条之前）。 */
+      #tree-q {
+        flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
+        border-radius: 4px; color: var(--text); padding: 3px 7px; font: inherit; font-size: 11px;
+      }
+      #tree-q:focus { outline: 1px solid var(--ice); border-color: var(--ice); }
+      #tree-hit { color: var(--faint); font-size: 10.5px; min-width: 3ch; }
+      #tl-toggle[aria-pressed='false'] { color: var(--faint); }
       #ttl { color: var(--faint); margin-bottom: 10px; font-family: var(--mono); font-size: 11.5px; }
       .usage { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
       /* biome-ignore lint/style/noDescendingSpecificity: 本行只颜色/字重，对手是 33 行的 header .live b —— 两者祖先容器不同（.usage 在面板区、.live 在 header），结构上不可能命中同一元素，是规则「只比末段标签」的误报。 */
@@ -328,6 +373,14 @@
           <button class="tab active" id="tab-runs" type="button">run 列表</button>
           <button class="tab" id="tab-chat" type="button">对话</button>
         </div>
+        <!--
+          列表检索（2026-11-13）：`/` 聚焦。「异常」= 失败 / 中止 / 等审批 —— 挂起的 run
+          在 trace 上状态是 ok，只过滤 ok=false 会把它漏掉（规则在 panel-logic 的 filterRuns）。
+        -->
+        <div id="list-bar">
+          <input id="list-q" type="search" spellcheck="false" placeholder="搜 prompt / 目录 / 收尾原因（按 /）" />
+          <button id="list-abn" class="mini" type="button" aria-pressed="false" title="只看失败 / 中止 / 等审批的 run">异常</button>
+        </div>
         <div id="runs"><div class="empty">还没有 run。触发一次 agent 调用即可。</div></div>
         <!--
           清空对话（§6 待定 3）：清空 = **换一个 sessionId**（不动 session.json ——
@@ -342,6 +395,18 @@
       </aside>
       <section>
         <div id="ttl"></div>
+        <!--
+          run 级总账（2026-11-13）：轮次 / 工具 / 失败 / in-out / cache 命中率 / 成本（带预算）
+          / 模型。判据与文案全在 panel-logic 的 `runLedger`（带单测），这里只填 DOM。
+          右侧两个动作：重跑（回填四个输入，**不自动跑**）与复制 JSONL（喂给 `agentia view`）。
+        -->
+        <div id="ledger" hidden>
+          <div id="ledger-items"></div>
+          <div class="acts">
+            <button class="mini" id="rerun" type="button" title="把这条 run 的 prompt / 目录 / 能力 / 多轮回填到输入条（不会自动开跑）">↻ 回填重跑</button>
+            <button class="mini" id="copy-run" type="button" title="复制这一条 trace 的 JSONL（存成 .jsonl 后可用 agentia view 打开）">复制 JSONL</button>
+          </div>
+        </div>
         <!--
           并排 A/B 的差异摘要（档 B）。默认 hidden，只有选满两条 run 才出现。
           三段结构：可比性提示（不可比时才有 —— 可比时**不显示**，见 comparability 的注释）、
@@ -366,6 +431,16 @@
               <span class="pane-meta" id="meta-trace"></span>
             </button>
             <div class="pane-body" id="body-trace">
+              <!--
+                树工具条（2026-11-13）：树内检索 + 时间轴开关。
+                检索**只高亮 + 跳转，不改结构**（裁剪节点会让「谁挂在谁下面」失真）；
+                判定与跳转都在 trace-view 里（`setQuery` / `nextHit`），这里只接线。
+              -->
+              <div id="tree-bar">
+                <input id="tree-q" type="search" spellcheck="false" placeholder="树里找…（Enter 下一处 / Esc 清空）" />
+                <span id="tree-hit"></span>
+                <button class="mini" id="tl-toggle" type="button" aria-pressed="true" title="按 run 总时长归一的时间轴（关掉可以给它让出 72px）">时间轴</button>
+              </div>
               <!--
                 双栏容器：并排时这里是**两个** trace 视图，单run 时只有一个。
                 ⚠️ 不用「同一棵树改CSS 成两半」—— trace-view 的树是自绘的，两棵树必须两个容器。
@@ -460,6 +535,7 @@
         diffValueText,
         diffFetchErrorText,
         emptyTraceAccumulator,
+        filterRuns,
         filterSelected,
         formatToolSources,
         historyStep,
@@ -472,7 +548,10 @@
         promptAfterFilePick,
         pushPromptHistory,
         replyBelongsTo,
+        rerunFromNote,
         runDoneNotice,
+        runIdFromSearch,
+        runLedger,
         shortenPath,
         replyMeta,
         stopReasonClass,
@@ -515,6 +594,15 @@
       const fsEl = $('fs');
       const fsListEl = $('fs-list');
       const fsPathEl = $('fs-path');
+      const listQEl = $('list-q');
+      const listAbnEl = $('list-abn');
+      const ledgerEl = $('ledger');
+      const ledgerItemsEl = $('ledger-items');
+      const rerunEl = $('rerun');
+      const copyRunEl = $('copy-run');
+      const treeQEl = $('tree-q');
+      const treeHitEl = $('tree-hit');
+      const tlToggleEl = $('tl-toggle');
 
       const view = createTraceView(traceEl, {
         // 无公开单价 → 不估算成本；只展示 token
@@ -599,6 +687,9 @@
           const t = await res.json();
           el.replaceChildren();
           playTrace(v, t);
+          // 树内检索是**跨重画**的状态（它在 view 里），但 playTrace 只是重画；
+          // 这里补一次是为了「并排时新打开的那一条也按当前关键词高亮」（否则两栏不同步）
+          if (treeQEl.value.trim()) v.setQuery(treeQEl.value);
         }
         await loadDiff(a, b);
       }
@@ -723,6 +814,11 @@
         live: null,
         notice: '',           // 面板自己发的操作反馈（已接受 / 重启了 runner / 出错）
         noticeErr: false,
+        /** 列表检索（2026-11-13）：关键词 **且** 「只看异常」—— 两者都与列表同生共死 */
+        q: '',
+        onlyAbnormal: false,
+        /** 当前打开的那条 trace 本体（总账 / 回填重跑 / 导出都用它；`state.current` 只有 id） */
+        trace: null,
       };
 
       const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(2) + 's' : ms + 'ms');
@@ -850,8 +946,21 @@
           runsEl.appendChild(d);
           return;
         }
+        // 检索（2026-11-13）：关键词 **且** 「只看异常」。判定在 panel-logic（带单测）——
+        // 这里的「异常」包含挂起（它的 trace 状态是 ok，只过滤 ok=false 会漏掉）。
+        const shown = filterRuns(state.list, state.q, { onlyAbnormal: state.onlyAbnormal });
         runsEl.replaceChildren();
-        for (const r of state.list) {
+        if (shown.length === 0) {
+          // ⚠️ 「过滤掉了全部」与「一条都没有」是两件事，必须说清是哪种 ——
+          // 一个错误的空态比一句错误更难发现（用户会以为 run 丢了）
+          const d = document.createElement('div');
+          d.className = 'empty';
+          const why = state.onlyAbnormal ? '只看异常' : '无筛选';
+          d.textContent = `没有匹配的 run（共 ${state.list.length} 条 · ${why}${state.q ? ` · 关键词「${state.q}」` : ''}）`;
+          runsEl.appendChild(d);
+          return;
+        }
+        for (const r of shown) {
           const b = document.createElement('button');
           // 四态：失败 / **被中止** / **等审批** / 正常。判别全走 panel-logic 的
           // `stopReasonClass`（与通知条同一条语义）—— 各处自己读 `ok` 会出现「列表说失败、
@@ -928,6 +1037,86 @@
           runsEl.appendChild(b);
         }
       }
+
+      // ---------- run 级总账（2026-11-13） ----------
+
+      /**
+       * 打开一条 run，先给「这一趟的账」：轮次 / 工具 / 失败 / in-out / cache 命中率 /
+       * 成本（带上限）/ 模型。判据与文案全在 `runLedger`（带单测），这里只填 DOM。
+       *
+       * 一条可显示项都没有时**整行不出现**（不做空壳）—— 一个只有两个按钮的空账行
+       * 会让人以为数据没读到。
+       */
+      function renderLedger(trace) {
+        ledgerItemsEl.replaceChildren();
+        const items = runLedger(trace, state.dev ? state.dev.budget : null);
+        ledgerEl.hidden = items.length === 0;
+        for (const it of items) {
+          const s = document.createElement('span');
+          s.className = 'lg' + (it.tone === 'err' ? ' err' : '');
+          if (it.title) s.title = it.title;
+          s.appendChild(document.createTextNode(it.key));
+          const b = document.createElement('b');
+          b.textContent = it.value;
+          s.appendChild(b);
+          ledgerItemsEl.appendChild(s);
+        }
+      }
+
+      /**
+       * 「回填重跑」：把这条 run 的四个输入写回输入条，**不自动提交**。
+       * 自动跑会在误触时花钱，而「回填 + 我按运行」多的只是一次点击。
+       */
+      rerunEl.addEventListener('click', () => {
+        const fill = rerunFromNote(
+          state.trace ? state.trace.note : null,
+          state.dev ? state.dev.capabilities : [],
+        );
+        if (!fill) {
+          setNotice('这条 run 没有开发期元信息（不是 agentia dev 起的，或记账已被淘汰）⇒ 没法回填', true);
+          return;
+        }
+        promptEl.value = fill.prompt;
+        if (fill.workdir) {
+          workdirEl.value = fill.workdir;
+          state.workdir = fill.workdir;
+        }
+        state.selected = fill.toolSources;
+        state.multiTurn = fill.multiTurn;
+        renderControls();
+        renderChat();
+        // banner 是 textContent（不跑 Markdown）⇒ 别写 `**没有**`，那会原样露出星号
+        setNotice('已回填这条 run 的四个输入（没有自动运行）—— 确认后按「▶ 运行」', false);
+        promptEl.focus();
+      });
+
+      /**
+       * 复制这一条 trace 的 JSONL。去掉 CLI 侧的 `note`：它不是 trace 的一部分，
+       * 而产物的去处是 `agentia view <file>`（那份只认 trace 形状）。
+       */
+      copyRunEl.addEventListener('click', async () => {
+        if (!state.current) return;
+        try {
+          const res = await fetch('/api/runs/' + encodeURIComponent(state.current));
+          if (!res.ok) {
+            setNotice(`读 trace 失败：HTTP ${res.status}`, true);
+            return;
+          }
+          const trace = await res.json();
+          const bare = { ...trace };
+          delete bare.note;
+          const text = JSON.stringify(bare) + '\n';
+          const clip = navigator.clipboard;
+          if (!clip || typeof clip.writeText !== 'function') {
+            setNotice('这个浏览器没有剪贴板接口 —— 可以直接用 agentia view 读 .agentia/traces.jsonl', true);
+            return;
+          }
+          await clip.writeText(text);
+          setNotice(`已复制 ${text.length} 字符。存成 .jsonl 后：agentia view <文件>`, false);
+        } catch (e) {
+          setNotice(`复制失败：${e.message}`, true);
+        }
+      });
 
       // ---------- 右栏三块的折叠（收起不要的，剩下的自动变大） ----------
 
@@ -1275,6 +1464,10 @@
         setPaneMeta('trace', '');
         usageEl.hidden = true;
         ttlEl.textContent = '';
+        // 总账也是**上一轮**的账 ⇒ 与回复 / 排行一起清掉（收尾后由 open() 重新填）
+        state.trace = null;
+        ledgerEl.hidden = true;
+        ledgerItemsEl.replaceChildren();
         const ph = document.createElement('div');
         ph.className = 'tr-empty';
         ph.textContent = '// 这一轮在飞 —— span 会一个个长出来（收尾时用整棵 trace 覆盖）';
@@ -1375,6 +1568,19 @@
         if (!res.ok) return;
         const trace = await res.json();
         state.current = id;
+        // 总账要的是 trace 本体（`state.current` 只有 id）—— 重跑 / 导出也靠它
+        state.trace = trace;
+        renderLedger(trace);
+        /* 深链（2026-11-13）：刷新页面回到**这一条**，而不是最新那条。
+           用 `replaceState` 不堆历史 —— 切 run 是同一页的不同视图，push 会让后退键
+           按十几次才离开面板（那不是用户对「后退」的预期）。 */
+        try {
+          const u = new URL(location.href);
+          u.searchParams.set('run', id);
+          history.replaceState(null, '', u);
+        } catch {
+          /* 老浏览器 / file://：没有深链不影响其它任何功能 */
+        }
         // 标题带**收尾原因**（非正常收尾时）。打开一条历史 run 时最容易犯的误读是
         // 「树画完了 ⇒ 这一轮跑完成了」，而它可能是撞预算停的、被中止的、或正挂着等人。
         // 原因取自列表的 summary（`stop_reason` 已在那里解析过，别在页面里再挖 attributes）。
@@ -1412,8 +1618,24 @@
         renderList();
       }
 
-      async function openLatest() {
+      /**
+       * 打开一条 run：优先 `?run=<id>`（深链 / 刷新），否则最新一条。
+       *
+       * 深链指向的那条**已不在内存 ring 里**时必须出声：静默回落最新那条会让用户以为
+       * 「链接打开了，就是这条」—— 而他在看别的 run 的树（本仓最忌的张冠李戴）。
+       */
+      async function openLatest(want) {
         await refresh();
+        if (want) {
+          if (state.list.some((r) => r.traceId === want)) {
+            await open(want);
+            return;
+          }
+          setNotice(
+            `打不开 ?run=${want}：它不在内存的 run 列表里（可能已被淘汰，或不是这个面板起的）。已回到最新一条`,
+            true,
+          );
+        }
         if (state.list.length && !state.current) await open(state.list[0].traceId);
       }
 
@@ -1554,6 +1776,92 @@
         } catch {
           /* 老浏览器 / 被策略拦下：还有 res close 那条路兜着，不阻断卸载 */
         }
+      });
+
+      // ---------- 列表检索 / 树内检索 / 时间轴（2026-11-13） ----------
+
+      listQEl.addEventListener('input', () => {
+        state.q = listQEl.value;
+        renderList();
+      });
+      listQEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          listQEl.value = '';
+          state.q = '';
+          renderList();
+        }
+      });
+      listAbnEl.addEventListener('click', () => {
+        state.onlyAbnormal = !state.onlyAbnormal;
+        listAbnEl.setAttribute('aria-pressed', state.onlyAbnormal ? 'true' : 'false');
+        renderList();
+      });
+
+      /**
+       * 一个输入框同时作用于两棵树：并排时两栏必须**同一处**高亮 —— 否则「差异」里会混进
+       * 「搜索状态不同」这个人为差异。判定与跳转都在 trace-view（`setQuery` / `nextHit`）。
+       */
+      function applyTreeQuery() {
+        const n = view.setQuery(treeQEl.value);
+        if (!trace2El.hidden) view2.setQuery(treeQEl.value);
+        treeHitEl.textContent = treeQEl.value.trim() ? `${n} 处` : '';
+      }
+      treeQEl.addEventListener('input', applyTreeQuery);
+      treeQEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const total = view.setQuery(treeQEl.value);
+          if (total === 0) {
+            treeHitEl.textContent = treeQEl.value.trim() ? '无匹配' : '';
+            return;
+          }
+          const i = view.nextHit(e.shiftKey ? -1 : 1);
+          if (!trace2El.hidden) view2.nextHit(e.shiftKey ? -1 : 1);
+          treeHitEl.textContent = `${i}/${total}`;
+        } else if (e.key === 'Escape') {
+          treeQEl.value = '';
+          applyTreeQuery();
+        }
+      });
+
+      /**
+       * 时间轴开关：**布局偏好**，与折叠态同一类（进 localStorage，切 run 不重置）。
+       * 存不下就只活这一次会话 —— 不因为记不住而白屏（与 PANE_KEY 同一口径）。
+       */
+      const TL_KEY = 'agentia.timeline';
+      let timelineOn = (() => {
+        try {
+          return localStorage.getItem(TL_KEY) !== '0';
+        } catch {
+          return true;
+        }
+      })();
+      function applyTimeline(on) {
+        timelineOn = on;
+        tlToggleEl.setAttribute('aria-pressed', on ? 'true' : 'false');
+        view.setTimeline(on);
+        view2.setTimeline(on);
+      }
+      tlToggleEl.addEventListener('click', () => {
+        applyTimeline(!timelineOn);
+        try {
+          localStorage.setItem(TL_KEY, timelineOn ? '1' : '0');
+        } catch {
+          /* 同上：这一次会话内仍然有效 */
+        }
+      });
+      applyTimeline(timelineOn);
+
+      // `/` 聚焦列表搜索（不在输入框里时）。这是「迅速找回刚才那条」的入口，
+      // 而列表是这个面板唯一有几十条内容的地方。
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+        // `??`（不是 `||`）：tagName 只可能缺省或非空，用 `||` 与 `??` 在这里同义 —— 但 `??`
+        // 不会把将来的空字符串值也替换掉，意图更直白
+        const tag = e.target?.tagName ?? '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        e.preventDefault();
+        listQEl.focus();
       });
 
       // ---------- 控件接线（只做「取值 → 调 panel-logic → 写回」） ----------
@@ -1756,7 +2064,8 @@
 
       await refreshDev();
       await refreshSession();
-      await openLatest();
+      // 深链优先（`?run=<id>`）：刷新 / 贴链接回到那条，而不是最新那条
+      await openLatest(runIdFromSearch(location.search));
       renderChat();
     </script>
   </body>

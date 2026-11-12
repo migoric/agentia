@@ -101,6 +101,24 @@ export function createTraceView(rootEl, opts = {}) {
   let traceRoot = null;
   const spanMap = new Map();
   const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  /* 批量渲染（2026-11-13）。此前每来一条 span 动作就整树重建一次 ⇒ `playTrace` 是 O(N²)：
+     实测 50 span 触发 151 次全树重建、600 span 触发 1801 次（假 DOM 就 172ms），而在飞时
+     `renderLive` 每个 rAF 还会再调一次 `playTrace`。这不是「慢一点」，是长跑时面板直接卡死。
+     语义不变：**渲染仍是全量重建**（那是折叠态必须外部持有的原因），只是把「一批动作之间
+     的 N 次重建」压成「结束后一次」。
+     ⚠️ 嵌套是安全的（计数器），且批内抛错也会在 finally 里补画 —— 否则异常路径之后整棵树
+     停在中间状态，而下一条事件又会被 `dirty` 吞掉。 */
+  let batchDepth = 0;
+  let batchDirty = false;
+  /* 树内检索（2026-11-13）：**不改结构**，只给命中的行加类 + 提供「跳到下一处」。
+     为什么不裁剪节点：树形是「谁挂在谁下面」的事实，隐藏父节点会让子节点看起来属于别人；
+     而裁剪后「有多少条被藏起来了」又要另一处交代。高亮 + 跳转在不改事实的前提下解决
+     「一百个 span 里找那一条」。 */
+  let query = '';
+  let hitIndex = -1;
+  /* 时间轴开关（2026-11-13）：轨道占 72px，窄面板里是从名字里抢的 ⇒ 允许关掉。
+     默认开 —— 它是「谁和谁并行 / 8 秒被谁吃掉」唯一的落点，而那条信息此前完全没有。 */
+  let timeline = true;
   /* 展开态的行 key 集合 + 事件 key 发号器。两者都必须活在 renderTrace 之外：
      渲染是【全量重建】（rootEl.innerHTML = ''），状态放进 DOM 或渲染过程里就活不过下一次事件。 */
   const expanded = new Set();
@@ -135,8 +153,55 @@ export function createTraceView(rootEl, opts = {}) {
     }
   }
 
+  /** 把一批渲染动作压成一次重画（见 `batchDepth` 的头注）。没在批里就直接画。 */
   function renderTrace() {
+    if (batchDepth > 0) {
+      batchDirty = true;
+      return;
+    }
+    drawTree();
+  }
+
+  function batch(fn) {
+    batchDepth += 1;
+    try {
+      fn();
+    } finally {
+      batchDepth -= 1;
+      // 批内一次都没标脏（例如只读了状态）⇒ 不白画一遍
+      if (batchDepth === 0 && batchDirty) {
+        batchDirty = false;
+        drawTree();
+      }
+    }
+  }
+
+  /** 检索：这一行的文本是否命中。空查询恒 false（「没在搜」不等于「全都命中」） */
+  function hits(texts) {
+    if (!query) return false;
+    const q = query.toLowerCase();
+    for (const t of texts) if (t && String(t).toLowerCase().includes(q)) return true;
+    return false;
+  }
+
+  function drawTree() {
     rootEl.innerHTML = '';
+    hitIndex = -1;
+    // 还没 reset 过（视图刚建出来）：清空即返回。setTimeline / setQuery 可能先于第一棵树
+    // 被调用 —— 没有这一条，`traceRoot.order` 会抛，而调用方只是在设一个开关。
+    if (!traceRoot) return;
+    /* 时间轴的归一化基准：根 span 的起点与整棵树的终点。两者缺一就**不画条**
+       （手写 trace / 官网模拟回放没有时间戳 —— 画一条人人占满的条比不画更误导）。 */
+    const t0 = traceRoot && typeof traceRoot.startedAt === 'number' ? traceRoot.startedAt : null;
+    let tMax = t0;
+    if (t0 !== null) {
+      for (const n of spanMap.values()) {
+        const e = typeof n.endAt === 'number' ? n.endAt : n.startedAt;
+        if (typeof e === 'number' && e > tMax) tMax = e;
+      }
+    }
+    const total = t0 !== null && tMax !== null ? Math.max(0, tMax - t0) : 0;
+
     const rows = [];
     /* 每个节点下【事件】与【子 span】按发生顺序混排：tool.input 先于它触发的 capability span、
        tool.output 后于它，这个先后本身就是语义，不能拍平成一类。 */
@@ -159,6 +224,11 @@ export function createTraceView(rootEl, opts = {}) {
         const open = expanded.has(ev.key);
         const row = el('div', 'tr-row tr-ev' + (ev.ok === false ? ' error' : ''));
         row.dataset.ev = ev.type;
+        /* 检索只扫摘要与类型/工具名，**不扫完整正文**：`full` 常见 10KB 级，每帧每行
+             indexOf 一遍会让「搜索」本身成为掉帧的原因（600 行 × 10KB ≈ 6MB/帧）。
+             2000 字符以内才扫 —— 那个尺度上全文搜索才有意义（再长就是文档，不是一行）。 */
+        const fullShort = typeof ev.full === 'string' && ev.full.length <= 2000 ? ev.full : '';
+        if (hits([ev.type, ev.tool, ev.text, fullShort])) row.className += ' tr-hit';
         row.dataset.capability = capabilityTypeOf(ev.tool);
         row.appendChild(el('span', 'tr-pre', branch));
         row.appendChild(el('span', 'tr-evv', ev.type === 'tool.output' ? '◂' : '▸'));
@@ -208,6 +278,18 @@ export function createTraceView(rootEl, opts = {}) {
       row.dataset.kind = node.kind;
       const ut = node.kind === 'capability' ? capabilityTypeOf(node.name) : '';
       if (ut) row.dataset.capability = ut;
+      const attrKeys = node.attributes ? Object.keys(node.attributes) : [];
+      const attrKey = 'sp:' + node.id;
+      const attrOpen = attrKeys.length > 0 && expanded.has(attrKey);
+      /* 命中面：名字 / 入参摘要 / 错误原文 / **已展开的**属性值。
+         属性只在展开时才算：折叠态那些值本来就没显示 —— 高亮一个看不见的东西只会让
+         「N 处匹配」对不上眼睛看到的。 */
+      const attrVals = attrOpen
+        ? Object.values(node.attributes).map((v) => (typeof v === 'string' ? v : String(v)))
+        : [];
+      if (hits([node.name, node.arg, bad ? node.error?.message : '', ...attrVals])) {
+        row.className += ' tr-hit';
+      }
       row.appendChild(el('span', 'tr-pre', branch));
       row.appendChild(el('span', 'tr-dot', node.done ? (bad ? '✕' : '●') : '◌'));
       if (ut) row.appendChild(el('span', 'tr-ico', CAP_ICO[ut]));
@@ -229,10 +311,46 @@ export function createTraceView(rootEl, opts = {}) {
         if (bad) parts.push(node.error?.type || 'error');
         meta = parts.join(' · ');
       } else meta = '…';
+      /* 时间轴条（2026-11-13）：按 run 的总时长归一化 —— 「8 秒被谁吃掉 / 谁和谁并行」
+         只有结构视角是看不见的。放在 meta **之前**并自己吃掉 `margin-left: auto`，
+         让「耗时读数 — 轨道」贴在一起（两者说的是同一件事）。根行不画：它恒占满全宽。 */
+      if (!isRoot && timeline && t0 !== null && total > 0 && typeof node.startedAt === 'number') {
+        const offset = node.startedAt - t0;
+        const left = Math.min(1, Math.max(0, offset / total));
+        const dur = node.done && node.ms > 0 ? node.ms : Math.max(total - offset, 0);
+        const width = Math.min(1 - left, dur / total);
+        const track = el('span', 'tr-tl');
+        const bar = el('span', 'tr-tl-bar');
+        // 几何只能走 style（宽度是**数据**，不是样式选择）；两端都 clamp 过 ⇒ 不会溢出轨道
+        bar.style.cssText = `left:${(left * 100).toFixed(2)}%;width:${Math.max(width * 100, 0.6).toFixed(2)}%`;
+        track.appendChild(bar);
+        track.title = `起点 ${Math.round(offset)}ms · 时长 ${Math.round(dur)}ms`;
+        row.dataset.tl = '1';
+        row.appendChild(track);
+      }
       const metaEl = el('span', 'tr-meta', meta);
       if (bad && node.error?.message) metaEl.title = node.error.message;
       row.appendChild(metaEl);
+      /* span 属性（2026-11-13）：`model` / `system.version` / `tools.names` / `retry.attempt` /
+         `handoff.*` / `guardrail.*` 全在 attributes 里，此前树上一格都不显示 ——
+         「这次是不是提示词版本没换」「是不是重试了三次」只能靠猜。
+         块体复用 `full-view.js`（纯 DOM 构造，不再写第二套渲染）。 */
+      if (attrKeys.length > 0) {
+        row.dataset.expandable = '1';
+        row.appendChild(el('span', 'tr-caret', attrOpen ? '▾' : '▸'));
+        row.addEventListener('click', () => {
+          if (!hasSelection()) toggleExpand(attrKey);
+        });
+      }
       rootEl.appendChild(row);
+      if (attrOpen) {
+        let fold = folds.get(attrKey);
+        if (!fold) {
+          fold = new Map();
+          folds.set(attrKey, fold);
+        }
+        rootEl.appendChild(createFullView(node.attributes, { fold }));
+      }
       // 失败原文必须**看得见** —— 只塞进 title（hover 才显）等于没显示。首次运行最常见的失败
       // （没配 API key）就靠这一行定位；单起一行，不去挤占 nowrap 的 span 行。
       if (bad && node.error?.message) {
@@ -268,7 +386,7 @@ export function createTraceView(rootEl, opts = {}) {
    * 的事件一切正常（排查时最容易被判成「框架没记」）。字面量 `'root'` 仍登记：官网
    * playground 的模拟脚本用它当根 id，两个键指向同一节点，零成本。
    */
-  function reset(rootName, rootId) {
+  function reset(rootName, rootId, startedAt, attributes) {
     traceRoot = {
       id: rootId || 'root',
       kind: 'run',
@@ -278,6 +396,18 @@ export function createTraceView(rootEl, opts = {}) {
       order: [],
       done: false,
       ms: 0,
+      /* 时间轴的基准（2026-11-13）：根 span 的起点。缺省 null ⇒ 整棵树不画条
+         （手写 trace / 官网模拟回放没有时间戳，画一条人人占满的条比不画更误导）。 */
+      startedAt: typeof startedAt === 'number' ? startedAt : null,
+      endAt: null,
+      /* 根 span 的属性（2026-11-13）：`model` / `system.version` / `tools.names` /
+         `prompts.versions` / `stop_reason` **只写在根上**。根行不经过 `start()`
+         （它由 reset 建），所以不在这里接一手，这些键在面板上就一格都看不到 ——
+         「这次是不是提示词版本没换」只能去翻 JSON。空对象当没有。 */
+      attributes:
+        attributes && typeof attributes === 'object' && Object.keys(attributes).length > 0
+          ? attributes
+          : null,
       usage: { input: 0, output: 0 },
     };
     spanMap.clear();
@@ -303,6 +433,9 @@ export function createTraceView(rootEl, opts = {}) {
       order: [],
       done: false,
       ms: 0,
+      startedAt: typeof s.startedAt === 'number' ? s.startedAt : null,
+      endAt: null,
+      attributes: s.attributes && typeof s.attributes === 'object' ? s.attributes : null,
       status: 'ok',
       error: null,
       usage: null,
@@ -342,6 +475,14 @@ export function createTraceView(rootEl, opts = {}) {
     if (!node) return;
     node.done = true;
     node.ms = s.ms || 0;
+    /* 终点优先取框架的真 `endedAt`（时间轴的右端）；没有就按起点 + 时长推。
+       两者都没有（手写 trace）⇒ 留 null，那一段不画条。 */
+    node.endAt =
+      typeof s.endedAt === 'number'
+        ? s.endedAt
+        : typeof node.startedAt === 'number'
+          ? node.startedAt + node.ms
+          : null;
     node.status = s.status || 'ok';
     node.error = s.error || null;
     if (s.arg) node.arg = s.arg;
@@ -368,11 +509,33 @@ export function createTraceView(rootEl, opts = {}) {
     if (!traceRoot) return;
     traceRoot.done = true;
     traceRoot.ms = ms;
+    if (typeof traceRoot.startedAt === 'number' && typeof ms === 'number') {
+      traceRoot.endAt = traceRoot.startedAt + ms;
+    }
     // run 失败时根 span 也要标红：原先 status 恒为 ok，错误只体现在子 span 上
     traceRoot.status = status || 'ok';
     traceRoot.error = error || null;
     traceRoot.usage = { input: usageAcc.input, output: usageAcc.output };
     renderTrace();
+  }
+
+  /** 当前命中行（`.tr-hit`）。宿主没有 `querySelectorAll`（stub / 极简 DOM）时返回空集 */
+  function hitRows() {
+    try {
+      if (typeof rootEl.querySelectorAll !== 'function') return [];
+      return Array.from(rootEl.querySelectorAll('.tr-hit'));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 加/去一个类名（不依赖 classList：stub DOM 未必实现它） */
+  function setFlag(node, cls, on) {
+    const parts = String(node.className || '')
+      .split(/\s+/)
+      .filter((c) => c && c !== cls);
+    if (on) parts.push(cls);
+    node.className = parts.join(' ');
   }
 
   return {
@@ -381,8 +544,51 @@ export function createTraceView(rootEl, opts = {}) {
     event,
     end,
     finish,
+    /** 把一批动作压成一次重画（`playTrace` 必用；宿主自己批量喂时也可以用） */
+    batch,
     render: renderTrace,
+    /**
+     * 树内检索：**只高亮 + 跳转，不改结构**（理由见 `query` 的头注）。返回命中行数。
+     * 空串 = 结束检索（清掉所有高亮）。
+     */
+    setQuery(q) {
+      const next = typeof q === 'string' ? q.trim() : '';
+      if (next === query) return hitRows().length;
+      query = next;
+      renderTrace();
+      return hitRows().length;
+    },
+    get hitCount() {
+      return hitRows().length;
+    },
+    /**
+     * 跳到下一处命中（`dir < 0` 向上），返回 **1 基序号**；没有命中返回 0。
+     * 越界绕回：搜索框里按 Enter 一路按到底再回到第一处，比「按不动了」更符合预期。
+     */
+    nextHit(dir = 1) {
+      const list = hitRows();
+      if (list.length === 0) return 0;
+      hitIndex = (hitIndex + (dir > 0 ? 1 : -1) + list.length) % list.length;
+      const cur = list[hitIndex];
+      for (const r of list) setFlag(r, 'tr-hit-cur', r === cur);
+      try {
+        cur.scrollIntoView?.({ block: 'center' });
+      } catch {
+        /* 没有滚动能力（stub / 老浏览器）：序号仍然对，只是没把行带进视野 */
+      }
+      return hitIndex + 1;
+    },
     setUsage: renderUsage,
+    /** 时间轴开关（默认开）。关掉只是不画轨道，数据与命中都不受影响 */
+    setTimeline(on) {
+      const next = on !== false;
+      if (next === timeline) return;
+      timeline = next;
+      renderTrace();
+    },
+    get timeline() {
+      return timeline;
+    },
     /** 换单价（如真实模式切服务商）：null 表示无公开单价 → 成本显示为 — */
     setPrice(p) {
       price = p ?? null;

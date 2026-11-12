@@ -82,7 +82,18 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   +9 右栏标题带收尾原因、+6 回复从 `trace.note.finalText` 取回、+5 CSS（suspended 空心点、
     //   r2 也要省略号）。四块判据本身都在 `panel-logic.ts`（带单测），本文件仍是接线。
     //   基线 = ceil(1763 × 1.05) = 1852。
-    'inspector-page.html': 1852,
+    // 2026-11-13（**批次 B/C：总账 + 检索 + 深链/重跑/导出 + 树工具条**）：1763 → 2062（+299）。
+    //   +52 列表检索条（`#list-q` / `#list-abn` + CSS + 三条接线：input / Esc / 只看异常）
+    //   +58 总账行（`#ledger` 的 DOM 与 CSS + `renderLedger` + `rerun` / `copy-run` 两个
+    //       动作与它们的口径注）—— 判据全在 `panel-logic.ts` 的 `runLedger` / `rerunFromNote`
+    //   +45 树工具条（`#tree-bar` 的 DOM 与 CSS + `applyTreeQuery` + Enter/Esc/`/` 接线）
+    //   +25 时间轴开关（`TL_KEY` + `applyTimeline` + 与折叠态同一条「存不下就只活这次会话」）
+    //   +40 `open()` 的深链写回、`openLatest(want)` 的「打不开要说」、`beginLiveRender` 清总账、
+    //       `refreshCompare` 给第二棵树补 query
+    //   +79 注释（每一处都写清「为什么不是另一种做法」：不改树结构、不自动跑、不堆历史）
+    //   ⚠️ 本笔**没有新增判断**：四块判决都在 `panel-logic.ts`（带单测），这里仍是接线。
+    //   基线 = ceil(2062 × 1.05) = 2166。
+    'inspector-page.html': 2166,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -142,7 +153,20 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //       形状 —— 注释把这段写清楚了，免得下次又照着测试写生产。
     //   +8 `runDoneNotice` 的三分类改用 `stopReasonClass`，并给 suspended 一条自己的文案。
     //   基线 = ceil(893 × 1.05) = 938。
-    'panel-logic.ts': 938,
+    // 2026-11-13（**批次 B：总账 + 检索 + 深链/重跑**）：893 → 1115（+222）=
+    //   +72 `runLedger` + `LedgerTraceLike` / `LedgerItem`：轮次 / 工具 / 失败 / in-out /
+    //       cache 命中率 / 成本（带预算上限）/ 模型。三条口径写在注里：分母含缓存写
+    //       （只除输入会把「刚写了一大块缓存」的那次显示成 100%）、缺字段整项不出现
+    //       （「没有单价表」不是「花了 0 元」）、轮次与工具数从 span / 事件里数
+    //       （`AgentRunResult.iterations` 不在 trace 上）。
+    //   +55 `matchRunQuery` / `filterRuns`：关键词 **且** 「只看异常」。「异常」包含挂起的
+    //       run（它的 trace 状态是 ok —— 只过滤 ok=false 会漏掉最该回看的那一类），
+    //       并搜收尾原因的**中文短语**（用户打「预算」时数据里存的是 `budget_exceeded`）。
+    //   +60 `runIdFromSearch` / `rerunFromNote`：深链解析（手改坏的 URL 不白屏）、
+    //       重跑回填（过滤失效能力、空集回落全量 —— `[]` 是框架侧的纯陷阱值）。
+    //   +35 注释与口径。
+    //   基线 = ceil(1115 × 1.05) = 1171。
+    'panel-logic.ts': 1171,
     // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
     'dev-runner.ts': 629,
@@ -446,7 +470,20 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   （回复会消失、失败轮进不了对话、根 span 事件全丢、每条 run 都叫 agent.run、
   //   13 种收尾只呈现 3 种）。判据在 panel-logic 侧带单测，接线侧由 inspector.test.mjs 的
   //   `stopReasonClass(` 与 `trace.note.finalText` 两条断言钉住。
-  const TOTAL_BUDGET = 10862;
+  // 2026-11-13（批次 B/C，**看板骨架**）：10862 → 11383（+521）=
+  //     +299  inspector-page.html  列表检索 / 总账行 / 树工具条 / 深链 / 重跑 / 导出
+  //     +222  panel-logic.ts       runLedger / filterRuns / runIdFromSearch / rerunFromNote
+  //   （逐文件之和即实测总量 —— 本笔没有新增文件，也没有别处的零碎）
+  // ⚠️ 这些行买的是「看一趟的账」与「在一堆 run 里找到那一条」：此前页面上只有 footer
+  //   两个数（in / out），cache 命中率与成本 —— 最直接对应账单的两个数 —— 一个都没有。
+  // 2026-11-13（同批，实拍核对后补）：11383 → 11402（+19），两处：
+  //     +10 inspector-page.html —— 树这一块 `flex-grow: 2`（三块都开着时它只有 134px ≈ 三行，
+  //         23 行只看得见 3 行，+4）、`#tree-bar` 基础规则搬到 `.cmp-on` 之前（`noDescendingSpecificity`
+  //         是失败项，+2）、回填提示里去掉 `**没有**`（banner 走 textContent，+1）、`/` 快捷键的
+  //         `?.` 与口径注（+3）
+  //     +9  panel-logic.ts —— 全是 `biome --write` 的换行（长参数表按 100 列折断），代码零变化
+  //   ⚠️ 这条数字只能靠**跑一遍数出来**：`biome --write` 也会改行数，手算必错。
+  const TOTAL_BUDGET = 11402;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

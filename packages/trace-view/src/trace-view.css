@@ -218,6 +218,61 @@
   min-width: 0;
 }
 
+/* —— 时间轴（2026-11-13）：树行右侧一条按 run 总时长归一化的细轨 ——
+   结构视角看不出「谁和谁并行 / 8 秒被谁吃掉 / 首个 token 等了多久」，而每个 span 的
+   起止本来就在数据里。最小形态 = 同一套行右侧加一条轨道，不引入第二套布局（瀑布图那种
+   双栏会把已经够挤的树再压窄一半）。
+
+   `margin-left: auto` 让「读数 — 轨道」贴在一起：两者说的是同一件事（这个 span 花了多久）。
+   条本身用 span 的绝对几何（`left` / `width` 百分比），两端都在 JS 里 clamp 过。 */
+.tr-tl {
+  flex: none;
+  margin-left: auto;
+  width: 72px;
+  height: 5px;
+  position: relative;
+  background: #1b1b1f;
+  border-radius: 3px;
+}
+.tr-tl-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--ice);
+  opacity: 0.45;
+  border-radius: 3px;
+}
+.tr-row.error .tr-tl-bar {
+  background: #f7768e;
+  opacity: 0.6;
+}
+/* 有轨道的行：meta 不再吃 auto 边距（否则轨道被推到名字旁边、读数留在最右，两者脱节） */
+.tr-row[data-tl] .tr-meta {
+  margin-left: 0;
+  padding-left: 8px;
+}
+/* span 行的 caret 与事件行同一个字形，但行内没有 `.tr-io` 可以让位 ⇒ 行自己留一条槽 */
+.tr-row[data-expandable]:not(.tr-ev) {
+  padding-right: 14px;
+}
+/* 窄屏（面板退成单列时）把轨道收起来：72px 在那个宽度里是从名字里抢的 */
+@media (max-width: 860px) {
+  .tr-tl {
+    display: none;
+  }
+}
+
+/* —— 树内检索（2026-11-13）：**只标记，不改结构** ——
+   裁剪节点会让「谁挂在谁下面」这个事实失真（隐藏父节点后子节点看起来属于别人），
+   所以命中行只加底色；`-cur` 是「刚才跳到的那一处」，用来在连按 Enter 时不迷路。 */
+.tr-hit {
+  background: rgba(224, 175, 104, 0.13);
+}
+.tr-hit-cur {
+  background: rgba(224, 175, 104, 0.28);
+  box-shadow: inset 2px 0 0 var(--warn, #e0af68);
+}
+
 /* —— 结构化正文（2026-11-11）：`full` 是对象/数组时，展开行**下方**多一个兄弟块 ——
    此前只有一条展开路：整串无缩进的 JSON 塞进 `.tr-io` 再靠 `.tr-open` 换行，20 个键就在
    400px 宽的右栏里折成十几行连续文本（页面不报错、无溢出，只是人读不了）。

@@ -619,6 +619,237 @@ export function runDoneNotice(ev: { ok: boolean; stopReason: string; error: stri
   return { text: `run 完成（${ev.stopReason}）`, isError: false };
 }
 
+// ---------- ⑤ run 级总账（打开一条 run，先给「这一趟的账」） ----------
+
+/**
+ * 面板算得出来的那部分 trace 形状（只列总账要用的字段）。
+ *
+ * 为什么不 import 框架的 `Trace`：CLI 零运行时依赖，且框架实例来自**用户工程**
+ * （`req.resolve('@migor/agentia')`）—— 类型在这里再写一遍是既有口径（见 dev-protocol）。
+ */
+export interface LedgerTraceLike {
+  totalUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    costEstimate?: number;
+  } | null;
+  spans?: Array<{
+    kind?: string;
+    status?: string;
+    attributes?: Record<string, unknown>;
+    events?: Array<{ name?: string }>;
+  }> | null;
+}
+
+/** 总账的一项。`tone` 只影响颜色（`err` = 真的有人失败，不是「有风险」） */
+export interface LedgerItem {
+  key: string;
+  value: string;
+  /** 悬停才显示的**口径**说明：读数与它的算法必须一起给，否则「77%」是没法核对的 */
+  title?: string;
+  tone?: 'err' | 'warn';
+}
+
+function ledNum(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * 一条 run 的账：`3 轮 · 7 次工具 · 2 失败 · in 8.1k / out 1.5k · cache 6.2k · 77% · $0.014`。
+ *
+ * 为什么值得单独一条纯函数：这五个数此前**一个都没有**（页面上只有 footer 的 in / out），
+ * 而它们全都在 `Trace.totalUsage` 与 span 上。其中**cache 命中率**是这类面板最该给、又最常
+ * 缺的一个数 —— 它直接对应账单（缓存读的单价通常只有未命中的 1/10）。
+ *
+ * 三条口径（都是「不给假读数」）：
+ * - 分母为 0 / 字段缺失的那一项**整项不出现**，不显示 `0%` / `$0.0000`。
+ *   「成本是 0」与「没有单价表」是两件事，折成同一个 `$0` 就是在说谎。
+ * - cache 命中率 = 读 /(读 + 写 + 未命中输入)。**分母含缓存写入**：只算读除以输入会让
+ *   「刚写了一大块缓存」的那次 run 显示成 100% 命中 —— 那正是最容易误读的时刻。
+ * - 轮次/工具数**从 span 与事件里数**，不读 `AgentRunResult.iterations`：后者不在 trace 上
+ *   （`engine/loop.ts` 只把它写进返回值），而面板手上只有 trace。数出来的口径写在 title 里。
+ */
+export function runLedger(
+  trace: LedgerTraceLike | null,
+  budget?: { maxCostUsd?: number } | null,
+): LedgerItem[] {
+  const items: LedgerItem[] = [];
+  if (!trace) return items;
+  const spans = Array.isArray(trace.spans) ? trace.spans : [];
+
+  const turns = spans.filter((s) => s && s.kind === 'llm.turn').length;
+  if (turns > 0)
+    items.push({
+      key: '轮次',
+      value: `${turns} 轮`,
+      title: '按 llm.turn span 数（一次模型往返 = 一轮）',
+    });
+
+  let toolCalls = 0;
+  for (const s of spans) {
+    for (const ev of s?.events ?? []) {
+      if (ev && ev.name === 'tool.input') toolCalls += 1;
+    }
+  }
+  if (toolCalls > 0) {
+    items.push({
+      key: '工具',
+      value: `${fmtCount(toolCalls)} 次`,
+      title: '按 tool.input 事件数（普通工具不建 span）',
+    });
+  }
+
+  const errors = spans.filter((s) => s && s.status === 'error').length;
+  if (errors > 0) {
+    items.push({ key: '失败', value: `${fmtCount(errors)} 个 span`, tone: 'err' });
+  }
+
+  const u = trace.totalUsage ?? null;
+  if (u) {
+    const inTok = ledNum(u.inputTokens);
+    const outTok = ledNum(u.outputTokens);
+    if (inTok + outTok > 0) {
+      items.push({ key: 'in / out', value: `${fmtCount(inTok)} / ${fmtCount(outTok)}` });
+    }
+    const cr = ledNum(u.cacheReadTokens);
+    const cc = ledNum(u.cacheCreationTokens);
+    const miss = inTok;
+    const base = cr + cc + miss;
+    if (cr + cc > 0 && base > 0) {
+      const rate = Math.round((cr / base) * 100);
+      items.push({
+        key: 'cache',
+        value: `${fmtCount(cr)} 读 · ${rate}% 命中`,
+        title: `缓存读 ${cr} / 缓存写 ${cc} / 未命中输入 ${miss}；命中率 = 读 ÷（读 + 写 + 未命中）`,
+      });
+    }
+    // 成本：只有框架给得出估算时才显示（无公开单价的服务商给不出 —— 那是「不知道」，
+    // 不是「花了 0 元」）
+    if (typeof u.costEstimate === 'number' && Number.isFinite(u.costEstimate)) {
+      const cap = ledNum(budget?.maxCostUsd);
+      items.push({
+        key: '成本',
+        value:
+          cap > 0 ? `$${u.costEstimate.toFixed(4)} / $${cap}` : `$${u.costEstimate.toFixed(4)}`,
+        title: '由 token × 单价估算（框架的总账，不是账单）',
+      });
+    }
+  }
+
+  const root = spans.find((s) => s && s.kind === 'run') ?? spans[0];
+  const model = root?.attributes?.model;
+  if (typeof model === 'string' && model.length > 0) items.push({ key: '模型', value: model });
+
+  return items;
+}
+
+// ---------- ⑥ run 列表的检索 ----------
+
+/** 搜索能命中的几个字段（= 列表上真的看得到的那些 + 收尾原因的中文短语） */
+export interface SearchRunLike {
+  traceId: string;
+  name?: string;
+  ok: boolean;
+  stopReason?: string | null;
+  note?: { prompt?: string | null; workdir?: string | null } | null;
+}
+
+/**
+ * 一条 run 是否命中关键词。大小写不敏感、纯子串（不做正则：`(` 之类会让输入直接炸）。
+ *
+ * 搜的字段包含 `stopReasonText`（中文短语）—— 用户想找「撞预算那条」时会打「预算」，
+ * 而数据里存的是 `budget_exceeded`。只搜原文等于逼人记住标识符。
+ */
+export function matchRunQuery(r: SearchRunLike, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (needle.length === 0) return true;
+  const fields = [
+    r.note?.prompt ?? '',
+    r.name ?? '',
+    r.note?.workdir ?? '',
+    r.stopReason ?? '',
+    stopReasonText(r.stopReason ?? null),
+    r.traceId,
+  ];
+  return fields.some((f) => String(f).toLowerCase().includes(needle));
+}
+
+/**
+ * 列表过滤：关键词 **且**（可选）「只看异常」。
+ *
+ * 「异常」= `stopReasonClass !== 'ok'`（失败 / 中止 / 等审批三种都算）。为什么这三种都算：
+ * 用户点「只看异常」时想找的是「没正常跑完的那些」，而中止与挂起恰恰是最需要回看的两类 ——
+ * 只过滤 `ok === false` 会把挂起的 run（trace 状态是 ok）漏掉。
+ */
+export function filterRuns<T extends SearchRunLike>(
+  runs: readonly T[],
+  q: string,
+  opts: { onlyAbnormal?: boolean } = {},
+): T[] {
+  const onlyAbnormal = opts.onlyAbnormal === true;
+  return runs.filter((r) => {
+    if (onlyAbnormal && stopReasonClass({ ok: r.ok, stopReason: r.stopReason ?? null }) === 'ok') {
+      return false;
+    }
+    return matchRunQuery(r, q);
+  });
+}
+
+// ---------- ⑦ 深链 / 重跑 ----------
+
+/**
+ * `location.search` → 要打开的 run id（`?run=<traceId>`）。
+ *
+ * 解析失败 / 没有这个参数 / 空串一律 `null`（= 照旧打开最新那条）。不抛：一个手改坏的
+ * URL 不该让面板白屏。
+ */
+export function runIdFromSearch(search: string): string | null {
+  const s = String(search ?? '').trim();
+  if (s.length === 0) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(s.startsWith('?') ? s.slice(1) : s);
+  } catch {
+    return null;
+  }
+  const id = (params.get('run') ?? '').trim();
+  return id.length > 0 ? id : null;
+}
+
+/**
+ * 「重跑」要回填的那四个输入（`RunNote` 里全都有 —— 这正是它值得存的原因）。
+ *
+ * 三条口径：
+ * - **不自动提交**：回填之后由用户按运行。一个自己跑起来的按钮会在误触时花钱。
+ * - 能力选择**过滤掉已失效的 token**（能力被删过），过滤后为空则回落全量 ——
+ *   `toolSources: []` 在框架侧是「每个 provider 都成了孤儿」的纯陷阱值。
+ * - `note` 缺失（trace 不是 dev 环起的 / 已被淘汰）⇒ `null`，调用方负责说「这条 run 没有
+ *   开发期元信息，重跑不了」。不猜一个空的 prompt 出来。
+ */
+export function rerunFromNote(
+  note: {
+    prompt?: string | null;
+    workdir?: string | null;
+    toolSources?: string[] | null;
+    multiTurn?: boolean;
+  } | null,
+  all: string[],
+): { prompt: string; workdir: string; toolSources: string[]; multiTurn: boolean } | null {
+  if (!note) return null;
+  const picked =
+    note.toolSources === null || note.toolSources === undefined
+      ? [...all]
+      : filterSelected(note.toolSources, all);
+  return {
+    prompt: typeof note.prompt === 'string' ? note.prompt : '',
+    workdir: typeof note.workdir === 'string' ? note.workdir : '',
+    toolSources: picked.length > 0 ? picked : [...all],
+    multiTurn: note.multiTurn === true,
+  };
+}
+
 // ---------- 路径显示 ----------
 
 /**

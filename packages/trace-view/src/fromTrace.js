@@ -147,46 +147,71 @@ export function playTrace(view, trace) {
   }
   items.sort((a, b) => a.t - b.t || a.ord - b.ord || a.d - b.d || a.seq - b.seq);
 
-  const rootRaw = String(root.name || 'run');
-  // 框架的 run 根名可能是 runName（如 'app'）或已是 'run · x' 形态，避免重复前缀。
-  // 第二个参数是**真 spanId**：根上的事件（score / trace.truncated / approval.decided）
-  // 按 spanId 投递，只登记字面量 'root' 会让它们全部静默丢失（见 view.js 的 reset）。
-  view.reset(rootRaw.startsWith('run') ? rootRaw : 'run · ' + rootRaw, String(root.spanId || ''));
-
-  for (const it of items) {
-    if (it.kind === 'start') {
-      if (it.s === root) continue; // 根由 reset 建，不重复开
-      view.start({
-        id: it.s.spanId,
-        parent: it.s.parentSpanId,
-        kind: it.s.kind,
-        name: displayName(it.s),
-        arg: '',
-      });
-    } else if (it.kind === 'event') {
-      view.event(
-        it.s.spanId,
-        it.ev.name,
-        eventToolName(it.ev.name, it.ev.body?.tool, typeMap),
-        eventText(it.ev),
-        it.ev.body?.ok !== false,
-        eventFull(it.ev),
-      );
-    } else {
-      view.end({
-        id: it.s.spanId,
-        ms: it.s.endedAt - it.s.startedAt,
-        usage: usageOf(it.s),
-        status: it.s.status,
-        error: it.s.error,
-        arg: '',
-      });
+  /** 把归一好的动作逐条喂给视图（不含 reset / finish —— 那两个由外层一起包进批里） */
+  const replay = () => {
+    for (const it of items) {
+      if (it.kind === 'start') {
+        if (it.s === root) continue; // 根由 reset 建，不重复开
+        view.start({
+          id: it.s.spanId,
+          parent: it.s.parentSpanId,
+          kind: it.s.kind,
+          name: displayName(it.s),
+          arg: '',
+          startedAt: it.s.startedAt,
+          // 属性（model / system.version / tools.names / retry.attempt / handoff.* / …）：
+          // 树上一格都不显示的话，「这次是不是提示词版本没换」只能靠猜（2026-11-13）
+          attributes: it.s.attributes,
+        });
+      } else if (it.kind === 'event') {
+        view.event(
+          it.s.spanId,
+          it.ev.name,
+          eventToolName(it.ev.name, it.ev.body?.tool, typeMap),
+          eventText(it.ev),
+          it.ev.body?.ok !== false,
+          eventFull(it.ev),
+        );
+      } else {
+        view.end({
+          id: it.s.spanId,
+          ms: it.s.endedAt - it.s.startedAt,
+          endedAt: it.s.endedAt,
+          usage: usageOf(it.s),
+          status: it.s.status,
+          error: it.s.error,
+          arg: '',
+        });
+      }
     }
-  }
+  };
 
-  // 根 span 还没结束（`span.end` 尚未到达）⇒ **不收尾**：`finish()` 会把根标成已完成
-  // （● + 耗时），而这棵树其实还在长 —— 在飞时看到「已完成」是假事实。留 ◌ 才对。
-  // 收尾的整棵 trace 根必有 `endedAt`，所以这条分支只对「在飞 / 截断」的树生效。
-  if (root.endedAt != null) view.finish(root.endedAt - root.startedAt, root.status, root.error);
+  const rootRaw = String(root.name || 'run');
+  /* 整个回放（含 reset 与收尾）包在**一次**重画里（2026-11-13）：此前每个动作都触发整树
+     重建 ⇒ O(N²)（实测 600 span = 1801 次全树重建、假 DOM 就 172ms）。语义不变 ——
+     渲染仍是全量重建（那是折叠态必须外部持有的原因），只是把 N 次压成 1 次。
+     ⚠️ `reset` 也必须在批内：它在批外会先白画一遍空树，收尾再画一遍 ⇒ 2 次。
+     没有 `batch` 的宿主（自定义 view 对象 / 老版本）退回逐条画，行为不变。 */
+  const replayWithFinish = () => {
+    // 框架的 run 根名可能是 runName（如 'app'）或已是 'run · x' 形态，避免重复前缀。
+    // 第二个参数是**真 spanId**：根上的事件（score / trace.truncated / approval.decided）
+    // 按 spanId 投递，只登记字面量 'root' 会让它们全部静默丢失（见 view.js 的 reset）。
+    // 第三个是**根起点**：时间轴按它归一化（缺了就整棵树不画条）。
+    // 第四个是**根的 attributes**：`model` / `system.version` / `tools.names` 只写在根上，
+    // 而根行由 reset 建、不走 `view.start()` —— 不在这里递进去，这些键树上一格都没有。
+    view.reset(
+      rootRaw.startsWith('run') ? rootRaw : 'run · ' + rootRaw,
+      String(root.spanId || ''),
+      typeof root.startedAt === 'number' ? root.startedAt : undefined,
+      root.attributes,
+    );
+    replay();
+    /* 根 span 还没结束（`span.end` 尚未到达）⇒ **不收尾**：`finish()` 会把根标成已完成
+       （● + 耗时），而这棵树其实还在长 —— 在飞时看到「已完成」是假事实。留 ◌ 才对。
+       收尾的整棵 trace 根必有 `endedAt`，所以这条分支只对「在飞 / 截断」的树生效。 */
+    if (root.endedAt != null) view.finish(root.endedAt - root.startedAt, root.status, root.error);
+  };
+  if (typeof view.batch === 'function') view.batch(replayWithFinish);
+  else replayWithFinish();
   return true;
 }
