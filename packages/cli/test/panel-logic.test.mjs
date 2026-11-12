@@ -866,4 +866,58 @@ describe('面板并排 A/B 的视图与取值判定（从DOM 抽出来的那批�
     // ⑥ 返回值长度恒为 2 ⇒ 配对后必进 dual 态（`compareView` 的 dual 分支）
     assert.equal(L.autoPairTarget(['a'], 'b').length, L.COMPARE_MAX);
   });
+
+  /* 三块折叠后的标题栏读数（2026-11-12 ref-panel-panes）。
+   * 这几条是「收起不等于失明」那句话的可执行版本：折叠后标题栏是那块唯一的可见内容，
+   * 所以它的**数量与单位**必须准 —— 说错数字比不显示更糟（读者会按错的规模判断要不要展开）。 */
+  it('traceMeta：span 数如实，千位以上折 k（标题栏只有一行）', () => {
+    if (SKIP) return;
+    assert.equal(L.traceMeta(0), '0 span');
+    assert.equal(L.traceMeta(58), '58 span');
+    assert.equal(L.traceMeta(999), '999 span');
+    assert.equal(L.traceMeta(1000), '1k span', '整千不留 `.0`（`1.0k` 是给机器看的）');
+    assert.equal(L.traceMeta(1234), '1.2k span');
+    assert.equal(L.traceMeta(12345), '12k span', '一万以上不保留小数');
+    // 非数值（老 trace 的 `spans` 缺失、或面板传了 undefined）不许写出 `NaN span`
+    assert.equal(L.traceMeta(undefined), '0 span');
+    assert.equal(L.traceMeta(-3), '0 span');
+  });
+
+  it('summaryMeta：项数 / 次数 / **只在真有人失败时**才提失败', () => {
+    if (SKIP) return;
+    assert.equal(L.summaryMeta([]), '0 项', '没有可归因的能力时说 0，不编一行「· 0 次」');
+    assert.equal(
+      L.summaryMeta([
+        { calls: 3, errors: 0 },
+        { calls: 21, errors: 0 },
+      ]),
+      '2 项 · 24 次',
+      '没有失败时不许挂「0 失败」—— 每一行都挂等于噪声',
+    );
+    assert.equal(
+      L.summaryMeta([
+        { calls: 3, errors: 1 },
+        { calls: 21, errors: 1 },
+      ]),
+      '2 项 · 24 次 · 2 失败',
+      '失败数按**行内 errors 求和**（一个能力错两次是 2 次），不是「几个能力出错」',
+    );
+    // 非数值不许变成 NaN 传染整条 →
+    assert.equal(L.summaryMeta([{ calls: undefined, errors: undefined }]), '1 项 · 0 次');
+    assert.equal(L.summaryMeta(null), '0 项');
+  });
+
+  it('replyMeta：行数与字符数必须与折叠控件同一口径（同一个 split）', () => {
+    if (SKIP) return;
+    assert.equal(L.replyMeta(''), '0 字符');
+    assert.equal(L.replyMeta('单行'), '2 字符', '单行不写「1 行 ·」，那一行没信息');
+    assert.equal(L.replyMeta('a\nb\nc'), '3 行 · 5 字符');
+    // ⚠️ 与 collapseDecision 同源：两边对「行」的算法必须一致，否则标题说 32 行、
+    // 折叠控件说「共 31 行」，用户会以为其中一个是 bug
+    const text = 'x'.repeat(1500);
+    const d = L.collapseDecision(text);
+    assert.equal(L.replyMeta(text), '1.5k 字符', '单行正文不写「1 行 ·」—— 那一行没信息');
+    assert.equal(d.chars, 1500);
+    assert.match(d.hint, /共 1500 字符/, 'hint 用的仍是精确值（折叠控件按它决定要不要出现）');
+  });
 });
