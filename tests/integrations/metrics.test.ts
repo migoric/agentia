@@ -1472,6 +1472,36 @@ describe('R8-P4 归因标签（labelKeys → 指标标签）', () => {
     );
   });
 
+  it('labelKeys 只认 labels.<key>：不从根 span 的其他属性派生（source 与 labels 正交）', () => {
+    // 2026-11-13 ref-checklist-four：外部清单建议「labels 派生 to/stage/source」。
+    // 但 `spec.md` ref-tenant-labels 第 2 条写死了「source 是框架自己写的触发来源审计，
+    // labels 是宿主写的业务维度，**不合并、不互相映射**」；而且 `session.id` 这类高基数
+    // 属性一旦自动上指标，会立刻把 maxLabelValues 打爆。把这条决策变成可执行断言：
+    // 谁「顺手」让 labelKeys 回退读根属性，这条就红（而不是等看板被基数冲垮才发现）。
+    const t = traceOf({ durationMs: 5, labels: { tenant: 'acme' } });
+    Object.assign(t.spans[0]!.attributes, {
+      model: 'claude-sonnet-4-5',
+      'session.id': 'sess-xyz',
+      source: 'async',
+      'system.version': 'v3',
+    });
+    const sink = metricsSink({ labelKeys: ['model', 'source', 'tenant'] });
+    sink.export(t);
+    const combos = Object.keys(sink.snapshot().runLabels);
+    assert.equal(combos.length, 1, '只有一条 run，不该因派生多出桶');
+    const combo = combos[0]!;
+    assert.match(combo, /tenant=acme/, '显式传的 labels.tenant 照常生效');
+    for (const leaked of ['claude-sonnet-4-5', 'sess-xyz', 'async', 'v3']) {
+      assert.ok(!combo.includes(leaked), `${leaked} 不该被派生进指标标签`);
+    }
+    assert.equal(
+      combo,
+      'model=,source=,tenant=acme',
+      '缺 labels.<key> 时按空串计（观测宽容读取），不借别的属性填空',
+    );
+    assert.equal(sink.snapshot().runLabels[combo]!.runs, 1, '量照常记，不多不少');
+  });
+
   it('构造期校验：非法标签名 / 重复键 / maxLabelValues 非正 一律抛错', () => {
     assert.throws(() => metricsSink({ labelKeys: ['not a label'] }), /Prometheus 标签名/);
     assert.throws(() => metricsSink({ labelKeys: ['9lives'] }), /Prometheus 标签名/);

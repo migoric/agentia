@@ -1,5 +1,6 @@
 import type { JsonSchema } from './tool.js';
 import { stringifySafe } from './json.js';
+import { zeroClauseOf } from './limits.js';
 
 /**
  * `check()` 的**递归深度背板**（2026-09-28 外部深评 C6 收口）。
@@ -23,8 +24,15 @@ const MAX_SCHEMA_DEPTH = 256;
  * is_error 的 tool_result（错误信息含路径，模型可自我修正），不进方法体。
  *
  * 覆盖子集：type（object/array/string/number/integer/boolean/null）、
- * properties、required、additionalProperties:false、enum、items。
+ * properties、required、additionalProperties:false、enum、items、maxItems。
  * 未覆盖的关键字（format/minimum/oneOf 等）一律放行 —— 护栏不是完整校验器。
+ *
+ * ⚠️ **maxItems 是语义变更，不是「补个漏」**（2026-11-13 ref-checklist-four）：
+ * 它此前属于「未覆盖 ⇒ 一律放行」，工具作者在 schema 上写了 `maxItems: 10` 却
+ * 完全没有护栏，而校验器零报错 —— 这是「护栏看起来在、其实不在」。收进来之后
+ * 超长数组回 `is_error` 的 tool_result（含路径与长度，模型能自我修正）。
+ * `0` 读作「只许空数组」而不是「不限」；坏值抛 TypeError 而不是静默失效
+ * （`length > NaN` 恒假会让这道闸无声消失）。口径登记在 `core/limits.ts`。
  *
  * @returns 人类可读的错误描述（含路径）；合法返回 null。
  */
@@ -81,6 +89,9 @@ function check(schema: JsonSchema, value: unknown, path: string, depth = 0): str
         '（环由 assertNoSchemaCycle 前置抓；这里兜的是「合法但深到失控」的形态。）',
     );
   }
+  // 每个 schema 都过这一层（含嵌套的 items / properties），所以坏 maxItems 即使
+  // 这次的值不是数组也会被具名拒掉 —— 不把「配置错」藏在「这次没走到那条分支」后面。
+  const maxItems = maxItemsOf(schema, path);
   const en = schema.enum;
   if (Array.isArray(en) && !en.some((v) => deepEqual(v, value))) {
     return `${path}: 值不在 enum 允许范围内（得到 ${preview(value)}）`;
@@ -90,7 +101,7 @@ function check(schema: JsonSchema, value: unknown, path: string, depth = 0): str
     case 'object':
       return checkObject(schema, value, path, depth);
     case 'array':
-      return checkArray(schema, value, path, depth);
+      return checkArray(schema, value, path, depth, maxItems);
     case 'string':
       return typeof value === 'string' ? null : `${path}: 期望 string，得到 ${typeOf(value)}`;
     case 'number':
@@ -144,13 +155,35 @@ function checkObject(
   return null;
 }
 
+/**
+ * `maxItems` 的取值校验。**坏值必须抛，而不是放行**：判据是 `value.length > maxItems`，
+ * `NaN` / `undefined` 那一类会让比较恒假 ⇒ 闸静默失效（与 `metricsSink.maxLabelValues`
+ * 登记的是同一种事故）；`0` 是真值（只许空数组），不能拿 `||` 或 `Math.max(1, …)` 抬走。
+ */
+function maxItemsOf(schema: JsonSchema, path: string): number | undefined {
+  const raw = schema.maxItems;
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) {
+    throw new TypeError(
+      `${path}: maxItems 必须是非负安全整数（${zeroClauseOf('JsonSchema.maxItems')}），收到 ${String(raw)}`,
+    );
+  }
+  return raw;
+}
+
 function checkArray(
   schema: JsonSchema,
   value: unknown,
   path: string,
   depth: number,
+  maxItems: number | undefined,
 ): string | null {
   if (!Array.isArray(value)) return `${path}: 期望 array，得到 ${typeOf(value)}`;
+  // 先判长度再逐项校验：模型要修的是「少给几项」，一条含长度的错误比第 11 项的
+  // 类型错误更直接。只对 type:'array' 生效（非数组 schema 上写了它按规范放行）。
+  if (maxItems !== undefined && value.length > maxItems) {
+    return `${path}: 数组长度 ${value.length} 超过 maxItems ${maxItems}`;
+  }
   const items = schema.items;
   if (items && typeof items === 'object' && !Array.isArray(items)) {
     for (let i = 0; i < value.length; i++) {

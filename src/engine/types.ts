@@ -147,7 +147,20 @@ export interface ContextPolicy {
   readonly budgetTokens?: number;
   beforeTurn(
     messages: MessageParam[],
-    info: { iteration: number; model: string },
+    info: {
+      iteration: number;
+      model: string;
+      /**
+       * 摘要器失败、但**已安全应用 context editing** 时由内置策略上报（2026-11-13
+       * ref-checklist-four）。引擎据此写 `context.policy_failed` 事件 + console.warn ——
+       * 与「整个 `beforeTurn` 抛错」走**同一个出口**，所以降级仍然出声。
+       *
+       * 可选：自定义策略不必实现；不实现时行为与旧版逐字一致（异常抛给引擎兜住）。
+       * 之所以需要它而不是让策略自己吞异常：策略吞了就没有 trace 事件，压缩持续失败会
+       * 变成「历史一直很长、没人知道为什么」的静默降级。
+       */
+      onCompactionFailure?: (message: string) => void;
+    },
   ): Promise<MessageParam[]>;
   /**
    * 每条 run 开始时由引擎调用一次，返回**本 run 专用**的策略实例（隔离滞回/缓存等

@@ -7970,6 +7970,67 @@ $0.0213 / $1 · claude-sonnet-4-5`；「预算」能搜到「撞到预算护栏�
 失真）；splitter 拖拽分区（三块折叠 + 份额已够）；把 `trace` 存成文件供深链跨进程复用（那是
 `agentia view` 的活）。
 
+### 2026-11-13 ② ref-checklist-four：**外部上线清单的四条，按仓内契约落地（两条复核后改了形态）**
+
+动机：一份「分布式工单编排平台」的上线清单被拿来对照 agentia，逐条对账后标出四条可做。
+**动手前的二次复核推翻了其中两条的实施方案**，这一条记的是「为什么改」以及改成了什么 ——
+清单不是需求，仓内已定的决策才是。
+
+**复核结论（两条不能照字面做）**：
+
+- 「摘要器 / 压缩钩子」**已经完整存在**：`ContextPolicy.beforeTurn`（`engine/types.ts`）、
+  `createBudgetPolicy` 的可注入 `summarize`（`engine/policy.ts`）、无摘要器时降级 context editing、
+  失败不烧滞回额度、`forRun` per-run 隔离、`engine/turn.ts` 的 try/catch 降级 + `context.policy_failed`
+  事件。再做一个钩子就是两套机制并存。⇒ 改为补它链条上**两个真缺口**（见下）。
+- 「labels 派生 to/stage/source」**撞 `ref-tenant-labels` 第 2 条禁令**：「`RunSpec.source` 是框架
+  自己写的触发来源审计，labels 是宿主写的业务维度，**不合并、不互相映射**」；`to` / `stage` 全仓
+  无概念；`session.id` 这类高基数根属性若自动上指标会当场打爆 `maxLabelValues`。⇒ 不新增派生，
+  改为把那条决策挂上可执行守卫。
+
+**实际落地四件**：
+
+1. **`jsonlTraceSink({ rotate: 'daily' })`**（缺省关）。跨 UTC 自然日时把 `path` 里已有内容
+   `rename` 成 `<stem>.<YYYY-MM-DD><ext>`，随后 `path` 仍作为「当前文件」继续追加 ——
+   **消费侧零改动**：`report` / `diff` / `harvest` / `export` 与 dev 面板读的都是固定
+   `.agentia/traces.jsonl`，改成「每天一个新文件名」会让它们集体读不到新数据。日期按**单调不减**
+   推进（乱序 / 回放不把今天归档成昨天）；进程重启后用文件 mtime 认出残留的旧内容；归档目标已存在
+   则**不覆盖不删除**、出声并继续追加（宁可混日期不丢历史）。同路径不同 `rotate` 与 `fsync` 同款：
+   不进幂等键、出声一次。边界如实写明：mtime 是近似，积压到今天才落盘的昨天 trace 落在今天的文件。
+2. **`JsonSchema.maxItems`**：从「未覆盖关键字一律放行」收进校验子集。此前工具作者写了
+   `maxItems: 10` 却没有任何护栏、零报错 —— 典型的「护栏看起来在、其实不在」。超长数组回带路径与
+   长度的 `is_error` tool_result（模型能自我修正）；`0` 按规范读作「只许空数组」而非「不限」；
+   NaN / 负数 / 小数 / 非数抛 TypeError（`length > NaN` 恒假会让闸静默消失）。**0 语义登记进
+   `core/limits.ts`**，`zeroClauseOf` 插进报错文案，`tests/limits.test.ts` 的探针与文案 case 同步补。
+3. **`createBudgetPolicy` 的坏值构造期拒**：`budgetTokens: NaN` 让 `countTokens(...) <= NaN`
+   恒假 ⇒ **每回合都走压缩**，而压缩是业务注入的模型调用（静默烧钱）；`compactEvery: NaN`
+   让滞回判据恒假。四个数量旋钮的 NaN / ±Infinity / 负数 / 小数 / 非数一律 TypeError。
+   ⚠️ **刻意不改任何 0 的读法**：`Math.max(1, keepRecent)` 的钳位是存量行为，把 0 改成抛错或
+   「不限」都是对外行为变更，属另一次设计；因此本轮不往 `LIMIT_SEMANTICS` 加行（那张表是
+   **0 语义**真源，不是所有坏值校验的登记处）。
+4. **摘要器失败只丢压缩、不丢已做完的 context editing**：此前异常一路抛到 `turn.ts` 的 catch，
+   那里把 `next` 留在 `undefined` ⇒ 连已经安全做完的 `trimToolPairs` 结果也一起丢了。
+   `ContextPolicy.beforeTurn` 的 `info` 加**可选** `onCompactionFailure`（引擎给的降级出口）：
+   内置策略在摘要器抛错时返回已编辑的数组并从该出口出声（`context.policy_failed` 事件 + warn，
+   与「整个 beforeTurn 抛错」共用同一个函数、文案逐字不变）；没有该出口（单测直调 / 自定义宿主）
+   时**照旧抛**，不做无声吞异常。自定义策略不实现该字段即向后兼容。
+
+**#10 的守卫（不是功能）**：`tests/integrations/metrics.test.ts` 断言 `labelKeys` 只认
+`labels.<key>` —— 在根 span 上摆 `model` / `session.id` / `source` / `system.version` 后，
+combo 必须是 `model=,source=,tenant=acme`，不许借别的属性填空。反向变异「让 `metrics-state.ts`
+回退读根属性」当场咬红。
+
+**验证**：框架三份 typecheck 全绿、全仓 biome 绿；`tests/core/schema.test.ts` +6、
+`tests/engine/policy.test.ts` +4、`tests/integrations/file-sink.test.ts` +7、
+`tests/integrations/metrics.test.ts` +1、`tests/limits.test.ts` +1（表驱动按新旋钮自动多一条），
+共 **19 条新用例**；`tests/limits.test.ts` 的 `Record<LimitKnob, …>` 探针与文案 case 各补 1 项。
+**8 条变异各自咬住**：长度闸摘掉 / `maxItems` 坏值不拦 / policy 坏值不拦 / 回退不到编辑结果 /
+日期不单调 / 不轮转 / 重启不认旧文件 / 让 `labelKeys` 从根属性派生。逐条还原后
+`src/` 与 `tests/` 里无残留变异标记。
+
+**代价**：`src/core/tool.ts` / `core/schema.ts` / `core/limits.ts` / `engine/policy.ts` /
+`engine/turn.ts` / `engine/types.ts` / `integrations/file-sink.ts` 七个文件，公共面只多一个
+**可选**参数（`rotate`）与一个**可选**回调字段（`onCompactionFailure`），无新依赖、无破坏性变更。
+
 ## 11. 开放项
 
 

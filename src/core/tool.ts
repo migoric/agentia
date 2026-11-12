@@ -15,6 +15,14 @@ export interface JsonSchema {
   properties?: Record<string, JsonSchema>;
   required?: string[];
   additionalProperties?: boolean;
+  /**
+   * 数组最大长度（2026-11-13 ref-checklist-four）。**非负安全整数**；`0` = 只许空数组
+   * （不是「不限」，见 `core/limits.ts` 的 `JsonSchema.maxItems` 登记）。
+   * ⚠️ 这是从「未覆盖关键字一律放行」里**收进来的第一个数量关键字**：此前工具作者
+   * 写了 `maxItems` 也不会生效，而没有任何报错 —— 护栏看起来在、其实不在。
+   * 坏值（NaN / 负数 / 小数 / 字符串）在校验时抛 TypeError，不走「静默放行」。
+   */
+  maxItems?: number;
   [key: string]: unknown;
 }
 

@@ -30,7 +30,7 @@ import { join, relative } from 'node:path';
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
  * | `transport/async.ts` | **755** | 2026-11-09：跨进程流兜底提到 runner 级单例（登记/注销取代每连接建定时器） |
- * | `engine/turn.ts` | 599 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线 |
+ * | `engine/turn.ts` | 602 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线；2026-11-13 +3 行 = 两条压缩降级路径共用的 `reportFailure`（上下文策略失败的事件 + warn 不许各写一份） |
  * | `integrations/openai.ts` | 530 | 2026-11-07：部分 usage / Retry-After / 非 JSON 响应 |
  *
  * 2026-11-07 深度评修复把 `async.ts` 从 683 推到 749（唤醒互斥 / 取消意图 / 跨进程流收口），

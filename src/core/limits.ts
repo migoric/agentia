@@ -203,6 +203,15 @@ export const LIMIT_SEMANTICS = [
     note: '循环写成 `for (iteration = 0; iteration < maxIterations; ...)` ⇒ 0 时循环体一次不执行，直接以「达到循环上限」收尾（**算失败**）。是「已到点」而非「不限」，与 `mapToolConcurrency` 的读法**相反**。',
   },
   {
+    knob: 'JsonSchema.maxItems',
+    where: 'core/schema.ts（maxItemsOf / checkArray）',
+    unit: 'count',
+    zero: 'disabled',
+    zeroClause: '0 = 一条都不许有（只许空数组）',
+    badValue: 'throws',
+    note: '2026-11-13 ref-checklist-four 收进来的**第一个数量关键字**：此前 `maxItems` 属「未覆盖关键字一律放行」，工具作者写了它却没有任何护栏、零报错。判据 `value.length > maxItems` ⇒ `NaN` 恒假（闸静默失效）、小数/负数/字符串同样不可兑现，一律在 `maxItemsOf` 抛 TypeError；`0` 是 JSON Schema 规范里的合法读法（只许空数组），**不是**「不限」，不许用 `||` / `Math.max(1, …)` 抬走。⚠️ 它不是「旋钮」而是工具作者写在 schema 上的约束，登记进本表是因为「0 的读法」同样必须有单一真源；文案由 `zeroClauseOf` 插入，不手写第二份。',
+  },
+  {
     knob: 'withTimeout.ms',
     where: 'core/timeout.ts',
     unit: 'ms',
