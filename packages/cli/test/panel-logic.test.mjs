@@ -986,3 +986,179 @@ describe('面板并排 A/B 的视图与取值判定（从DOM 抽出来的那批�
     assert.match(d.hint, /共 1500 字符/, 'hint 用的仍是精确值（折叠控件按它决定要不要出现）');
   });
 });
+
+describe('run 级总账（2026-11-13）', { skip: SKIP }, () => {
+  /** 一条「什么都有」的 trace：3 轮、2 次工具、1 个失败 span、有缓存与成本 */
+  const full = {
+    totalUsage: {
+      inputTokens: 3000,
+      outputTokens: 1500,
+      cacheReadTokens: 6000,
+      cacheCreationTokens: 1000,
+      costEstimate: 0.014,
+    },
+    spans: [
+      {
+        kind: 'run',
+        status: 'ok',
+        attributes: { model: 'claude-x', stop_reason: 'end_turn' },
+        events: [],
+      },
+      {
+        kind: 'llm.turn',
+        status: 'ok',
+        events: [{ name: 'tool.input' }, { name: 'tool.output' }, { name: 'tool.input' }],
+      },
+      { kind: 'llm.turn', status: 'error', events: [] },
+      { kind: 'llm.turn', status: 'ok', events: [] },
+    ],
+  };
+
+  const item = (items, key) => items.find((x) => x.key === key);
+
+  it('五个数都在：轮次 / 工具 / 失败 / in-out / cache / 成本 / 模型', () => {
+    const items = L.runLedger(full, { maxCostUsd: 1 });
+    assert.equal(item(items, '轮次').value, '3 轮', 'llm.turn 数 = 模型往返次数');
+    assert.equal(
+      item(items, '工具').value,
+      '2 次',
+      '按 tool.input 事件数（不是 capability span 数）',
+    );
+    assert.equal(item(items, '失败').value, '1 个 span');
+    assert.equal(item(items, '失败').tone, 'err');
+    assert.equal(item(items, 'in / out').value, '3k / 1.5k');
+    assert.equal(item(items, '模型').value, 'claude-x');
+    assert.equal(item(items, '成本').value, '$0.0140 / $1', '有预算时把上限一起给');
+  });
+
+  it('cache 命中率的分母**含缓存写**（只除输入会把刚写完缓存的那次显示成 100%）', () => {
+    const items = L.runLedger(full);
+    // 6000 / (6000 + 1000 + 3000) = 60%；若漏掉 cc 则是 67%
+    assert.equal(item(items, 'cache').value, '6k 读 · 60% 命中');
+    assert.match(item(items, 'cache').title, /读 ÷（读 \+ 写 \+ 未命中）/);
+  });
+
+  it('成本缺失时**整项不出现**（「没有单价表」不是「花了 0 元」）', () => {
+    const noCost = {
+      totalUsage: { inputTokens: 10, outputTokens: 5 },
+      spans: [{ kind: 'run', status: 'ok', attributes: {}, events: [] }],
+    };
+    const items = L.runLedger(noCost);
+    assert.equal(item(items, '成本'), undefined);
+    assert.equal(item(items, 'cache'), undefined, '没有缓存读数时整项不出现，不显示 0%');
+    assert.equal(item(items, '失败'), undefined, '没人失败时不留一行「0 失败」');
+  });
+
+  it('空 trace / null 返回空账（面板据此不画那一行）', () => {
+    assert.deepEqual(L.runLedger(null), []);
+    assert.deepEqual(L.runLedger({ totalUsage: null, spans: [] }), []);
+  });
+});
+
+describe('run 列表检索（2026-11-13）', { skip: SKIP }, () => {
+  const runs = [
+    {
+      traceId: 't1',
+      ok: true,
+      stopReason: 'end_turn',
+      name: 'agent.run',
+      note: { prompt: '审查一份文档', workdir: '/w/a' },
+    },
+    {
+      traceId: 't2',
+      ok: false,
+      stopReason: 'budget_exceeded',
+      name: 'agent.run',
+      note: { prompt: '改 bug', workdir: '/w/a' },
+    },
+    {
+      traceId: 't3',
+      ok: true,
+      stopReason: 'suspended',
+      name: 'agent.run',
+      note: { prompt: '发邮件', workdir: '/w/b' },
+    },
+    { traceId: 't4', ok: false, stopReason: 'aborted', name: 'agent.run', note: null },
+  ];
+
+  it('关键词命中 prompt / 目录 / traceId', () => {
+    assert.deepEqual(
+      L.filterRuns(runs, '文档').map((r) => r.traceId),
+      ['t1'],
+    );
+    assert.deepEqual(
+      L.filterRuns(runs, '/w/b').map((r) => r.traceId),
+      ['t3'],
+    );
+    assert.deepEqual(
+      L.filterRuns(runs, 't2').map((r) => r.traceId),
+      ['t2'],
+    );
+    assert.equal(L.filterRuns(runs, '').length, 4, '空查询 = 不过滤');
+  });
+
+  it('中文短语也能命中（用户找「预算」时数据里存的是 budget_exceeded）', () => {
+    assert.deepEqual(
+      L.filterRuns(runs, '预算').map((r) => r.traceId),
+      ['t2'],
+    );
+    assert.deepEqual(
+      L.filterRuns(runs, '审批').map((r) => r.traceId),
+      ['t3'],
+    );
+  });
+
+  it('「只看异常」= 失败 + 中止 + 等审批（挂起的 ok 是 true，只过滤 ok=false 会漏掉它）', () => {
+    const ids = L.filterRuns(runs, '', { onlyAbnormal: true }).map((r) => r.traceId);
+    assert.deepEqual(ids, ['t2', 't3', 't4']);
+  });
+
+  it('关键词与「只看异常」是**且**的关系', () => {
+    assert.deepEqual(
+      L.filterRuns(runs, '改', { onlyAbnormal: true }).map((r) => r.traceId),
+      ['t2'],
+    );
+    assert.deepEqual(L.filterRuns(runs, '文档', { onlyAbnormal: true }), []);
+  });
+
+  it('大小写不敏感，且不做正则（`(` 不会让输入炸）', () => {
+    assert.deepEqual(
+      L.filterRuns([{ traceId: 'x', ok: true, name: 'Agent.Run' }], 'agent.run').length,
+      1,
+    );
+    assert.deepEqual(L.filterRuns(runs, '('), []);
+  });
+});
+
+describe('深链与重跑（2026-11-13）', { skip: SKIP }, () => {
+  it('runIdFromSearch 只认 ?run=，其余一律 null（手改坏的 URL 不该白屏）', () => {
+    assert.equal(L.runIdFromSearch('?run=t42'), 't42');
+    assert.equal(L.runIdFromSearch('run=t42'), 't42');
+    assert.equal(L.runIdFromSearch('?run=%20t42%20'), 't42', '首尾空白要修掉');
+    assert.equal(L.runIdFromSearch('?x=1'), null);
+    assert.equal(L.runIdFromSearch('?run='), null);
+    assert.equal(L.runIdFromSearch(''), null);
+  });
+
+  it('rerunFromNote 回填四个输入，并过滤掉已失效的能力', () => {
+    const r = L.rerunFromNote(
+      { prompt: '原问题', workdir: '/w', toolSources: ['a', 'gone'], multiTurn: true },
+      ['a', 'b'],
+    );
+    assert.deepEqual(r, { prompt: '原问题', workdir: '/w', toolSources: ['a'], multiTurn: true });
+  });
+
+  it('toolSources 是全量（null）时回填全量；过滤后为空也回落全量（空集是陷阱值）', () => {
+    const all = ['a', 'b'];
+    assert.deepEqual(L.rerunFromNote({ toolSources: null }, all).toolSources, all);
+    assert.deepEqual(
+      L.rerunFromNote({ toolSources: ['gone', 'deleted'] }, all).toolSources,
+      all,
+      '能力全被删掉时不能回填空集 —— 那会让每个 provider 都成孤儿',
+    );
+  });
+
+  it('note 缺失 ⇒ null（不猜一个空 prompt 出来）', () => {
+    assert.equal(L.rerunFromNote(null, ['a']), null);
+  });
+});

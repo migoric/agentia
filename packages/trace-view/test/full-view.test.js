@@ -25,6 +25,8 @@ function makeNode() {
     textContent: '',
     title: '',
     dataset: {},
+    /** 时间轴条的几何走 `style.cssText`（宽度是数据、不是样式选择）—— stub 得有这个字段 */
+    style: { cssText: '' },
     children: [],
     set innerHTML(_v) {
       this.children = [];

@@ -638,6 +638,61 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         '面板不该再用 `r.ok` 直接决定红点（中止的 ok 也是 false ⇒ 会标成失败）',
       );
 
+      /* 看板骨架的**接线**判据（2026-11-13，批次 B/C）。这一批的每一条都是
+       * 「判决抽到 panel-logic / trace-view 了，但页面必须真的走它」——
+       * 抽了不接 = 没抽，而浏览器里没人替你发现（页面不报错，只是功能静默不存在）。
+       * 规则本身在 `panel-logic.test.mjs` 与 `render-batch.test.js` 里逐条断言过了。 */
+      assert.match(page, /runLedger\(/, '总账必须走 runLedger（口径与单测同一处）');
+      assert.match(
+        page,
+        /filterRuns\(/,
+        '列表过滤必须走 filterRuns —— 「异常」包含挂起那条规则只在 panel-logic 里',
+      );
+      assert.match(
+        page,
+        /runIdFromSearch\(location\.search\)/,
+        '启动时必须读 ?run= —— 否则「深链」只是个装样子的参数',
+      );
+      assert.match(page, /history\.replaceState\(/, '打开一条 run 后必须把 ?run= 写回 URL');
+      assert.match(
+        page,
+        /rerunFromNote\(/,
+        '回填重跑必须走 rerunFromNote（失效能力过滤与空集回落全量都在那里）',
+      );
+      {
+        // 回填之后**不许**自动提交：一个自己跑起来的按钮会在误触时花钱。
+        // 这条只能按块看 —— 全文件里 `submit()` 到处都是（回车、按钮），断言不到语义。
+        const block =
+          /rerunEl\.addEventListener\('click', \(\) => \{([\s\S]*?)\n {6}\}\);/.exec(page)?.[1] ??
+          '';
+        assert.ok(block.length > 0, '找不到 rerun 的点击处理（改名了？这条守卫要跟着改）');
+        assert.doesNotMatch(block, /\bsubmit\(\)/, '回填重跑不许自动提交 —— 误触就会花钱');
+        assert.match(block, /promptEl\.focus\(\)/, '回填后焦点应落在输入框（下一步就是确认运行）');
+      }
+      {
+        // 两棵树都要接时间轴开关：漏一棵 ⇒ 并排时一栏有轨道、一栏没有（那是**渲染差异**，
+        // 会混进「这两条 run 的差异」里）。与 `textBody` 那条守卫同一条理由。
+        const tl = [...page.matchAll(/\.setTimeline\(/g)].length;
+        assert.equal(tl, 2, `两棵树都要接 setTimeline，实际 ${tl} 处`);
+        assert.match(page, /\.setQuery\(/, '树内检索必须接到 view 上（判定在 trace-view 里）');
+      }
+      /* 提示条是 `textContent`（不跑 Markdown）⇒ 文案里写 `**强调**` 会原样露出星号。
+       * 实测踩过：回填重跑的提示写着「（**没有**自动运行）」，屏幕上就是带星号的一句 ——
+       * 而这句话正是用来安心的（它讲的是会不会花钱），越像乱码越没人信。 */
+      assert.doesNotMatch(
+        page,
+        /setNotice\('[^']*\*\*/,
+        'banner 走 textContent：提示文案里不许写 Markdown 强调（星号会露出来）',
+      );
+      /* 树这一块必须比另两块**多分**高度：三块都开着时（1440×900 实测）它只有 134px ≈ 三行，
+       * 而树里还塞着工具条 —— 23 行只看得见 3 行。这条规则一被删，症状是「这条 run 就这么点
+       * 东西」而不是报错，所以只能按规则存在来守。 */
+      assert.match(
+        page.replace(/\s+/g, ' '),
+        /#pane-trace\[data-open='1'\] \{ flex-grow: 2; \}/,
+        '调用树要比回复/排行多分高度（否则三块都开着时只看得见三行树）',
+      );
+
       /* 本轮（2026-09-22 复核 ②③①）三条同类接线判据 —— 都是「抽到 panel-logic 了，
        * 但页面必须真的走它」：抽出来不接上等于没抽（浏览器里没人替你发现）。
        * 单测覆盖 panel-logic 的规则本身，这里只钉接线。 */
