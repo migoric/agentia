@@ -1,13 +1,23 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jsonlTraceSink } from '../../src/index.js';
 import type { Trace } from '../../src/index.js';
+// 内部纯函数（刻意不进公共导出面，故不走 index.js）
+import { dailyArchivePath, dayKeyOf } from '../../src/integrations/file-sink.js';
 
 /** 造一条 JSON 干净（无 undefined 字段）的最小 trace —— 落盘往返要逐字相等 */
-function makeTrace(traceId: string): Trace {
+function makeTrace(traceId: string, startedAt = 1000): Trace {
   return {
     traceId,
     rootSpanId: `${traceId}-root`,
@@ -20,8 +30,8 @@ function makeTrace(traceId: string): Trace {
         parentSpanId: null,
         kind: 'run',
         name: 'agent.run',
-        startedAt: 1000,
-        endedAt: 1300,
+        startedAt,
+        endedAt: startedAt + 300,
         status: 'ok',
         attributes: {},
         events: [],
@@ -167,6 +177,141 @@ describe('jsonlTraceSink（CLI report/diff/harvest 的输入格式）', () => {
       assert.equal(warned.length, 1, '同路径的不一致只报一次');
     } finally {
       console.warn = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('jsonlTraceSink 的按天轮转（2026-11-13 ref-checklist-four）', () => {
+  const D = (day: number): number => Date.UTC(2026, 10, day, 12, 0, 0);
+  const ids = (file: string): string[] =>
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).traceId);
+  const withWarn = async (fn: (warned: string[]) => void): Promise<string[]> => {
+    const warned: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warned.push(args.join(' '));
+    try {
+      fn(warned);
+    } finally {
+      console.warn = original;
+    }
+    return warned;
+  };
+
+  it('dayKeyOf 按 UTC 自然日取根起点，缺时间戳回退写盘时刻；dailyArchivePath 保留扩展名', () => {
+    assert.equal(dayKeyOf(makeTrace('x', D(11)), D(13)), '2026-11-11');
+    assert.equal(dayKeyOf(makeTrace('x', Date.UTC(2026, 10, 11, 23, 59, 59)), D(13)), '2026-11-11');
+    assert.equal(dayKeyOf(makeTrace('x', Date.UTC(2026, 10, 12, 0, 0, 0)), D(11)), '2026-11-12');
+    // 手写 trace 没有 startedAt ⇒ 不猜，回退写盘时刻
+    const bare = makeTrace('x');
+    delete (bare.spans[0] as { startedAt?: number }).startedAt;
+    assert.equal(dayKeyOf(bare, D(13)), '2026-11-13');
+    assert.equal(dailyArchivePath('/a/traces.jsonl', '2026-11-11'), '/a/traces.2026-11-11.jsonl');
+    assert.equal(dailyArchivePath('/a/traces', '2026-11-11'), '/a/traces.2026-11-11');
+  });
+
+  it('缺省不轮转：跨天的 trace 仍写进同一个文件，不产生任何归档', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      const sink = jsonlTraceSink({ path: file });
+      sink.export(makeTrace('a', D(11)));
+      sink.export(makeTrace('b', D(13)));
+      assert.deepEqual(ids(file), ['a', 'b']);
+      assert.ok(!existsSync(join(dir, 'traces.2026-11-11.jsonl')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('跨天把旧内容按日归档，path 仍是「当前文件」（消费侧固定路径不用改）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      const sink = jsonlTraceSink({ path: file, rotate: 'daily' });
+      sink.export(makeTrace('a', D(11)));
+      sink.export(makeTrace('b', D(11)));
+      sink.export(makeTrace('c', D(12)));
+      sink.export(makeTrace('d', D(13)));
+      assert.deepEqual(ids(join(dir, 'traces.2026-11-11.jsonl')), ['a', 'b']);
+      assert.deepEqual(ids(join(dir, 'traces.2026-11-12.jsonl')), ['c']);
+      assert.deepEqual(ids(file), ['d'], 'report / dev 面板读的还是这个固定路径');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('乱序 / 回放的旧 trace 不触发归档（日期单调推进，不把今天归档成昨天）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      const sink = jsonlTraceSink({ path: file, rotate: 'daily' });
+      sink.export(makeTrace('a', D(11)));
+      sink.export(makeTrace('b', D(13)));
+      sink.export(makeTrace('late', D(11)));
+      assert.deepEqual(ids(join(dir, 'traces.2026-11-11.jsonl')), ['a']);
+      assert.deepEqual(ids(file), ['b', 'late'], '迟到的旧 trace 落在当前文件，不丢');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('进程重启后 path 里还留着前一天的内容 ⇒ 按 mtime 认出来，先把旧的归档', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      writeFileSync(file, `${JSON.stringify(makeTrace('old', D(11)))}\n`);
+      const when = new Date(D(11));
+      utimesSync(file, when, when);
+      const sink = jsonlTraceSink({ path: file, rotate: 'daily' });
+      sink.export(makeTrace('new', D(12)));
+      assert.deepEqual(ids(join(dir, 'traces.2026-11-11.jsonl')), ['old']);
+      assert.deepEqual(ids(file), ['new'], '不把两天混进同一个文件');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('归档目标已存在 ⇒ 不覆盖、不删除，出一次声并继续追加 path（宁可混日期不丢历史）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      const archive = join(dir, 'traces.2026-11-11.jsonl');
+      writeFileSync(file, `${JSON.stringify(makeTrace('old', D(11)))}\n`);
+      writeFileSync(archive, `${JSON.stringify(makeTrace('hand-archive', D(11)))}\n`);
+      const when = new Date(D(11));
+      utimesSync(file, when, when);
+      const warned = await withWarn(() => {
+        const sink = jsonlTraceSink({ path: file, rotate: 'daily' });
+        sink.export(makeTrace('new', D(12)));
+      });
+      assert.deepEqual(ids(archive), ['hand-archive'], '已有归档不许被覆盖');
+      assert.deepEqual(ids(file), ['old', 'new'], '当前文件的数据不许被删');
+      assert.equal(warned.length, 1);
+      assert.match(warned[0]!, /不覆盖也不删除/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('同路径第二次请求的 rotate 不一致 ⇒ 出声一次，且仍是同一个 sink', async () => {
+    // 与 fsync 那条同一个理由：键带上选项就会回到「同一文件两个写者」；
+    // 但轮转会改写入目标，静默忽略比 fsync 更容易让人以为自己开了归档。
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    const file = join(dir, 'trace.jsonl');
+    try {
+      const warned = await withWarn(() => {
+        const first = jsonlTraceSink({ path: file });
+        const second = jsonlTraceSink({ path: file, rotate: 'daily' });
+        assert.equal(first, second, '同路径必须只有一个 sink');
+        jsonlTraceSink({ path: file, rotate: 'daily' });
+      });
+      assert.equal(warned.length, 1, '同路径只提醒一次');
+      assert.match(warned[0]!, /rotate=daily 不会生效/);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

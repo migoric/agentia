@@ -1,5 +1,14 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
+import { dirname, extname, resolve } from 'node:path';
 import type { Trace, TraceSink } from '../core/trace.js';
 
 /**
@@ -33,19 +42,62 @@ import type { Trace, TraceSink } from '../core/trace.js';
  * 写者 ⇒ 一次 run 落两行」那个更贵的问题上。所以同路径永远共用一个 sink，而**第二次请求的
  * `fsync` 与既有 sink 不一致时出一次声** —— 此前是静默忽略，于是「我明明开了 fsync」这类
  * 持久性承诺会无声失效（`fsync` 只影响性能与耐久，不影响内容，所以不会有任何东西报错）。
+ *
+ * ## 按天轮转（`rotate: 'daily'`，2026-11-13 ref-checklist-four）
+ *
+ * 缺省**关**（逐字保持旧行为）。开了之后跨天时把 `path` 里已有内容 `rename` 成
+ * `<stem>.<YYYY-MM-DD><ext>`，随后 `path` 仍作为「当前文件」继续追加 —— **消费侧不用改**：
+ * `agentia report` / `diff` / `harvest` / `export` 与 dev 面板读的都是固定路径
+ * `.agentia/traces.jsonl`，若改成「每天一个新文件名」它们会集体读不到新数据。
+ *
+ * 三条口径（都是「不丢数据」）：
+ * - **UTC 自然日**，取 trace 根 span 的 `startedAt`（手写 trace 没有时间戳时回退写盘时刻）；
+ *   日期按**单调不减**推进，乱序到达 / 回放昨天的 trace 不会把今天的内容归档成昨天。
+ * - 进程重启后 `path` 里还留着前一天的内容 ⇒ 用**文件 mtime** 初始化当前日，第一条新一天的
+ *   trace 会先把旧内容归档，不会把两天混进同一个文件。
+ * - 归档目标已存在 ⇒ **不覆盖、不删除**，出一次声并继续追加 `path`。宁可混日期，也不丢历史。
+ *
+ * ⚠️ 边界如实写在这里：mtime 与「按 trace 业务日切片」是**近似**（积压到今天才落盘的昨天
+ * trace 会落在今天的文件里）；要精确按业务日分文件，请自行按 `startedAt` 选 sink 路径。
+ * 轮转同样受上面「单进程写者」前提约束 —— 跨进程 rename 不在本实现内协调。
  */
 interface SinkEntry {
   readonly sink: TraceSink;
   readonly fsync: boolean;
+  readonly rotate: boolean;
   /** 不一致告警是否已出过（同路径只说一次，别按 run 刷屏） */
   warned: boolean;
+  rotateWarned: boolean;
 }
 
 const sinkByPath = new Map<string, SinkEntry>();
 
-export function jsonlTraceSink(options: { path: string; fsync?: boolean }): TraceSink {
+/**
+ * 这条 trace 属于哪个 **UTC 自然日**。优先根 span 的业务起点，手写 trace 没有时间戳
+ * 时回退 `now`（写盘时刻）。`module` 级 export 供单测直接钉边界，不进公共导出面。
+ */
+export function dayKeyOf(trace: Trace, now: number): string {
+  const root = trace.spans.find((s) => s.spanId === trace.rootSpanId) ?? trace.spans[0];
+  const started = root?.startedAt;
+  const t = typeof started === 'number' && Number.isFinite(started) ? started : now;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+/** `…/traces.jsonl` + `2026-11-13` ⇒ `…/traces.2026-11-13.jsonl`（无扩展名时直接补 `.日期`）。 */
+export function dailyArchivePath(path: string, day: string): string {
+  const ext = extname(path);
+  return `${path.slice(0, path.length - ext.length)}.${day}${ext}`;
+}
+
+export function jsonlTraceSink(options: {
+  path: string;
+  fsync?: boolean;
+  /** 缺省关；开了按 UTC 自然日把旧内容归档，`path` 仍是当前文件（见文件头） */
+  rotate?: 'daily';
+}): TraceSink {
   const path = resolve(options.path);
   const fsync = options.fsync === true;
+  const rotate = options.rotate === 'daily';
   const existing = sinkByPath.get(path);
   if (existing !== undefined) {
     if (existing.fsync !== fsync && !existing.warned) {
@@ -57,12 +109,49 @@ export function jsonlTraceSink(options: { path: string; fsync?: boolean }): Trac
           '要换持久性口径，请在进程启动时统一整份配置。',
       );
     }
+    if (existing.rotate !== rotate && !existing.rotateWarned) {
+      existing.rotateWarned = true;
+      console.warn(
+        `[agentia] jsonlTraceSink：同路径已存在一个 rotate=${existing.rotate ? 'daily' : 'off'} 的 sink（${path}），` +
+          `本次请求的 rotate=${rotate ? 'daily' : 'off'} 不会生效。` +
+          '同路径进程内只保留一个 sink；轮转会改写入目标，请在进程启动时统一整份配置。',
+      );
+    }
     return existing.sink;
   }
   mkdirSync(dirname(path), { recursive: true });
+  // 进程重启后 `path` 里可能还留着前一天的内容：用文件 mtime 认出它属于哪天，
+  // 第一条新一天的 trace 才会先把旧内容归档，而不是把两天混进同一个文件。
+  let currentDay: string | null =
+    rotate && existsSync(path) && statSync(path).size > 0
+      ? new Date(statSync(path).mtimeMs).toISOString().slice(0, 10)
+      : null;
+
+  const rotateIfNeeded = (day: string): void => {
+    if (currentDay === null) {
+      currentDay = day;
+      return;
+    }
+    // 单调不减：乱序 / 回放的旧 trace 不触发归档，否则会把今天的内容归档成昨天。
+    if (day <= currentDay) return;
+    const archive = dailyArchivePath(path, currentDay);
+    if (existsSync(path) && statSync(path).size > 0) {
+      if (existsSync(archive)) {
+        console.warn(
+          `[agentia] jsonlTraceSink：归档 ${archive} 已存在，本次不覆盖也不删除 ${path}，` +
+            '继续追加到当前文件（宁可混日期，也不丢历史）。请检查是否有别的写者或手工归档。',
+        );
+      } else {
+        renameSync(path, archive);
+      }
+    }
+    currentDay = day;
+  };
+
   const sink: TraceSink = {
     export(trace: Trace): void {
       const line = `${JSON.stringify(trace)}\n`;
+      if (rotate) rotateIfNeeded(dayKeyOf(trace, Date.now()));
       if (!fsync) {
         // 保持旧行为：appendFileSync 一次 open/write/close（进程内串行、按行原子）。
         const fd = openSync(path, 'a');
@@ -84,6 +173,6 @@ export function jsonlTraceSink(options: { path: string; fsync?: boolean }): Trac
       }
     },
   };
-  sinkByPath.set(path, { sink, fsync, warned: false });
+  sinkByPath.set(path, { sink, fsync, rotate, warned: false, rotateWarned: false });
   return sink;
 }

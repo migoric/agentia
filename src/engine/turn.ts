@@ -319,18 +319,24 @@ export async function checkTurnEntry<S extends JsonSchema>(
   // 而上下文压缩对一条 run 而言是**尽力而为**的优化、不是前置条件（代价是历史偏长，不该是 run 死掉）。
   // 降级 = 本回合原样放行，**且出声**（否则「历史一直很长」没人知道为什么，只看到 token 慢慢涨）。
   if (args.contextPolicy) {
+    // 两条降级路径共用一个出口：① 整个 beforeTurn 抛错（旧行为）；② 内置策略的
+    // 摘要器失败、但已安全做完 context editing（2026-11-13 补）。事件与 warn 的文案
+    // 逐字不变 —— 后者不能变成「静默少压一点」，否则「历史一直很长」没人知道为什么。
+    const reportFailure = (message: string): void => {
+      if (args.parentSpanId) {
+        args.recorder.event(args.parentSpanId, 'context.policy_failed', { iteration, message });
+      }
+      console.warn('[agentia:engine] contextPolicy.beforeTurn 失败，本回合不压缩:', message);
+    };
     let next: MessageParam[] | undefined;
     try {
       next = await args.contextPolicy.beforeTurn(messages, {
         iteration,
         model: args.model,
+        onCompactionFailure: reportFailure,
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (args.parentSpanId) {
-        args.recorder.event(args.parentSpanId, 'context.policy_failed', { iteration, message });
-      }
-      console.warn('[agentia:engine] contextPolicy.beforeTurn 失败，本回合不压缩:', message);
+      reportFailure(e instanceof Error ? e.message : String(e));
     }
     if (next && next !== messages) {
       if (args.parentSpanId) {

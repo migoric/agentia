@@ -82,3 +82,59 @@ describe('validateJsonSchema（运行时输入校验）', () => {
     assert.match(validateJsonSchema({ type: 'number' }, Number.NaN)!, /期望 number/);
   });
 });
+
+describe('validateJsonSchema 的 maxItems（2026-11-13 ref-checklist-four）', () => {
+  it('超长数组回带路径与长度的错误，模型能据此自我修正', () => {
+    const s: JsonSchema = {
+      type: 'object',
+      properties: { tags: { type: 'array', items: { type: 'string' }, maxItems: 2 } },
+    };
+    assert.equal(validateJsonSchema(s, { tags: ['a', 'b'] }), null);
+    assert.match(
+      validateJsonSchema(s, { tags: ['a', 'b', 'c'] })!,
+      /\$\.tags: 数组长度 3 超过 maxItems 2/,
+    );
+    // 长度闸在逐项校验之前：模型要修的是「少给几项」，不是第 3 项的类型
+    assert.match(validateJsonSchema(s, { tags: ['a', 'b', 7] })!, /数组长度 3 超过 maxItems 2/);
+  });
+
+  it('0 = 只许空数组（不是「不限」）', () => {
+    const s: JsonSchema = { type: 'array', maxItems: 0 };
+    assert.equal(validateJsonSchema(s, []), null);
+    assert.match(validateJsonSchema(s, ['x'])!, /超过 maxItems 0/);
+  });
+
+  it('坏值一律抛 TypeError，不静默放行（NaN 会让 length > 上限 恒假）', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, '2', null]) {
+      assert.throws(
+        () => validateJsonSchema({ type: 'array', maxItems: bad } as never, ['x']),
+        (e: unknown) =>
+          e instanceof TypeError &&
+          /非负安全整数/.test((e as Error).message) &&
+          /0 = 一条都不许有/.test((e as Error).message),
+        `maxItems=${String(bad)} 必须响亮失败且文案与 limits 表同源`,
+      );
+    }
+  });
+
+  it('这次的值不是数组，坏 maxItems 也照样被拒（不藏在分支后面）', () => {
+    assert.throws(
+      () => validateJsonSchema({ type: 'array', maxItems: Number.NaN }, 'not-an-array'),
+      /非负安全整数/,
+      'schema 是静态配置，坏值不该取决于本轮输入走到了哪条分支',
+    );
+  });
+
+  it('合法的 maxItems 写在非数组 schema 上不生效（按规范只对数组生效）', () => {
+    assert.equal(validateJsonSchema({ type: 'string', maxItems: 0 }, 'anything'), null);
+  });
+
+  it('嵌套 items 上的 maxItems 同样生效', () => {
+    const s: JsonSchema = {
+      type: 'array',
+      items: { type: 'array', items: { type: 'number' }, maxItems: 1 },
+    };
+    assert.equal(validateJsonSchema(s, [[1], []]), null);
+    assert.match(validateJsonSchema(s, [[1, 2]])!, /\$\[0\]: 数组长度 2 超过 maxItems 1/);
+  });
+});

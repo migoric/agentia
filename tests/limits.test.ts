@@ -22,7 +22,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { AsyncRunner, createBudgetGuard, executeRun } from '../src/index.js';
+import { AsyncRunner, createBudgetGuard, executeRun, validateJsonSchema } from '../src/index.js';
 import type { AgentTool, AppCallable, Trace, TraceRecordEvent } from '../src/index.js';
 import { LIMIT_SEMANTICS, type LimitKnob, type ZeroMeaning } from '../src/core/limits.js';
 import { interruptibleSleep, withTimeout, TIMED_OUT } from '../src/core/timeout.js';
@@ -318,6 +318,25 @@ const PROBES: Record<LimitKnob, () => Promise<ZeroMeaning>> = {
     // 0 = 一次都不跑：模型请求压根没发出（不是「不限次」）
     assert.equal(seen.length, 0, 'maxIterations:0 必须读作「一次都不跑」—— 不该发出任何模型请求');
     assert.equal(r.stopReason, 'max_iterations', `实际 stopReason=${r.stopReason}`);
+    return 'disabled';
+  },
+
+  async 'JsonSchema.maxItems'() {
+    // 坏值必须响亮失败：`length > NaN` 恒假 ⇒ 闸静默失效，与「写了护栏却没护栏」同族
+    assert.throws(
+      () => validateJsonSchema({ type: 'array', maxItems: Number.NaN }, ['x']),
+      /非负安全整数/,
+      'NaN 不得被当成「不限」放行',
+    );
+    // 0 = 一条都不许有：非空数组被拒、空数组放行（不是「不限」）
+    assert.match(
+      validateJsonSchema({ type: 'array', maxItems: 0 }, ['x'])!,
+      /超过 maxItems 0/,
+      '0 必须读作「只许空数组」',
+    );
+    assert.equal(validateJsonSchema({ type: 'array', maxItems: 0 }, []), null);
+    assert.equal(validateJsonSchema({ type: 'array', maxItems: 2 }, ['x']), null);
+    assert.match(validateJsonSchema({ type: 'array', maxItems: 2 }, ['x', 'y', 'z'])!, /长度 3/);
     return 'disabled';
   },
 
@@ -866,6 +885,11 @@ describe('limits 语义单一真源：表 ↔ 真实站点逐条对账（guards 
       ['metricsSink.maxScores', () => metricsSink({ maxScores: 0 }), /0 = 一个分数都认不下/],
       ['maxToolResultChars', () => validateMaxToolResultChars(-1), /0 = 截到零长度/],
       ['maxEventChars', () => validateMaxEventChars(Number.NaN), /0 = 截到零长度/],
+      [
+        'JsonSchema.maxItems',
+        () => validateJsonSchema({ type: 'array', maxItems: -1 }, []),
+        /0 = 一条都不许有/,
+      ],
       ['metricsSink.intervalMs', () => metricsSink({ intervalMs: Number.NaN }), /0 = 立即导出/],
       // 2026-10-13 深评 A1 补登的四个 retry 旋钮（与 maxRetries 同纪律，文案插 zeroClauseOf）
       ['RetryOptions.maxAttempts', () => resolveRetry({ maxAttempts: -1 }), /0 = 关闭重试/],
