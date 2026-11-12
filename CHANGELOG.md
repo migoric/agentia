@@ -5,6 +5,66 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.10] - 2026-11-12
+
+### 变更
+
+调试面板从「**看得见一棵树**」推进到「**看得到这一趟 run 的账、找得到那一条、带得走**」。
+三批改动（#304 布局 / #305 说真话 / #306 补账与检索），无破坏性变更、无迁移动作。
+两包同步 0.10.9 → 0.10.10；`src/` 一行未动（`git diff v0.10.9..HEAD -- src/` 为空），
+框架包此次只有版本常量变化，实际改动全在 CLI 面板与 trace-view 渲染件。
+评审依据：`docs/reviews/2026-11-12/inspector-board-gap.md`。
+
+- **#304 · 右栏三块都能折叠**：调用树 / 能力排行 / 回复原先高度写死（树 `flex: 1`、下面两块
+  各 `38vh`），三块同开时谁都不够读；现在标题栏可点，`data-open` 与 `aria-expanded` 由
+  `applyPane` **一处**写入，收起后剩下的块按份分同一个剩余空间（树 1、回复 1.5、排行按内容
+  上限 45%）。收起不等于失明：标题栏仍留规模读数。折叠态是布局偏好，进 localStorage。
+  ⚠️ 第一版踩过一处**状态全对、画面全错**：`#pane-trace > .pane-body` 的 `display: flex`
+  挂在 id 选择器上，特异性压过折叠规则 ⇒ 折叠后树照样铺满；无头 Chrome 截图才看得见。
+- **#305 · 修掉五处在说谎的地方**（只治这五处，不新增视图）：
+
+  | 症状 | 根因 |
+  |---|---|
+  | 回复切走 / 刷新后就消失 | `finalText` 只接在 `run-done` 那一帧 SSE 上，trace 上根本没有它 |
+  | 失败 / 中止轮进不了对话视图 | `mergeConversation` 读 `r.prompt`，生产形状是 `note.prompt`；**单测喂的正是那个不存在的形状** |
+  | 根 span 上的事件整类丢失 | `reset()` 把根登记成 `'root'`，事件按真 `spanId` 投递 ⇒ 静默 return |
+  | 每条 run 都叫 `agent.run` | dev 环不传 `runName`，而 `note.prompt` 一直有货、一直没被用 |
+  | 14 种收尾原因只呈现 3 种（`suspended` 显示成「正常跑完」） | 只分辨中止 / 失败 / 正常，而挂起的 trace 状态是 **ok** |
+
+  改法：`RunNote` 落 `finalText` 且 `/api/runs/:id` 带顶层 `note`（空回复**不写这个键** ——
+  面板要能区分「本来没回复」与「回复丢了」）；`reset(rootName, rootId)` 收下框架真 `spanId`；
+  列表首行给 prompt；`stopReasonClass` 四类终态走「**白名单 + 未知落被拦住**」，框架新增成员时
+  宁可显示成被拦住并露出原文，也不谎报正常收尾。
+- **#306 · 先修地基，再补八件事**：`renderTrace()` 此前「每个动作 = 一次全树重建」，
+  600 span 实测 **1801 次**重建（在飞时每帧还再来一次）；拆成调度层 + `drawTree`，
+  `playTrace` 把 reset + 回放 + finish **整块**包进 `view.batch()` ⇒ 50 span 只重建 1 次。
+  在此基础上补：run 级总账（轮次 / 工具 / 失败 / in-out / cache / 成本带预算上限 / 模型）、
+  span attributes 可见**含根**（`model` / `system.version` / `tools.names` 只写在根上）、
+  时间轴（按 run 总时长归一化）、树内检索（只高亮跳转、不改结构）、列表检索（关键词 +
+  只看异常，异常**含挂起**）、深链 `?run=`（`replaceState` 不堆历史）、重跑（**回填四个输入，
+  不自动跑** —— 自动跑会在误触时花钱）、导出（复制这条 trace 的 JSONL，去掉 CLI 侧 `note`）。
+- **三条「不给假读数」的口径**：① 总账缺字段的那一项**整项不出现**，不显示 `0%` / `$0.0000`
+  ——「成本是 0」与「没有单价表」是两件事；② cache 分母**含缓存写入**，否则刚写了一大块缓存
+  的那次 run 会显示成 100% 命中，正是最容易误读的时刻；③ 时间轴**缺时间戳就整棵不画** ——
+  手写 trace / 官网模拟回放画一条人人占满的条，比不画更误导。
+- **顺手修的实拍发现**：三块同开时调用树只分到 134px ≈ 三行（夹具 23 行只看得见 3 行），
+  `flex-grow: 2` ⇒ 191px。取 2 不是更极端：回复仍要比它大，结论优先。
+
+### 新增：面板从「看树」到「看账」的三批收口
+
+- 决策见 `docs/spec.md` §10 2026-11-12 ref-panel-panes、2026-11-12 ref-inspector-truth、
+  2026-11-13 ref-inspector-board；守卫登记见 `docs/guards.md` §1。
+- **新增守卫**：CLI `structure.test.mjs` 的 **W6**（折叠态只许在 `applyPane` 里写，
+  `data-open` 与 `aria-expanded` 必须一起改）；`stop-reason.test.mjs` **跨包口径**
+  （框架每加一个 `AgentStopReason`，面板都得给出中文说法；只按行首 `|` 摘成员，
+  注释里散落的例子不算）；trace-view `render-batch.test.js`（批量 / 属性含根 / 时间轴 /
+  树内检索）；`panel-logic.test.mjs` + `inspector.test.mjs`（总账 / 检索 / 深链 / 回填接线）。
+- **验证**：CLI **257 → 278**、trace-view **96 → 113**（两侧读数都在本机各跑一遍核过）。
+  三批共 25 条变异各自咬住；#305 / #306 另用无头 Chrome 实拍四条 run 覆盖四态
+  （列表四个圆点、根行七项属性、`?run=demo-2` 直达、回填后**没有**提交、
+  **不推** `run-done` 时切走再切回来回复仍在）。
+- ⚠️ `/api/runs/:id` 的响应多一个顶层 `note`（additive，`playTrace` 只读 `spans` / `traceId`）。
+
 ## [0.10.9] - 2026-11-12
 
 ### 变更
@@ -4561,7 +4621,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.9...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.10...HEAD
+[0.10.10]: https://github.com/migoric/agentia/releases/tag/v0.10.10
 [0.10.9]: https://github.com/migoric/agentia/releases/tag/v0.10.9
 [0.10.8]: https://github.com/migoric/agentia/releases/tag/v0.10.8
 [0.10.7]: https://github.com/migoric/agentia/releases/tag/v0.10.7
