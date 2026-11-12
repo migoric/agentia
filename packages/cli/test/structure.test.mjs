@@ -76,7 +76,13 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   ⚠️ 判决仍全在 `panel-logic.ts`（`traceMeta` / `summaryMeta` / `replyMeta`，带单测），
     //   本文件只留 DOM 接线 —— 与上一笔同一条分工，不新增"无单测的判断"。
     //   基线 = ceil(1725 × 1.05) = 1812。
-    'inspector-page.html': 1812,
+    // 2026-11-12（**批次 A：面板说的每句话都得为真**）：1725 → 1763（+38）。
+    //   +10 列表首行换成 prompt 摘要（`r.note.prompt` 首行 + 全文进 title）、
+    //   +8 四态 tone（`stopReasonClass`）与第二行的收尾原因、
+    //   +9 右栏标题带收尾原因、+6 回复从 `trace.note.finalText` 取回、+5 CSS（suspended 空心点、
+    //   r2 也要省略号）。四块判据本身都在 `panel-logic.ts`（带单测），本文件仍是接线。
+    //   基线 = ceil(1763 × 1.05) = 1852。
+    'inspector-page.html': 1852,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -125,7 +131,18 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   「失败数只在真有人失败时出现」（恒挂 0 失败等于噪声）、
     //   「行数复用 `collapseDecision`」（两处口径不一致最难查）。
     //   面板那边只负责把返回值写进 textContent。基线 = ceil(818 × 1.05) = 859。
-    'panel-logic.ts': 859,
+    // 2026-11-12（**批次 A：终态判别单源 + 对话 join 修数据形状**）：818 → 893（+75）。
+    //   +55 `StopClass` + `stopReasonClass` + `STOP_REASON_TEXT`（14 个成员的短语表）+
+    //       `stopReasonText` —— 十四条 stop reason 分类**只在这一处**，页面里连
+    //       `r.stopReason === 'aborted'` 这种单值比较都不许留（`inspector.test.mjs` 的接线
+    //       守卫会红）。`suspended` 第一次有了独立一态：它的 trace 状态是 ok，旧代码把它画成
+    //       「正常跑完」的蓝点，而那一轮其实挂着等人。
+    //   +12 `ConversationRunLike.prompt` → `note.prompt`（**修 bug**）：生产形状里从来没有
+    //       顶层 prompt，失败轮 / 中止轮因此一轮都 join 不出来，而单测喂的正是那个不存在的
+    //       形状 —— 注释把这段写清楚了，免得下次又照着测试写生产。
+    //   +8 `runDoneNotice` 的三分类改用 `stopReasonClass`，并给 suspended 一条自己的文案。
+    //   基线 = ceil(893 × 1.05) = 938。
+    'panel-logic.ts': 938,
     // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
     'dev-runner.ts': 629,
@@ -416,7 +433,20 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //   ─────
   //    +79   两笔基线增量，与新的基线之和一致（现算 10653，见下方断言）
   // 2026-11-05：manifest 两个新件 + cli 接线，基线增量 27+30+18=75。
-  const TOTAL_BUDGET = 10728;
+  // 补账（2026-11-12，批次 A「面板说的每句话都得为真」）：10728 → 10862（+134，与实测同值）。
+  // 五笔（前两项抬了各自基线，后三项的增量仍在各自余额内消化，故只出现在这里）：
+  //     +38  inspector-page.html  列表首行换 prompt / 四态 tone / 标题带收尾原因 / 回复取回
+  //     +75  panel-logic.ts        StopClass + 短语表 + 对话 join 的数据形状修正
+  //      +9  dev-protocol.ts       RunNote.finalText（回复唯一的存档点）
+  //      +3  dev-machine.ts        run-done 把 finalText 一起落账
+  //      +3  inspector-routes.ts   /api/runs/:id 带上 note
+  //   ─────
+  //    +128  逐文件之和；实测 +134（差 6 = 三处 import 与注释的零碎，同批净变化）
+  // ⚠️ 本笔**没有新增文件、也没有给既有命令加分支**：改的全是「面板在说谎」的那几处
+  //   （回复会消失、失败轮进不了对话、根 span 事件全丢、每条 run 都叫 agent.run、
+  //   13 种收尾只呈现 3 种）。判据在 panel-logic 侧带单测，接线侧由 inspector.test.mjs 的
+  //   `stopReasonClass(` 与 `trace.note.finalText` 两条断言钉住。
+  const TOTAL_BUDGET = 10862;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

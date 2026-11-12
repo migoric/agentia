@@ -258,10 +258,19 @@ export function createTraceView(rootEl, opts = {}) {
     usageEls.cost.textContent = '$' + cost.toFixed(4);
   }
 
-  /** 开树。rootName 为 run 根显示名（如 'run · 审查一份文档'） */
-  function reset(rootName) {
+  /**
+   * 开树。rootName 为 run 根显示名（如 'run · 审查一份文档'）。
+   *
+   * `rootId` = **框架给这个根 span 的真 `spanId`**（`fromTrace.js` 的 `playTrace` 会传）。
+   * 为什么必须传：根节点上的事件（`score` / `trace.truncated` / `approval.decided`）由
+   * `event(span.spanId, …)` 投递，而旧实现只把根登记在字面量 `'root'` 上 ⇒ `spanMap.get`
+   * 落空 ⇒ `event()` 静默 return。症状不是报错，是**评估结论与截断警告整类消失**，而子 span
+   * 的事件一切正常（排查时最容易被判成「框架没记」）。字面量 `'root'` 仍登记：官网
+   * playground 的模拟脚本用它当根 id，两个键指向同一节点，零成本。
+   */
+  function reset(rootName, rootId) {
     traceRoot = {
-      id: 'root',
+      id: rootId || 'root',
       kind: 'run',
       name: rootName || 'run',
       children: [],
@@ -273,6 +282,7 @@ export function createTraceView(rootEl, opts = {}) {
     };
     spanMap.clear();
     spanMap.set('root', traceRoot);
+    if (rootId && rootId !== 'root') spanMap.set(rootId, traceRoot);
     expanded.clear(); // 展开态属于上一棵树：reset 开新树时一并清掉
     folds.clear(); // 块内折叠同理：留着只会在下一次点开时出现"莫名已折叠"的状态
     usageAcc.input = 0;

@@ -470,4 +470,41 @@ describe('playTrace · Trace.spans[] → 视图动作序列', () => {
       '空 trace 也该显示它自己的 traceId（让用户知道看到的是哪一条）',
     );
   });
+
+  /* 回归：根 span 上的事件曾经**整类消失**。
+     `reset()` 只把根登记在字面量 'root' 上，而事件按真 `spanId` 投递 ⇒ `spanMap.get` 落空、
+     `event()` 静默 return。子 span 的事件全正常，所以症状不像 bug：评估分数 `score`、
+     截断告警 `trace.truncated`、恢复段的 `approval.decided` 就是**不出现**（spec §9.4 明写
+     「少了一半数据必须有人能收到」）。 */
+  it('DOM：run 根 span 上的事件必须落在根行下面（score / trace.truncated）', () => {
+    useDom();
+    const root = makeNode();
+    const view = createTraceView(root);
+    playTrace(view, {
+      traceId: 'eval-1',
+      spans: [
+        {
+          spanId: 's-root',
+          traceId: 'eval-1',
+          parentSpanId: null,
+          kind: 'run',
+          name: 'agent.run',
+          startedAt: 0,
+          endedAt: 10,
+          status: 'ok',
+          attributes: {},
+          events: [
+            { time: 1, name: 'score', body: { name: 'eval', value: 0.8 } },
+            { time: 2, name: 'trace.truncated', body: { droppedEvents: 3, limit: 500 } },
+          ],
+        },
+      ],
+    });
+    const evRows = root.children.filter((r) => r.dataset?.ev);
+    assert.deepEqual(
+      evRows.map((r) => r.dataset.ev),
+      ['score', 'trace.truncated'],
+      '根 span 上的事件没了 —— 面板因此看不见评估分数与被截断警告',
+    );
+  });
 });

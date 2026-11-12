@@ -293,6 +293,19 @@ export interface RunNote {
   /** null = 全量（与 `toolSources` 的实参同义） */
   toolSources: string[] | null;
   multiTurn: boolean;
+  /**
+   * 这一轮模型最后回的那段正文 —— **唯一一份能在收尾之后重新取回的回复**。
+   *
+   * 为什么放这里：`finalText` 是 `app.run()` 的**返回值**，`engine/loop.ts` 不把它写进
+   * trace（trace 是执行账，不是对话账），所以它只活在 `run-done` 的那一帧 SSE 里。
+   * 面板此前就是这么用的（`state.reply = ev.finalText`）⇒ **切到别的 run、或页面重开一次，
+   * 回复就没了**，而用户会以为 agent 没回。note 与 run 同生命周期、同一条淘汰线
+   * （`MAX_NOTES`），是它唯一合理的落点。
+   *
+   * 缺省（undefined）= 这一轮没有回复（失败 / 中止 / 空回复），与空串同义 ——
+   * 不写 `''` 是为了「没有这个键」与「回复是空串」在磁盘/JSON 上仍可区分。
+   */
+  finalText?: string;
 }
 
 // ---------- 缺省预算护栏 ----------

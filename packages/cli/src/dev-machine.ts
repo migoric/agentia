@@ -426,7 +426,14 @@ export function update(
       if (ev.ok) lastError = null;
       const effects: DevEffect[] = [{ kind: 'disarm-abort-timer' }];
       if (ev.traceId !== null && note !== null) {
-        effects.push({ kind: 'note-run', traceId: ev.traceId, note });
+        // 回复（`finalText`）只有这一帧带 ⇒ 必须与 note 一起落账，否则面板切走再切回来
+        // 就再也取不到了（它不在 trace 上）。新建对象而不是改 `note`：pendingNote 是
+        // 上一事件的 state，就地改会让「同一份 note 被两条 run 共享」成为可能。
+        effects.push({
+          kind: 'note-run',
+          traceId: ev.traceId,
+          note: ev.finalText ? { ...note, finalText: ev.finalText } : note,
+        });
       }
       effects.push({
         kind: 'emit',

@@ -7838,6 +7838,60 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
 乱跳；③ 标题栏再挂一个「失败」红点 —— 排行的读数里已经有 `N 失败`，两个入口说同一件事
 就要同步维护两处。
 
+### 2026-11-12 ④ ref-inspector-truth：**面板说的每句话都得为真（批次 A）**
+
+**起于**：用户「整个调试功能你再 review 一下是否符合一个完整的调试看板，我感觉功能差了不少」。
+评审落在 `docs/reviews/2026-11-12/inspector-board-gap.md`，结论是两堆缺口：**看树**这块做得比
+多数开源面板细（逐层折叠 / 结构化正文 / str→json / 服务端同源 A-B diff），但**看一趟 run 的账**
+与**在一堆 run 里找到那一条**几乎是空的。更要紧的是其中五处**在说谎** —— 面板显示的是它自己
+相信的东西，不是发生过的事。本批只治这五处，不新增任何视图。
+
+**五条决定**（每条先写「它原本错在哪」）：
+
+1. **回复不再自己消失**。`finalText` 是 `app.run()` 的返回值，`engine/loop.ts` 不把它写进 trace；
+   面板此前只把它接在 `run-done` 那一帧 SSE 上 ⇒ 切到别的 run、甚至只刷新一次页面，那一轮的
+   结论就永远看不到了。现在它跟着 `RunNote` 落账（`/api/runs/:id` 的顶层 `note`），`open()` 在
+   清空回复之后**立刻取回**。空回复**不写这个键** —— 面板要能区分「这一轮本来没回复」与
+   「回复丢了」，两者都渲染成空块，但只有后者该被当成异常。
+2. **失败 / 中止轮真的进对话视图**。`mergeConversation` 读 `r.prompt`，而 `/api/runs` 的每一项
+   是 `{ …, note: { prompt } }` ⇒ join 恒对不上、一轮都补不出来，用户看到的是「模型好像没回过」。
+   单测喂的正是那个**生产不存在**的形状，所以一直绿。改读 `note.prompt`，fixture 换成生产形状
+   并加一条 `note: null`（记账丢了）的用例 —— 那种情况下**不猜**，跳过。
+3. **根 span 的事件不再整类丢失**。`reset()` 只把根登记在字面量 `'root'` 上，而 `fromTrace` 按
+   真 `spanId` 投递事件 ⇒ `spanMap.get` 落空 ⇒ `event()` 静默 return。丢的恰好都是挂在 run 根上
+   的那几条：评估结论 `score`、截断告警 `trace.truncated`、恢复段的 `approval.decided` ——
+   子 span 的事件一切正常，所以看起来像「框架没记」。`reset(rootName, rootId)` 收下真 id
+   （字面量 `'root'` 仍登记：官网 playground 的模拟脚本用它当根 id）。
+4. **列表首行显示 prompt**。dev 环起的 run 一律叫 `agent.run`（`engine/loop.ts` 的缺省，runner
+   不传 `runName`）⇒ 五十条一模一样的条目，只能靠时间戳认人。而真正区分它们的 `note.prompt`
+   一直有货、`/api/runs` 也已返回。首行给 prompt 的第一行，全文进 `title`。
+5. **收尾原因照实呈现**。`AgentStopReason` 有 14 个成员，面板此前只分辨 3 种。新增
+   `stopReasonClass` 把终态归成四类（正常 / 已中止 / 等人审批 / 被拦住），列表的圆点与第二行
+   文案、右栏标题、通知条四处共用它。`suspended` 第一次有了自己的一态：它的 trace 状态是 **ok**
+   （挂起段本身没出错）⇒ 只看 `ok` 会得到一个「正常跑完」的蓝点，而那一轮其实还挂着等人。
+   分类**不是**把 14 个值列全再兜底成 ok，而是「白名单 + 未知落被拦住」：框架新增成员时宁可
+   显示成被拦住并露出原文，也不能静默归成正常收尾 —— 后者正是这次要修的错。
+
+**代价**：`panel-logic.ts` 818→893、`inspector-page.html` 1725→1763、`dev-protocol.ts` +9、
+`dev-machine.ts` +3、`inspector-routes.ts` +3、`view.js` 385→395、`fromTrace.js` 190→192。
+
+**验证**：CLI 265 / trace-view 97 全绿。新增 `stop-reason.test.mjs` 跨包守卫 —— 读
+`src/engine/types.ts` 的 `AgentStopReason` 成员，逐个要求面板给出中文短语；反向再查一遍
+「面板认识但框架里没有」的拼写。**7 条变异各自咬住**：`fromTrace` 不传真 id / `reset` 不登记
+真 id / `mergeConversation` 读回顶层 prompt / `run-done` 不落 `finalText` /
+`stopReasonClass` 不认 `suspended` / 删掉一个短语 / 页面分别去掉 `trace.note.finalText` 与
+`r.note.prompt`。
+
+**无头 Chrome 实测**（自建夹具，四条 run 覆盖四态）：列表首行四条 prompt、四个圆点
+（蓝 / 红 / 空心橙 / 橙）、第二行带「撞到预算护栏 / 等人审批 / 已中止」；树底出现
+`trace.truncated` 与 `score`；**切到另一条 run 再切回来，回复（266 字符）仍在**。最后这条是
+在夹具**不推** `run-done` 的条件下验的 —— 否则测到的仍是那条 SSE，而不是落账这条路。
+
+**刻意没做**（批次 B/C）：run 级总账（cache / 成本 / 预算 / iterations / `typed`）、span
+attributes（`model` / `retry.attempt` / `handoff`）、搜索与过滤、深链 / 重跑 / 导出、时间轴；
+以及树渲染的 O(N²)（50 span 触发 151 次全树重建，在飞时每帧一次）—— 它是「在飞」那条路的
+地基，要先修它再谈时间轴。
+
 ## 11. 开放项
 
 

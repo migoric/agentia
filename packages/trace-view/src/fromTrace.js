@@ -148,8 +148,10 @@ export function playTrace(view, trace) {
   items.sort((a, b) => a.t - b.t || a.ord - b.ord || a.d - b.d || a.seq - b.seq);
 
   const rootRaw = String(root.name || 'run');
-  // 框架的 run 根名可能是 runName（如 'app'）或已是 'run · x' 形态，避免重复前缀
-  view.reset(rootRaw.startsWith('run') ? rootRaw : 'run · ' + rootRaw);
+  // 框架的 run 根名可能是 runName（如 'app'）或已是 'run · x' 形态，避免重复前缀。
+  // 第二个参数是**真 spanId**：根上的事件（score / trace.truncated / approval.decided）
+  // 按 spanId 投递，只登记字面量 'root' 会让它们全部静默丢失（见 view.js 的 reset）。
+  view.reset(rootRaw.startsWith('run') ? rootRaw : 'run · ' + rootRaw, String(root.spanId || ''));
 
   for (const it of items) {
     if (it.kind === 'start') {

@@ -192,8 +192,70 @@ export interface ConversationRunLike {
   stopReason?: string | null;
   /** run 根 span 的 `session.id`；没开会话的 run 没有这个键 */
   sessionId?: string | null;
-  /** CLI 侧记账：这次 run 发的 prompt（失败轮靠它才能显示出来） */
-  prompt?: string | null;
+  /**
+   * CLI 侧记账（`RunSummary.note`）。**prompt 在这里，不在顶层** ——
+   * `/api/runs` 的每一项是 `{ traceId, ok, stopReason, sessionId, note: { prompt, … } }`。
+   * 早先这里写的是顶层 `prompt?`，而生产形状里从来没有那个键 ⇒ 对不上 ⇒
+   * 失败轮 / 中止轮**一轮都 join 不出来**（症状是「模型好像没回过」，看不出是漏数据）。
+   * 单测当时喂的正是那个不存在的形状，所以一直是绿的。
+   */
+  note?: { prompt?: string | null } | null;
+}
+
+/**
+ * 收尾原因在**看板上的四类**（`AgentStopReason` 有 14 个成员，一色一个没法认：
+ * 13 种收尾里三对是同一件事的不同强度）。
+ *
+ *   正常收尾   end_turn / stop_sequence
+ *   人中止     aborted        —— 不是失败，是用户按了按钮
+ *   等人审批   suspended      —— **既不是成功也不是失败**：run 带着完整消息历史挂起，
+ *                                决定之后从原处继续。渲染成一个蓝点会让用户以为跑完了
+ *   被拦住     ok === false 的其余全部（max_tokens / budget_exceeded / max_iterations / …）
+ *
+ * 第四类刻意**不逐个列举**：它是「不在这三张白名单里的都算」，所以框架新增一个
+ * `AgentStopReason` 时面板不会把它静默归成「正常完成」—— 新原因默认落进「被拦住」并
+ * 显示原文（`stopReasonText` 对不认识的串原样返回）。反面做法（列全 14 个值再兜底成 ok）
+ * 一旦漏一个新成员，症状是**新护栏被显示成正常收尾**，正是这次要修的错。
+ */
+export type StopClass = 'ok' | 'aborted' | 'suspended' | 'failed';
+
+export function stopReasonClass(r: { ok: boolean; stopReason?: string | null }): StopClass {
+  const sr = r.stopReason ?? null;
+  if (sr === 'aborted') return 'aborted';
+  // suspended 先于 ok 判：引擎的 `isSuccessStopReason` 不把它算成功，而 trace 状态记 ok
+  // （挂起段本身执行无误）⇒ 只看 ok 就漏了「这一轮其实还等着人」。
+  if (sr === 'suspended') return 'suspended';
+  return r.ok ? 'ok' : 'failed';
+}
+
+/**
+ * 收尾原因的**中文短语**（面板显示用）。
+ *
+ * 未知串**原样返回**（不回落成「完成」、也不回落成空串）：面板不认识的
+ * `stop_reason` 只能说明面板落后于框架，把原文亮出来才能一眼看出是哪个新原因。
+ * 要覆盖的成员由 `test/stop-reason.test.mjs` 对着 `src/engine/types.ts` 的
+ * `AgentStopReason` 逐个数 —— 框架加了成员而这里没表态，那条守卫就红。
+ */
+const STOP_REASON_TEXT: Record<string, string> = {
+  end_turn: '模型自然收尾',
+  stop_sequence: '命中停止序列',
+  max_tokens: '撞到输出上限',
+  model_context_window_exceeded: '撞到上下文窗口',
+  refusal: '模型拒绝回答',
+  pause_turn: '模型请求暂停',
+  max_iterations: '撞到迭代上限',
+  result_missing: '没提交结构化结果',
+  budget_exceeded: '撞到预算护栏',
+  aborted: '已中止',
+  tool_use_no_blocks: '回合里没有可执行块',
+  suspended: '等人审批',
+  unknown_stop_reason: '未识别的收尾原因',
+  error: '出错',
+};
+
+export function stopReasonText(sr: string | null | undefined): string {
+  if (!sr) return '';
+  return STOP_REASON_TEXT[sr] ?? sr;
 }
 
 /**
@@ -205,11 +267,12 @@ export interface ConversationRunLike {
  * - run 列表把它标成红点（用户会以为是自己把工程改坏了）；
  * - 对话视图给这一轮打红边「（这一轮失败了…）」，而同一个 run 的通知条写着「已中止」。
  *
- * 判别顺序（**先 stopReason 后 ok**）与 `runDoneNotice` 是同一条语义，钉在单测里。
+ * 判别顺序归 `stopReasonClass`（**先 stopReason 后 ok**），与 `runDoneNotice` 同一条语义。
+ * 这里只是它的一元投影 —— 别在两处各写一遍：
+ * `suspended` 也不是失败（挂着等人，`ok` 同样可能是 false），旧实现漏掉它。
  */
 export function runIsFailure(r: { ok: boolean; stopReason?: string | null }): boolean {
-  if (r.stopReason === 'aborted') return false;
-  return !r.ok;
+  return stopReasonClass(r) === 'failed';
 }
 
 /** `MessageParam.content` 可能是 string，也可能是 content block 数组 —— 只取文本块 */
@@ -273,7 +336,7 @@ export function mergeConversation(
   for (const r of runs) {
     if (r.ok) continue;
     if ((r.sessionId ?? null) !== sessionId) continue;
-    const prompt = (r.prompt ?? '').trim();
+    const prompt = (r.note?.prompt ?? '').trim();
     if (prompt.length === 0 || seen.has(prompt)) continue;
     seen.add(prompt);
     // 判别顺序（先 stopReason 后 ok）在 runIsFailure 里，与通知条同一条语义
@@ -530,16 +593,28 @@ export function comparability(a: ComparableNote | null, b: ComparableNote | null
  * 但原因要可查）⇒ 中止时 `ok` 也是 **false**。所以必须**先**认 `stopReason`：
  * 反过来先看 `ok`，用户按的「中止」就会被显示成一句吓人的「run 失败」。
  * 这个顺序错一次很难在 code review 里看出来，所以钉在单测里。
+ *
+ * 四类模板（`stopReasonClass`）：原文一起给 —— 「撞到预算护栏」是给人读的，
+ * `budget_exceeded` 是给人 grep 的，两者都要。
  */
 export function runDoneNotice(ev: { ok: boolean; stopReason: string; error: string | null }): {
   text: string;
   isError: boolean;
 } {
-  if (ev.stopReason === 'aborted') {
+  const cls = stopReasonClass(ev);
+  const text = stopReasonText(ev.stopReason);
+  // 中文短语与标识符不同才拼（未识别的串 `text === sr`，只显示一次）
+  const why = text && text !== ev.stopReason ? `${text} · ${ev.stopReason}` : ev.stopReason;
+  if (cls === 'aborted') {
     return { text: 'run 已中止（trace 保住了）', isError: false };
   }
-  if (!ev.ok) {
-    return { text: `run 失败（${ev.stopReason}）：${ev.error || '未知原因'}`, isError: true };
+  if (cls === 'suspended') {
+    // 挂起不是结束：run 带着完整消息历史等人裁决，之后从原处继续。
+    // 旧文案把它写成「run 完成（suspended）」—— 那是在说一件没发生的事。
+    return { text: `run 停在审批（${why}）：裁决之后从挂起处继续`, isError: false };
+  }
+  if (cls === 'failed') {
+    return { text: `run 失败（${why}）：${ev.error || '未知原因'}`, isError: true };
   }
   return { text: `run 完成（${ev.stopReason}）`, isError: false };
 }
