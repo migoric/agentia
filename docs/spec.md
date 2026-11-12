@@ -7827,7 +7827,9 @@ description、schema、strict、审批与元数据，与输入顺序无关。Pro
     无破坏性 API 变更；三处安全语义收紧见 CHANGELOG：MCP 默认隐藏 HITL 工具、出站不跟随
     重定向、坏值改为响亮拒绝）+ 构建面把四个 lockfile 的下载源改回官方 registry（463 处；
     此前镜像站 5xx 让 deploy 镜像 job 连挂两轮，改后 174–368s → 20s）；
-  `AGENTIA_VERSION = '0.10.6'`。决策均见 §10。
+  → v0.10.7（调试面板展开态结构化渲染：逐层折叠 / 同构成表 / 键路径复制，
+    **无破坏性变更、无迁移动作**；`src/` 一行未动，改动全在 trace-view 渲染件与 CLI 静态面）；
+  `AGENTIA_VERSION = '0.10.7'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
