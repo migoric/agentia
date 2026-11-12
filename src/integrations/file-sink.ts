@@ -80,7 +80,9 @@ export function dayKeyOf(trace: Trace, now: number): string {
   const root = trace.spans.find((s) => s.spanId === trace.rootSpanId) ?? trace.spans[0];
   const started = root?.startedAt;
   const t = typeof started === 'number' && Number.isFinite(started) ? started : now;
-  return new Date(t).toISOString().slice(0, 10);
+  const date = new Date(t);
+  // 有限但超出 Date 可表示区间（如 Number.MAX_VALUE）同样不能让 export 在写盘前炸掉。
+  return (Number.isNaN(date.getTime()) ? new Date(now) : date).toISOString().slice(0, 10);
 }
 
 /** `…/traces.jsonl` + `2026-11-13` ⇒ `…/traces.2026-11-13.jsonl`（无扩展名时直接补 `.日期`）。 */

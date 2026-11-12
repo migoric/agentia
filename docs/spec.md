@@ -8029,7 +8029,13 @@ combo 必须是 `model=,source=,tenant=acme`，不许借别的属性填空。反
 
 **代价**：`src/core/tool.ts` / `core/schema.ts` / `core/limits.ts` / `engine/policy.ts` /
 `engine/turn.ts` / `engine/types.ts` / `integrations/file-sink.ts` 七个文件，公共面只多一个
-**可选**参数（`rotate`）与一个**可选**回调字段（`onCompactionFailure`），无新依赖、无破坏性变更。
+**可选**参数（`rotate`）与一个**可选**回调字段（`onCompactionFailure`），无新依赖。
+公共 API 形状向后兼容，但 **`maxItems` 是行为收紧**：已声明它的工具会从「超长放行」变为
+「回 `is_error`」。发布说明必须单列这一点，不能用「无破坏性变更」把它盖过去。
+
+**2026-11-12 复核修正（ref-invalid-trace-time-fallback）**：`dayKeyOf` 除了 NaN/缺字段，
+还须处理「有限但超出 Date 可表示区间」的 startedAt；非法值回退写盘时刻。新增真实 export
+回归用例，防止 `RangeError: Invalid time value` 让该条 trace 在写盘前丢失。
 
 ## 11. 开放项
 
