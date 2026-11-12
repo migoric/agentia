@@ -596,6 +596,27 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         }
       }
 
+      /* Markdown 正文进 trace 树（2026-11-12）：trace-view 是独立发布包、不带解析器，
+       * 所以「工具出参是一整篇 Markdown」这件事只能靠宿主**注入**。抽了不接 = 没抽 ——
+       * 这正是本仓反复踩过的那一档（⚠️ 但这次不是抽函数，是接线：漏接时页面照样不报错，
+       * 只是展开后仍然是 `#` 与 `|---|` 的源文，人以为「就这样」）。 */
+      {
+        const trees = [...page.matchAll(/createTraceView\(trace2?El\b/g)].length;
+        const wired = [...page.matchAll(/textBody:\s*traceTextBody/g)].length;
+        assert.equal(trees, 2, `页面应给两棵树建 view（主栏 + 并排），实际 ${trees}`);
+        assert.equal(
+          wired,
+          trees,
+          '每棵树都要接 `textBody` —— 并排那棵漏接就会「同一份 trace 两栏长得不一样」',
+        );
+        // 注入的正文必须真的**渲染**过（不是又把源文塞了一遍）
+        assert.match(
+          page,
+          /function traceTextBody[\s\S]{0,500}renderMarkdownInto\(box, text\)/,
+          'traceTextBody 必须走 renderMarkdownInto，否则等于没渲染',
+        );
+      }
+
       /* 中止语义的**接线**判据（2026-09-22 复核补）：判「这一轮失败了吗」必须走
        * `runIsFailure`，不能裸读 `r.ok`。引擎的 `abortedResult()` 刻意给已取消的 run 带
        * 结构化 error（取消不是失败，但原因要可查）⇒ 中止时 `ok === false`：裸读 ok 的两个

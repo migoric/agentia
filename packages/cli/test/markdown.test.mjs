@@ -19,6 +19,11 @@ const flat = (blocks) =>
     if (b.type === 'code') return `code(${b.lang}):${b.text}`;
     if (b.type === 'list')
       return `list(${b.ordered ? 'ol' : 'ul'}):${b.items.map(inlineText).join('|')}`;
+    // 表格：`table(对齐):表头 ~ 单元格 | 行 ~ 单元格 …`
+    if (b.type === 'table')
+      return `table(${b.align.join('/')}):${[b.header, ...b.rows]
+        .map((r) => r.map(inlineText).join('~'))
+        .join('|')}`;
     return 'hr';
   });
 
@@ -45,6 +50,9 @@ const allTypes = (blocks) => {
     seen.add(b.type);
     if (b.inline) walkInline(b.inline);
     if (b.items) b.items.forEach(walkInline);
+    if (b.header) b.header.forEach(walkInline);
+    // 表格的格子也要扫（新 token 类型若从这里溜进来，上面那条白名单断言就失效了）
+    if (b.rows) for (const r of b.rows) for (const n of r) walkInline(n);
   }
   return [...seen].sort();
 };
@@ -84,6 +92,62 @@ describe('面板的 Markdown 解析（纯逻辑，零依赖）', { skip: SKIP },
 
   it('引用：连续 `>` 行合成一段；行内换行保留', () => {
     assert.deepEqual(flat(M.parseMarkdown('> 引用一\n> 引用二')), ['quote:引用一\n引用二']);
+  });
+
+  it('表格：表头 + 分隔行才成立，列按**表头**对齐（缺的补空、多的丢掉）', () => {
+    assert.deepEqual(flat(M.parseMarkdown('| a | b |\n| --- | --- |\n| 1 | 2 |')), [
+      'table(/):a~b|1~2',
+    ]);
+    // 不带首尾竖线也认（GFM 允许）
+    assert.deepEqual(flat(M.parseMarkdown('a | b\n--- | ---\n1 | 2')), ['table(/):a~b|1~2']);
+    // 对齐标记三档
+    assert.deepEqual(flat(M.parseMarkdown('| l | c | r |\n|:--|:-:|--:|\n| 1 | 2 | 3 |')), [
+      'table(left/center/right):l~c~r|1~2~3',
+    ]);
+    // 少列补空、多列丢掉 —— 与 GFM 同口径，且**不静默改列数**（表头就是列数）
+    assert.deepEqual(flat(M.parseMarkdown('| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |')), [
+      'table(/):a~b|1~|1~2',
+    ]);
+    // `\|` 是单元格里的字面竖线，不是分隔
+    assert.deepEqual(flat(M.parseMarkdown('| a | b |\n|---|---|\n| x\\|y | 2 |')), [
+      'table(/):a~b|x|y~2',
+    ]);
+    // 单元格里的行内记号照常解析（表头也一样）
+    assert.deepEqual(flat(M.parseMarkdown('| **h** | b |\n|---|---|\n| `c` | 2 |')), [
+      'table(/):**h**~b|`c`~2',
+    ]);
+    // 表格之后紧跟一段正文：表格必须收尾（它没有围栏，边界只能靠「下一行还像不像表格」）
+    assert.deepEqual(flat(M.parseMarkdown('| a | b |\n|---|---|\n| 1 | 2 |\n正文')), [
+      'table(/):a~b|1~2',
+      'p:正文',
+    ]);
+  });
+
+  it('表格：三种「看着像但其实不是」都不许吞掉正文', () => {
+    // ① 只有一行带 `|` 的正文 —— 没有分隔行 ⇒ 段落
+    assert.deepEqual(flat(M.parseMarkdown('a | b')), ['p:a | b']);
+    // ② 分隔行只有一列（`---`）⇒ 是分隔线，不是表
+    assert.deepEqual(flat(M.parseMarkdown('a | b\n---')), ['p:a | b', 'hr']);
+    // ③ 表头与分隔行列数不等 ⇒ 不是表（否则 `a | b` 后面随便一个 `---` 就成表头）
+    assert.deepEqual(flat(M.parseMarkdown('a | b\n--- | --- | ---')), ['p:a | b\n--- | --- | ---']);
+    // ④ 码块里的 `|` 原样保留（不做表格）
+    assert.deepEqual(flat(M.parseMarkdown('```\n| a | b |\n|---|---|\n```')), [
+      'code():| a | b |\n|---|---|',
+    ]);
+  });
+
+  it('HTML 注释被丢弃（可跨行），但**码块里的不丢**', () => {
+    assert.deepEqual(flat(M.parseMarkdown('<!-- 旁注 -->\n\n正文')), ['p:正文']);
+    // 跨行 + 中间有"块级"形状的行：没有跨行开关的话，这三行会被当成三段正文
+    assert.deepEqual(flat(M.parseMarkdown('<!--\n# 不是标题\n- 不是列表\n-->\n### 真标题')), [
+      'h:真标题',
+    ]);
+    // 行内注释：只切掉注释本身，两侧文字都留着
+    assert.deepEqual(flat(M.parseMarkdown('前<!-- x -->后')), ['p:前后']);
+    // 码块里的注释是代码，不是注释
+    assert.deepEqual(flat(M.parseMarkdown('```html\n<!-- 保留 -->\n```')), [
+      'code(html):<!-- 保留 -->',
+    ]);
   });
 
   it('行内：行内码 / 粗体 / 斜体 / 链接 / 自动链接', () => {
@@ -129,6 +193,7 @@ describe('面板的 Markdown 解析（纯逻辑，零依赖）', { skip: SKIP },
       'code',
       'list',
       'quote',
+      'table',
       'hr',
       'text',
       'strong',
@@ -198,5 +263,35 @@ describe('面板的 Markdown 解析（纯逻辑，零依赖）', { skip: SKIP },
       Date.now() - t0 < 2_000,
       `1 万行解析耗时 ${Date.now() - t0}ms，超了 2s 说明有回溯爆炸`,
     );
+  });
+
+  it('判据 `looksLikeMarkdown`：块级记号至少两分，宁漏不错', () => {
+    // 真实形态：SKILL.md / 错误汇总报告（标题 + 列表 + 粗体）
+    assert.equal(
+      M.looksLikeMarkdown(
+        '# JS 错误巡检\n\n## 规则\n\n- 第一条\n- 第二条\n\n**注意** 别派子代理。',
+      ),
+      true,
+    );
+    // 单看一处围栏码块就够（强记号，两分）
+    assert.equal(M.looksLikeMarkdown('用法：\n\n```bash\nnpm run dev\n```'), true);
+    // 表格同理
+    assert.equal(M.looksLikeMarkdown('| a | b |\n| --- | --- |\n| 1 | 2 |'), true);
+    // 纯日志：一个块级记号都没有 ⇒ 原文
+    assert.equal(
+      M.looksLikeMarkdown('2026-11-12 10:00:01 INFO 启动\n2026-11-12 10:00:02 ERROR 连不上\n'),
+      false,
+    );
+    // **Python 源码**：一堆 `#` 注释 + `**kwargs` —— 只按「行内记号」判就会把整份源码判成
+    // Markdown（段落合并会毁掉缩进），所以行内记号**不参与**判据
+    assert.equal(M.looksLikeMarkdown('# 读配置\ndef load(**kwargs):\n    return kwargs\n'), false);
+    // 只有一处标题（一分）也不够
+    assert.equal(M.looksLikeMarkdown('# 只有一个标题\n\n正文\n'), false);
+    // 标题 + 列表 = 两分
+    assert.equal(M.looksLikeMarkdown('# 标题\n\n- a\n- b\n'), true);
+    assert.equal(M.looksLikeMarkdown(''), false);
+    assert.equal(M.looksLikeMarkdown(null), false);
+    // 超长一律不渲染（几百 KB 逐行建 DOM 会把面板卡住）
+    assert.equal(M.looksLikeMarkdown('# 标题\n- a\n' + 'x'.repeat(100_001)), false);
   });
 });

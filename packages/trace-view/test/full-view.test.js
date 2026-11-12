@@ -585,3 +585,120 @@ describe('接线：对象入参挂结构化块，字符串出参仍走老路', (
     );
   });
 });
+
+/**
+ * 宿主注入的正文（Markdown）—— 2026-11-12 晚。
+ *
+ * 解析器只有一份（`packages/cli/src/markdown.ts`），而本包是**独立发布单元**、不能反向
+ * 依赖 CLI ⇒ 走注入：宿主给 `textBody(text)`，返回元素就渲染、返回 null 就保持原文。
+ * 这里不验 Markdown 的排版（那是 CLI 包的事），只验本包负责的四件事：
+ * ① 注入的正文用上、且**不再铺树**（同一段内容两套呈现并存，比不渲染更糟）；
+ * ② 头部写清「原本是字符串 + md」，复制取**原文**；
+ * ③ `textBody` 只在**展开时**调用 —— 折叠态每条事件都会重画，挂那儿等于把历史正文白解析一遍；
+ * ④ 宿主抛错 ⇒ 回落原文，不许让整棵树白屏。
+ */
+describe('宿主注入的正文（Markdown）：挂同一个块，不铺树', () => {
+  const mdText = '# 标题\n\n- a';
+
+  it('给了 body ⇒ 原样挂上、不铺树，头部写 `string · N 字符 · md` 并打 md 标记', () => {
+    const injected = makeNode();
+    injected.className = 'md';
+    const box = createFullView(mdText, { body: injected });
+
+    assert.equal(box.dataset.kind, 'md');
+    const head = textOf(allByClass(box, 'tr-full-head')[0]);
+    // 头部只写「原本是字符串 + 字符数」；`md` 由标记说 —— 同一行说两遍会让人以为
+    // 其中一个是别的意思
+    assert.ok(head.includes(`string · ${mdText.length} 字符`), `头部要说清原本是字符串：${head}`);
+    assert.equal(head.includes('· md'), false, '不要和 md 标记重复');
+    assert.ok(textOf(allByClass(box, 'tr-full-md')[0]).includes('md'), '要有 md 标记');
+
+    const body = allByClass(box, 'tr-full-body')[0];
+    assert.deepEqual(body.children, [injected], '宿主节点原样挂进 body');
+    assert.equal(allByClass(box, 'tr-full-line').length, 0, '注入正文时不许再铺树');
+  });
+
+  it('复制取的是**原文**（Markdown 源文），不是宿主渲染出来的东西', async () => {
+    const wrote = [];
+    globalThis.navigator = {
+      clipboard: {
+        writeText(s) {
+          wrote.push(s);
+          return Promise.resolve();
+        },
+      },
+    };
+    const box = createFullView(mdText, { body: makeNode() });
+    allByClass(box, 'tr-full-copy')[0].click();
+    await Promise.resolve();
+    assert.deepEqual(wrote, [mdText]);
+  });
+});
+
+describe('接线：宿主 `textBody` 认得的字符串正文', () => {
+  it('命中 ⇒ 挂块 + 行标 tr-structured + `.tr-io` 仍是原文', () => {
+    const root = makeNode();
+    const injected = makeNode();
+    const view = createTraceView(root, { textBody: () => injected });
+    playTrace(view, traceFixture());
+
+    evRows(root)[1].click();
+    const row = evRows(root)[1];
+    assert.ok(row.className.includes('tr-structured'), '标出来，CSS 才会隐藏 .tr-io');
+
+    const block = root.children.find((r) => (r.className || '') === 'tr-full');
+    assert.ok(block, '展开行之后必须有块');
+    assert.ok(textOf(allByClass(block, 'tr-full-md')[0]).includes('md'), '标出「渲染过」');
+
+    const io = row.children.find((c) => c.className === 'tr-io');
+    assert.equal(io.textContent, '纯文本结果', '.tr-io 仍是原文（复制 / 选中都靠它）');
+  });
+
+  it('返回 null（不是那种正文）⇒ 与没注入完全一样：不挂块', () => {
+    const root = makeNode();
+    const view = createTraceView(root, { textBody: () => null });
+    playTrace(view, traceFixture());
+
+    evRows(root)[1].click();
+    assert.ok(!evRows(root)[1].className.includes('tr-structured'));
+    assert.equal(
+      root.children.some((r) => (r.className || '') === 'tr-full'),
+      false,
+      '不是 Markdown 就别挂块',
+    );
+  });
+
+  it('**只在展开时调用** —— 折叠态每条事件都会重画，挂那儿等于白解析所有历史正文', () => {
+    const root = makeNode();
+    let calls = 0;
+    const view = createTraceView(root, {
+      textBody: () => {
+        calls += 1;
+        return null;
+      },
+    });
+    playTrace(view, traceFixture());
+    assert.equal(calls, 0, '折叠态一次都不该调');
+
+    evRows(root)[1].click();
+    assert.ok(calls > 0, '展开之后才调');
+  });
+
+  it('宿主渲染器抛错 ⇒ 回落原文，整棵树不白屏', () => {
+    const root = makeNode();
+    const view = createTraceView(root, {
+      textBody: () => {
+        throw new Error('boom');
+      },
+    });
+    playTrace(view, traceFixture());
+
+    assert.doesNotThrow(() => evRows(root)[1].click());
+    assert.ok(!evRows(root)[1].className.includes('tr-structured'));
+    assert.equal(
+      root.children.some((r) => (r.className || '') === 'tr-full'),
+      false,
+    );
+    assert.ok(evRows(root).length >= 2, '一条坏正文不该让整棵树消失');
+  });
+});
