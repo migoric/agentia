@@ -213,6 +213,21 @@ describe('jsonlTraceSink 的按天轮转（2026-11-13 ref-checklist-four）', ()
     assert.equal(dailyArchivePath('/a/traces', '2026-11-11'), '/a/traces.2026-11-11');
   });
 
+  it('非法 startedAt（超出 Date 区间）回退写盘日，export 不抛也不丢记录', () => {
+    const invalid = makeTrace('invalid-time', Number.MAX_VALUE);
+    assert.equal(dayKeyOf(invalid, D(13)), '2026-11-13');
+
+    const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
+    try {
+      const file = join(dir, 'traces.jsonl');
+      const sink = jsonlTraceSink({ path: file, rotate: 'daily' });
+      assert.doesNotThrow(() => sink.export(invalid));
+      assert.deepEqual(ids(file), ['invalid-time']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('缺省不轮转：跨天的 trace 仍写进同一个文件，不产生任何归档', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentia-jsonl-'));
     try {
