@@ -761,3 +761,58 @@ export function collapseDecision(
     : '';
   return { collapsed, lines, chars, hint };
 }
+
+// ---------- ④ 右栏三块的标题栏读数：**收起不等于失明** ----------
+
+/**
+ * 右栏三块（调用树 / 能力排行 / 回复）都能折叠（2026-11-12 ref-panel-panes）。
+ *
+ * 折叠后标题栏是这一块**唯一**还看得见的东西 ⇒ 它必须自己回答「值不值得展开」。
+ * 这不是装饰：把整块收起来却一个数都不留，用户就只能在「占屏」与「失明」之间二选一 ——
+ * 那恰好是这次改动之前的状态（三块挤在一列，谁都不够高）。
+ *
+ * 三条都是**纯格式化**（不量 DOM、不读时钟、不看窗口），所以它们进得了单测；
+ * 面板那边只负责把返回值写进 `textContent`。
+ */
+function fmtCount(n: number): string {
+  const v = Number.isFinite(n) && n > 0 ? n : 0;
+  if (v < 1000) return String(v);
+  const k = v / 1000;
+  // 一万以上不保留小数：标题栏只有一行，`12.3k` 比 `12k` 多不出信息
+  return `${k < 10 ? k.toFixed(1) : String(Math.round(k))}`.replace(/\.0$/, '') + 'k';
+}
+
+/** 调用树：`58 span`。span 数是这一块「有没有东西看」的最小信号，也随在飞帧增长 */
+export function traceMeta(spanCount: number): string {
+  return `${fmtCount(spanCount)} span`;
+}
+
+/**
+ * 能力排行：`7 项 · 24 次 · 2 失败`。
+ *
+ * 失败数**只在真的有人失败时**出现 —— 恒挂一个「0 失败」等于给每一行加噪声，
+ * 与 `collapseDecision` 的 `hint` 同一条纪律（空的话就别占位置）。
+ * `errors` 的语义是**工具/护栏报错次数**（`summarizeTrace` 的账），不是「有几个能力出错」。
+ */
+export function summaryMeta(rows: ReadonlyArray<{ calls: number; errors: number }>): string {
+  if (!Array.isArray(rows) || rows.length === 0) return '0 项';
+  let calls = 0;
+  let errors = 0;
+  for (const r of rows) {
+    calls += Number.isFinite(r?.calls) ? r.calls : 0;
+    errors += Number.isFinite(r?.errors) ? r.errors : 0;
+  }
+  const head = `${rows.length} 项 · ${fmtCount(calls)} 次`;
+  return errors > 0 ? `${head} · ${fmtCount(errors)} 失败` : head;
+}
+
+/**
+ * 回复：`32 行 · 1.4k 字符`。
+ *
+ * 行/字符数的算法**复用 `collapseDecision`**（同一个 `split('\n')` 口径）——
+ * 标题栏说「32 行」而正文折叠控件说「共 31 行」是最难查的一类不一致。
+ */
+export function replyMeta(text: string): string {
+  const d = collapseDecision(text);
+  return d.lines > 1 ? `${d.lines} 行 · ${fmtCount(d.chars)} 字符` : `${fmtCount(d.chars)} 字符`;
+}

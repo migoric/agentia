@@ -62,22 +62,60 @@
       aside { display: flex; flex-direction: column; overflow: hidden; }
       #tabs, #chat-bar { flex: none; }
       #runs, #chat { flex: 1 1 auto; min-height: 0; overflow: auto; }
-      /* 右栏分层：`#trace` 是**唯一**无界增长的部分（它随 span 数长）⇒ 只有它 flex 撑开并滚；
-         回复 / 能力排行 / 用量固定在下方，各自有上限（回复很长时在**它自己那块**里滚，
-         而不是把树推出屏幕 —— 这与「看树」和「读回复」两个动作各自独立是一致的）。 */
+      /* 右栏分层：三块（调用树 / 能力排行 / 回复）**分同一个剩余高度**，每块自己滚。
+         为什么不再「只有树撑开、其余写死 38vh」：写死的上限在只有一块要看时是**浪费**
+         （回复长时它自己那块滚，树反而只有半屏），在块数变多时又是**挤**。折叠是用户能
+         直接操作的那个旋钮 —— 收起不要的，剩下的自然变大。 */
       section {
         padding: 14px; font-family: var(--mono); font-size: 12px;
         display: flex; flex-direction: column; overflow: hidden;
       }
       #ttl { flex: none; }
-      #trace { flex: 1 1 auto; min-height: 140px; overflow: auto; }
-      #summary, #reply, .usage { flex: none; max-height: 38vh; overflow: auto; }
-      /* 并排 A/B：两棵树各占一半、**各自独立滚**（一棵树很长时不该把另一棵推出屏幕 ——
-         与「树是唯一无界部分」那条纪律同款，只是现在无界的部分有两块）。
-         `#trace2` 只在并排时存在（单run 时 hidden），此时 `#trace` 让出 50%。 */
+      #panes { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+      .pane { display: flex; flex-direction: column; min-height: 0; }
+      .pane[hidden] { display: none; }
+      .pane + .pane { border-top: 1px solid var(--border); padding-top: 6px; }
+      /* 展开的各块**按份**分剩余高度（收掉一块，另一块自然变大）；
+         收起的只留标题栏 —— `flex: 0 0 auto` 是关键：它不许参与剩余空间的分配。 */
+      .pane[data-open='1'] { flex: 1 1 0; }
+      /* 回复按 1.5 份：它是这次 run 的**结论**，而树是过程 —— 平分的话跑完只剩四行正文，
+         等于逼用户先折掉别的块才发现内容被裁了。比例是弹性的（basis 为 0 ⇒ 不会撑破容器），
+         窗口再矮也只是各自更小，不会溢出到下面的用量行。 */
+      #pane-reply[data-open='1'] { flex-grow: 1.5; }
+      /* 排行是一张**有界**的表：按自己内容的高度放，长过 45% 才在它自己那块里滚。
+         给它也按份分剩余高度的话，短表下面会空出一片 —— 那块空白本该属于树或回复。 */
+      #pane-summary[data-open='1'] { flex: 0 1 auto; max-height: 45%; }
+      .pane[data-open='0'] { flex: 0 0 auto; }
+      .pane-head {
+        flex: none; display: flex; align-items: baseline; gap: 6px; width: 100%;
+        background: none; border: 0; padding: 0 0 4px; color: var(--muted);
+        font: inherit; font-family: var(--mono); font-size: 11px; text-align: left; cursor: pointer;
+      }
+      .pane-head:hover { color: var(--text); }
+      .pane-head:focus-visible { outline: 1px solid var(--ice); outline-offset: 2px; }
+      /* caret 走 CSS 生成内容（不是在 JS 里改 textContent）：它是**纯装饰**，
+         与 `data-open` 这个唯一状态同源，就不会出现「箭头说开着、内容收着」。 */
+      .pane-caret { flex: none; width: 9px; color: var(--faint); }
+      .pane[data-open='1'] > .pane-head .pane-caret::before { content: '▾'; }
+      .pane[data-open='0'] > .pane-head .pane-caret::before { content: '▸'; }
+      .pane-name { color: var(--text); letter-spacing: .2px; }
+      .pane-meta { margin-left: auto; color: var(--faint); }
+      .pane-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+      .pane[data-open='0'] > .pane-body { display: none; }
+      /* 调用树这一块的 body **自己不滚** —— 滚动交给 `#trace` / `#trace2`
+         （并排时是两棵各自滚的树，body 滚会把它们的表头一起带走）。
+         ⚠️ 这条带 id 的那一段**必须**跟着 `[data-open='1']` 走：id 选择器压过下面那条
+         `.pane[data-open='0'] > .pane-body { display: none }`（1,1,0 vs 0,3,0）——
+         第一版没加，结果折叠后树照样铺满（面板里"收了等于没收"，比不折叠更糟）。 */
+      #pane-trace[data-open='1'] > .pane-body { display: flex; flex-direction: column; overflow: hidden; }
+      #trace { flex: 1 1 auto; min-height: 120px; overflow: auto; }
+      .usage { flex: none; }
+      /* 并排 A/B：两棵树各占一半、**各自独立滚**（一棵树很长时不该把另一棵推出屏幕）。
+         `#trace2` 只在并排时存在（单run 时 hidden）。 */
+      .cmp-on #pane-trace > .pane-body { flex-direction: row; }
       .cmp-on #trace { flex: 1 1 50%; }
       .tr-compare {
-        flex: 1 1 50%; min-height: 140px; overflow: auto;
+        flex: 1 1 50%; min-height: 120px; overflow: auto;
         border-left: 1px solid var(--border);
       }
       #diffbar { flex: none; max-height: 30vh; overflow: auto; padding-bottom: 6px; }
@@ -94,7 +132,9 @@
          两者可以不同 —— 正在看的可能不在对比里）。用左边框双线区分，不靠颜色。 */
       .run.cmp { box-shadow: inset 2px 0 0 var(--warn); }
       .run.cmp.active { box-shadow: inset 2px 0 0 var(--ice), inset 4px 0 0 var(--warn); }
-      /* 窄屏：两栏并排已经太窄 ⇒ 回到单列 + 整页滚动（此时「整页滚」才是唯一合理的形态） */
+      /* 窄屏：两栏并排已经太窄 ⇒ 回到单列 + 整页滚动（此时「整页滚」才是唯一合理的形态）。
+         三块也回到「各自自然高度」—— 屏幕本来就装不下，再按比例分剩余高度只会让每块都变成
+         一条缝；此时折叠仍然有效（收起的照样只剩标题栏），但它不再是唯一的高度旋钮。 */
       @media (max-width: 860px) {
         html, body { height: auto; }
         body { overflow: visible; }
@@ -102,9 +142,11 @@
         aside { overflow: visible; }
         section { overflow: visible; }
         #runs, #chat, #trace, .tr-compare { overflow: visible; }
+        #panes { flex: none; }
+        .pane[data-open='1'] { flex: none; }
         #trace, .tr-compare { min-height: 320px; }
         .cmp-on #trace { flex: 1 1 auto; }
-        #summary, #reply, .usage, #diffbar { max-height: none; }
+        .usage, #diffbar { max-height: none; }
       }
       .run {
         display: block; width: 100%; text-align: left; cursor: pointer;
@@ -154,11 +196,12 @@
       #chat-bar[hidden] { display: none; }
       #chat-sid { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 
+      /* 回复正文：它现在住在「回复」这一块里（上面有自己的标题栏），
+         所以不再要外边距，也不再自带 max-height —— 高度由块分、滚动由 `.pane-body` 出。 */
       #reply {
-        margin: 14px 0 0; padding: 10px; border: 1px solid var(--border); border-radius: 4px;
+        padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px;
         background: #0e0e10; word-break: break-word; color: var(--muted);
       }
-      #reply[hidden] { display: none; }
 
       /* —— 模型正文：Markdown 渲染 ——
          `.md` 里所有元素都是 createElement 造出来的（解析器不产生 HTML，渲染器不用 innerHTML），
@@ -306,14 +349,46 @@
           <div id="diff-body"></div>
         </div>
         <!--
-          双栏容器：并排时这里是**两个** trace 视图，单run 时只有一个。
-          ⚠️ 不用「同一棵树改CSS 成两半」—— trace-view 的树是自绘的，两棵树必须两个容器。
+          右栏三块：调用树 / 能力排行 / 回复。**三块都能折叠**（2026-11-12 ref-panel-panes）。
+          为什么：这块栏位的高度是三者抢的 —— 三块同时展开时调用树只剩十几行、回复只剩两段，
+          读谁都不够；而多数时刻用户只在看其中一块。折叠掉不要的那两块，剩下那块自动铺满
+          （`flex` 分的是同一个剩余空间，不是三份写死的 vh）。
+          ⚠️ 折叠态在标题栏留一行**规模读数**（N span / N 项 / N 行）—— 收起不等于失明。
         -->
-        <div id="trace" class="tr-single"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
-        <div id="trace2" class="tr-compare" hidden></div>
-        <!-- 能力排行（G2）：哪个能力慢 / 贵 / 爱失败 —— 调优从这里下手 -->
-        <div id="summary"></div>
-        <pre id="reply" hidden></pre>
+        <div id="panes">
+          <div class="pane" id="pane-trace" data-open="1">
+            <button class="pane-head" id="head-trace" type="button" aria-expanded="true" aria-controls="body-trace">
+              <span class="pane-caret" aria-hidden="true"></span>
+              <span class="pane-name">调用树</span>
+              <span class="pane-meta" id="meta-trace"></span>
+            </button>
+            <div class="pane-body" id="body-trace">
+              <!--
+                双栏容器：并排时这里是**两个** trace 视图，单run 时只有一个。
+                ⚠️ 不用「同一棵树改CSS 成两半」—— trace-view 的树是自绘的，两棵树必须两个容器。
+              -->
+              <div id="trace" class="tr-single"><div class="tr-empty">// 选一个 run 查看调用树</div></div>
+              <div id="trace2" class="tr-compare" hidden></div>
+            </div>
+          </div>
+          <!-- 能力排行（G2）：哪个能力慢 / 贵 / 爱失败 —— 调优从这里下手 -->
+          <div class="pane" id="pane-summary" data-open="1" hidden>
+            <button class="pane-head" id="head-summary" type="button" aria-expanded="true" aria-controls="body-summary">
+              <span class="pane-caret" aria-hidden="true"></span>
+              <span class="pane-name">能力排行</span>
+              <span class="pane-meta" id="meta-summary"></span>
+            </button>
+            <div class="pane-body" id="body-summary"><div id="summary"></div></div>
+          </div>
+          <div class="pane" id="pane-reply" data-open="1" hidden>
+            <button class="pane-head" id="head-reply" type="button" aria-expanded="true" aria-controls="body-reply">
+              <span class="pane-caret" aria-hidden="true"></span>
+              <span class="pane-name">回复</span>
+              <span class="pane-meta" id="meta-reply"></span>
+            </button>
+            <div class="pane-body" id="body-reply"><div id="reply"></div></div>
+          </div>
+        </div>
         <div class="usage" id="usage" hidden>
           <span>in <b id="u-in">0</b></span>
           <span>out <b id="u-out">0</b></span>
@@ -397,6 +472,9 @@
         runDoneNotice,
         runIsFailure,
         shortenPath,
+        replyMeta,
+        summaryMeta,
+        traceMeta,
         toggleCompare,
         turnKey,
       } from './panel-logic.js';
@@ -826,6 +904,70 @@
         }
       }
 
+      // ---------- 右栏三块的折叠（收起不要的，剩下的自动变大） ----------
+
+      /**
+       * 折叠态是**布局偏好**，不是数据：切 run / 重新打开页面都不该把它重置
+       * （每次回来都「三块全开、谁都不够高」等于没做）。所以它进 localStorage。
+       * 存不下（隐私模式 / 配额满 / 被禁用）就只活这一次会话 —— 面板不因为记不住布局而白屏，
+       * 这也是下面那个 `try` 存在的唯一理由。
+       */
+      const PANES = ['trace', 'summary', 'reply'];
+      const PANE_KEY = 'agentia.panes';
+      const paneEls = {};
+      for (const id of PANES) {
+        paneEls[id] = { box: $(`pane-${id}`), head: $(`head-${id}`), meta: $(`meta-${id}`) };
+      }
+      const openPanes = (() => {
+        try {
+          const raw = JSON.parse(localStorage.getItem(PANE_KEY) || 'null');
+          return new Set(Array.isArray(raw) ? raw.filter((id) => PANES.includes(id)) : PANES);
+        } catch {
+          return new Set(PANES);
+        }
+      })();
+
+      /**
+       * 写折叠态的**唯一**入口（含初始化）。
+       *
+       * `data-open`（视觉）与 `aria-expanded`（语义）必须一起改 —— 只改前者，屏幕阅读器读到的
+       * 还是「展开」；只改后者，屏幕上是收着的。两条同源的守卫在 `test/structure.test.mjs`
+       * （W6：`dataset.open =` 全文件只许出现一次）。
+       */
+      function applyPane(id, open) {
+        const p = paneEls[id];
+        p.box.dataset.open = open ? '1' : '0';
+        p.head.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) openPanes.add(id);
+        else openPanes.delete(id);
+      }
+
+      /** 用户点击（或初始化之后）才落盘：`applyPane` 在初始化时也会跑，不该顺手写一遍盘 */
+      function persistPanes() {
+        try {
+          localStorage.setItem(PANE_KEY, JSON.stringify([...openPanes]));
+        } catch {
+          /* 存不下就算了：这一次会话内折叠仍然有效 */
+        }
+      }
+
+      /**
+       * 标题栏读数。**只在真的变了时**写 —— 在飞时每一帧都会调它，无谓的赋值会白触发重排
+       * （调用树那块的读数是随 span 数增长的，帧率下这个差别指的是真的会掉帧）。
+       */
+      function setPaneMeta(id, text) {
+        const el = paneEls[id].meta;
+        if (el.textContent !== text) el.textContent = text;
+      }
+
+      for (const id of PANES) {
+        paneEls[id].head.addEventListener('click', () => {
+          applyPane(id, paneEls[id].box.dataset.open !== '1');
+          persistPanes();
+        });
+        applyPane(id, openPanes.has(id));
+      }
+
       // ---------- 模型正文的渲染（Markdown + 长了就折叠） ----------
 
       /**
@@ -960,17 +1102,22 @@
        * 折叠控件放在正文**下方、左对齐**，不在行尾悬 caret：trace-view 那边 caret 靠右是因为
        * 行是 nowrap 的表格状布局，「右端」本来就是「这一行结束了」的位置；正文块不是那个形态，
        * 一个 10px 的箭头挂在右上角没人会去找。判定走 `collapseDecision`（纯逻辑、带单测）。
+       *
+       * `opts.clamp === false` 关掉**内层**的高度夹（回复那一块用）：那块自己已经能折叠、
+       * 自己会滚，再在里面夹一刀就出现两个「展开」—— 一个收整块、一个收正文，点错哪个都
+       * 不像自己期望的。对话轮仍要夹：它长在一列滚滚条里，一条长回复能把整列顶掉。
        */
-      function renderMessage(wrap, text, key) {
+      function renderMessage(wrap, text, key, opts = {}) {
         wrap.classList.add('md-wrap');
         const body = document.createElement('div');
         body.className = 'md';
         const d = collapseDecision(text);
+        const clamp = opts.clamp !== false;
         const open = expandedMsgs.has(key);
-        if (d.collapsed && !open) body.classList.add('md-clamped');
+        if (clamp && d.collapsed && !open) body.classList.add('md-clamped');
         renderMarkdownInto(body, text);
         wrap.appendChild(body);
-        if (!d.collapsed) return; // 短正文不挂控件（挂一个「展开」是噪声）
+        if (!clamp || !d.collapsed) return; // 短正文不挂控件（挂一个「展开」是噪声）
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'md-toggle';
@@ -984,15 +1131,19 @@
         wrap.appendChild(btn);
       }
 
-      /** 右栏底部那块回复正文。key 带 traceId ⇒ 换一轮就是一个新的折叠态 */
+      /**
+       * 右栏「回复」那一块。key 带 traceId ⇒ 换一轮就是一个新的折叠态。
+       *
+       * 没有回复时**整块藏起来**（不是留个空的标题栏）：不做空壳是这块面板的既有口径，
+       * 而一个永远挂在下面的「回复 ▸」会让人以为回复被自己折起来了。
+       */
       function renderReply() {
         replyEl.replaceChildren();
-        if (!state.reply) {
-          replyEl.hidden = true;
-          return;
-        }
-        replyEl.hidden = false;
-        renderMessage(replyEl, state.reply, `reply:${state.replyFor ?? ''}`);
+        const shown = Boolean(state.reply);
+        paneEls.reply.box.hidden = !shown;
+        if (!shown) return;
+        renderMessage(replyEl, state.reply, `reply:${state.replyFor ?? ''}`, { clamp: false });
+        setPaneMeta('reply', replyMeta(state.reply));
       }
 
       // ---------- 对话流（只在多轮开 + 有会话文件时出现） ----------
@@ -1092,6 +1243,11 @@
         state.replyFor = null;
         renderReply();
         summaryEl.replaceChildren();
+        // 排行与回复这两块在「这一轮还没产出」时**整块不出现**（不做空壳），
+        // 但折叠态留着 —— 下一轮跑完它们按用户原来的布局回来
+        paneEls.summary.box.hidden = true;
+        setPaneMeta('summary', '');
+        setPaneMeta('trace', '');
         usageEl.hidden = true;
         ttlEl.textContent = '';
         const ph = document.createElement('div');
@@ -1119,6 +1275,7 @@
           if (!playTrace(view, t)) return;
           ttlEl.textContent = `${t.traceId}（在飞）`;
           usageEl.hidden = false;
+          setPaneMeta('trace', traceMeta(t.spans.length));
         });
       }
 
@@ -1196,7 +1353,13 @@
         ttlEl.textContent = trace.traceId;
         usageEl.hidden = false;
         playTrace(view, trace);
-        summaryEl.innerHTML = renderSummary(summarizeTrace(trace));
+        // 排行算一次、两处消费（表格 + 标题栏读数）：标题说「3 项」而表里有 4 行是
+        // 最难查的一类不一致 —— 同源就不会有这问题
+        const rows = summarizeTrace(trace);
+        summaryEl.innerHTML = renderSummary(rows);
+        paneEls.summary.box.hidden = false;
+        setPaneMeta('summary', summaryMeta(rows));
+        setPaneMeta('trace', traceMeta(trace.spans ? trace.spans.length : 0));
         // 回复正文只对**刚跑完的那一轮**有意义（trace 上没有它 —— 它是 run-done 事件带的）
         // ⇒ 打开**别的** run 时必须清掉，否则它挂在别人的 trace 底下（张冠李戴）。
         //

@@ -63,7 +63,20 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   的正文渲染器，含它「为什么是注入、不是让 trace-view 自带解析器」的口径注）；
     //   +10 两处 `createTraceView(..., { textBody })` 接线与注释。判据仍在 markdown.ts（有单测），
     //   本文件只留渲染与接线。基线 = ceil(1562 × 1.05) = 1641。
-    'inspector-page.html': 1641,
+    // 2026-11-12（**右栏三块都能折叠**，ref-panel-panes）：1562 → 1725（+163）。
+    //   起因是用户实测的那张图：调用树 / 能力排行 / 回复三块挤在同一列，三块同时展开时
+    //   调用树只剩十几行、回复只剩两段 —— 而之前两个下块的 38vh 是**写死**的，跟"只有一块要看"
+    //   的常见情形正好相反。这一笔把高度改成三块分同一个剩余空间。
+    //   +20 外壳（`#panes` + 三个 `.pane` + 标题栏按钮与 aria）+ 那段「高度是抢的」的注；
+    //   +34 CSS（分高度的三条、标题栏、caret 走 CSS 生成内容、并排改挂在 `#pane-trace > .pane-body`、
+    //       窄屏回到自然高度）；+55 折叠接线（`applyPane` 唯一写入口 / `persistPanes` /
+    //       `setPaneMeta` / 三个点击接线 + 口径注）；+30 读数与显隐（`renderReply` 整块藏、
+    //       `beginLiveRender` 复位、`renderLive` 与 `open` 写 meta、`renderMessage` 的 `clamp: false`）；
+    //   +15 `#reply` 去掉外边距/上限 + 注释改口。
+    //   ⚠️ 判决仍全在 `panel-logic.ts`（`traceMeta` / `summaryMeta` / `replyMeta`，带单测），
+    //   本文件只留 DOM 接线 —— 与上一笔同一条分工，不新增"无单测的判断"。
+    //   基线 = ceil(1725 × 1.05) = 1812。
+    'inspector-page.html': 1812,
     // 2026-09-23 A 阶段（抽纯判定 → dev-logic.ts）：1148 → 1133
     // 2026-09-23 B 阶段（显式状态机 → dev-machine.ts）：1133 → 1054
     // 2026-09-23 C 阶段（按职责切文件）：1054 → 776
@@ -105,7 +118,14 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //   在 **picking 态**时自动补第二条，把「改 prompt → 重跑 → 对照」从三步收成两步）
     //   + 它的判据注（为什么空选择/已选两条/同一 id 都**不**配对：前两者是替用户决定、
     //   挤掉刚选的那条）。**+28 里 22 行是注** —— 判据只有 3 行。
-    'panel-logic.ts': 802,
+    // 2026-11-12（**三块折叠的标题栏读数**，ref-panel-panes）：763 → 818（+55）=
+    //   `fmtCount`（千位折 k，整千不留 `.0`）+ `traceMeta` / `summaryMeta` / `replyMeta`
+    //   三条**纯格式化**（不量 DOM、不读时钟、不看窗口 ⇒ 进得了单测），以及它们为什么这样写的注：
+    //   「收起不等于失明」（折叠后标题栏是那块唯一的可见内容，所以数字必须准）、
+    //   「失败数只在真有人失败时出现」（恒挂 0 失败等于噪声）、
+    //   「行数复用 `collapseDecision`」（两处口径不一致最难查）。
+    //   面板那边只负责把返回值写进 textContent。基线 = ceil(818 × 1.05) = 859。
+    'panel-logic.ts': 859,
     // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
     'dev-runner.ts': 629,
@@ -538,6 +558,54 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     assert.ok(
       at > fnStart && at < fnEnd,
       '清空 `state.compare` 不在 `exitCompare` 内 —— 新加的清空点必须调 `exitCompare()`',
+    );
+  });
+
+  // ---------- W6：右栏三块的折叠态只有一个写入口 ----------
+  it('W6 三块折叠：`data-open` 与 `aria-expanded` 必须由同一个函数一起写', () => {
+    // **为什么这条存在**（2026-11-12 ref-panel-panes）：折叠态有两个消费者 —— CSS（按
+    // `[data-open]` 决定显隐与分高度）与辅助技术（按 `aria-expanded` 宣告状态）。两处各写
+    // 一遍就必然有一天只改了一处：屏幕上是收着的、读屏软件说「展开」，或者反过来。
+    // 面板没有 jsdom 单测（本仓唯一没有的复杂逻辑）⇒ 只能在**文本层**守住「只有一个写入口」。
+    //
+    // ⚠️ 射程：守的是「`dataset.open` 直接被赋值」这个已知形态。`setAttribute('data-open', …)`
+    // 之类绕道不在射程内 —— 与 W4 同款定位：守卫不是证明，是「有人再犯同一个形态时会被叫醒」。
+    const html = readFileSync(new URL('../src/inspector-page.html', import.meta.url), 'utf8');
+
+    // ① 三块都在（少一块 = 那块又回到「永远展开、抢别人高度」的老形态）
+    for (const id of ['pane-trace', 'pane-summary', 'pane-reply']) {
+      assert.match(
+        html,
+        new RegExp(`id="${id}"`),
+        `找不到 \`#${id}\` —— 三块的 id 是折叠接线的锚点`,
+      );
+    }
+    assert.equal(
+      [...html.matchAll(/class="pane-head"/g)].length,
+      3,
+      '三块必须各有一个标题栏（折叠的点击落点）—— 少了的那块只能靠 JS 改样式，而面板没有单测',
+    );
+
+    // ② 写入点只许一处
+    const writes = [...html.matchAll(/\.dataset\.open\s*=/g)];
+    assert.equal(
+      writes.length,
+      1,
+      `\`.dataset.open =\` 出现了 ${writes.length} 次（只许 1 次，在 applyPane 里）——` +
+        ' 别处写会让 data-open 与 aria-expanded 分叉（视觉与语义说两套话）',
+    );
+    const fnStart = html.indexOf('function applyPane(');
+    assert.ok(fnStart > 0, '找不到 `function applyPane()`（改名了？那这条守卫要跟着改）');
+    const fnEnd = html.indexOf('\n      }', fnStart);
+    const body = html.slice(fnStart, fnEnd);
+    assert.ok(
+      writes[0].index > fnStart && writes[0].index < fnEnd,
+      '`data-open` 不在 `applyPane` 内 —— 新加的开关必须走 `applyPane`',
+    );
+    assert.match(
+      body,
+      /setAttribute\(\s*'aria-expanded'/,
+      '`applyPane` 里必须同时写 `aria-expanded` —— 只改 data-open 时读屏软件读到的还是「展开」',
     );
   });
 });
