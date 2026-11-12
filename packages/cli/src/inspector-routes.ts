@@ -412,7 +412,10 @@ function handleRunDetail(ctx: RouteCtx): void {
     ctx.json(ctx.res, 404, { error: 'run 不存在（可能已被淘汰）' });
     return;
   }
-  ctx.json(ctx.res, 200, t);
+  // 明细**带上 CLI 侧记账**（顶层 `note`）：`finalText` 只活在那里 —— trace 上没有它。
+  // 不带的话，面板一离开这一轮就再也拿不回回复（见 `RunNote.finalText`）。
+  // 形状是 `Trace + { note }`，`playTrace` 只读 `spans` / `traceId`，多一个键无影响。
+  ctx.json(ctx.res, 200, { ...t, note: ctx.state.notes.get(id) ?? null });
 }
 
 /**

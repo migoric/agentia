@@ -617,13 +617,21 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         );
       }
 
-      /* 中止语义的**接线**判据（2026-09-22 复核补）：判「这一轮失败了吗」必须走
-       * `runIsFailure`，不能裸读 `r.ok`。引擎的 `abortedResult()` 刻意给已取消的 run 带
-       * 结构化 error（取消不是失败，但原因要可查）⇒ 中止时 `ok === false`：裸读 ok 的两个
-       * 表面会一起说谎 —— run 列表给红点、对话视图给红边「（这一轮失败了…）」，
-       * 而同一个 run 的通知条写着「已中止」。上面那条 import 名单检查只保证「名字存在」，
-       * 不保证「判断走的是它」，所以这条得单独钉。 */
-      assert.match(page, /runIsFailure\(/, '面板必须用 runIsFailure 判「失败」，不能裸读 r.ok');
+      /* 收尾语义的**接线**判据（2026-09-22 复核补，2026-11-12 跟着改名）：判「这一轮怎么了」
+       * 必须走 `stopReasonClass`，不能裸读 `r.ok` / `r.stopReason === 'aborted'`。
+       * 引擎的 `abortedResult()` 刻意给已取消的 run 带结构化 error（取消不是失败，但原因
+       * 要可查）⇒ 中止时 `ok === false`：裸读 ok 的两个表面会一起说谎 —— run 列表给红点、
+       * 对话视图给红边「（这一轮失败了…）」，而同一个 run 的通知条写着「已中止」。
+       * 2026-11-12 起 `suspended` 也进了这个判别：它的 trace 状态是 **ok**（挂起段没出错），
+       * 只看 ok 会得到一个「正常跑完」的蓝点，而那一轮其实还挂着等人。所以现在**连
+       * `r.stopReason === 'aborted'` 这种单值比较也不许留在页面里** —— 那是把分类表拆成两处。
+       * 上面那条 import 名单检查只保证「名字存在」，不保证「判断走的是它」，所以单独钉。 */
+      assert.match(page, /stopReasonClass\(/, '面板必须用 stopReasonClass 判终态，不能裸读 r.ok');
+      assert.doesNotMatch(
+        page,
+        /\.stopReason === '/,
+        '页面里不许再出现对 stopReason 的单值比较 —— 分类表只有一份（panel-logic）',
+      );
       assert.doesNotMatch(
         page,
         /'run' \+ \(r\.ok/,
@@ -637,6 +645,21 @@ describe('inspector 鉴权（Origin + token）', { skip: SKIP }, () => {
         page,
         /if \(!replyBelongsTo\(/,
         '自动 open() 清回复必须先过 replyBelongsTo —— 无条件清会把 run-done 刚写上去的回复擦掉（实测 17 ms）',
+      );
+      /* 2026-11-12（批次 A 的两条接线）：这两处都是「数据有、但没人接」。
+       * 回复正文不在 trace 上（它是 `run-done` 带回来的），只存进 CLI 侧记账 ⇒ 打开一条
+       * 历史 run 时必须把它取回来，否则切走一次那一轮的结论就永远看不到了。
+       * run 列表首行原先写 `r.name`，而 dev 环起的 run 一律叫 `agent.run` ⇒ 五十条一模一样的
+       * 条目；真正区分它们的 `note.prompt` 一直有货。 */
+      assert.match(
+        page,
+        /trace\.note\.finalText/,
+        '打开历史 run 时必须从 `note.finalText` 取回回复 —— trace 上没有它',
+      );
+      assert.match(
+        page,
+        /r\.note\.prompt/,
+        'run 列表首行必须显示这次 run 的 prompt（每条都叫 agent.run 的话没法认）',
       );
       assert.match(
         page,

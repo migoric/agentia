@@ -149,6 +149,15 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
   });
 
   it('对话流 = 会话文件的消息 ∪ 失败 run（D6 的 join，键是 session.id）', () => {
+    /** run 的**生产形状**：prompt 在 `note` 里（`/api/runs` 的每一项就是 RunSummary）。
+     *  这条 fixture 本身曾经是 bug 的一半 —— 早先它写顶层 `prompt`，而生产从来没有那个键，
+     *  于是 join 恒对不上、失败轮一轮都显示不出来，单测却一直是绿的。 */
+    const run = (traceId, ok, sessionId, prompt) => ({
+      traceId,
+      ok,
+      sessionId,
+      note: prompt === null ? null : { prompt, workdir: '/w', toolSources: null, multiTurn: false },
+    });
     const messages = [
       { role: 'user', content: '第一问' },
       { role: 'assistant', content: '第一答' },
@@ -157,14 +166,16 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
     ];
     const runs = [
       // 成功的 run：已经在会话文件里了，不该被重复追加
-      { traceId: 't1', ok: true, sessionId: 'dev', prompt: '第一问' },
+      run('t1', true, 'dev', '第一问'),
       // 失败的 run：`runtime/run.ts` 只在成功轮次回写 session ⇒ 它在会话文件里**根本不存在**，
       // 靠 run 列表 join 出来。少了这一步就是「显示一份**少了**一轮的对话」。
-      { traceId: 't2', ok: false, sessionId: 'dev', prompt: '第三问（失败了）' },
+      run('t2', false, 'dev', '第三问（失败了）'),
       // 别的 session：不掺进来
-      { traceId: 't3', ok: false, sessionId: 'other', prompt: '别人的失败' },
+      run('t3', false, 'other', '别人的失败'),
       // 没开会话的 run（sessionId 为 null）：也不掺进来
-      { traceId: 't4', ok: false, sessionId: null, prompt: '没开会话的失败' },
+      run('t4', false, null, '没开会话的失败'),
+      // 记账丢了（note 为 null，trace 落盘后重启面板就会这样）：**不猜**，跳过
+      run('t5', false, 'dev', null),
     ];
     const turns = L.mergeConversation(messages, runs, 'dev');
     assert.equal(turns.length, 3, `轮数=${turns.length}`);
@@ -190,8 +201,21 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
       { role: 'assistant', content: '第一答' },
     ];
     const runs = [
-      { traceId: 't1', ok: false, stopReason: 'aborted', sessionId: 'dev', prompt: '被中止的问题' },
-      { traceId: 't2', ok: false, stopReason: 'error', sessionId: 'dev', prompt: '真失败的问题' },
+      // 形状是生产的 `/api/runs` 项：prompt 在 note 里（见上一条用例的 `run()` 说明）
+      {
+        traceId: 't1',
+        ok: false,
+        stopReason: 'aborted',
+        sessionId: 'dev',
+        note: { prompt: '被中止的问题' },
+      },
+      {
+        traceId: 't2',
+        ok: false,
+        stopReason: 'error',
+        sessionId: 'dev',
+        note: { prompt: '真失败的问题' },
+      },
     ];
     const turns = L.mergeConversation(messages, runs, 'dev');
     assert.equal(turns.length, 3, `轮数=${turns.length}（中止轮必须留在对话里）`);
@@ -212,6 +236,9 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
     assert.equal(L.runIsFailure({ ok: false, stopReason: 'error' }), true);
     assert.equal(L.runIsFailure({ ok: false }), true, '老 trace 没有 stop_reason ⇒ 只能按 ok 判');
     assert.equal(L.runIsFailure({ ok: true, stopReason: 'end_turn' }), false);
+    // 挂起刚加进这条判别：它的 trace 状态是 ok，但「不是成功」不等于「失败」——
+    // 列表里它既不该是红点，也不该是「正常跑完」的蓝点（有独立一态）
+    assert.equal(L.runIsFailure({ ok: true, stopReason: 'suspended' }), false, '挂着等人不是失败');
   });
 
   it('对话视图出现条件（chatViewVisible）：三条都满足才显示，不做空壳', () => {
@@ -271,6 +298,44 @@ describe('面板纯逻辑（无 DOM，可在 Node 里直接测）', { skip: SKIP
     assert.equal(done.isError, false);
     assert.match(done.text, /完成/);
     assert.match(done.text, /end_turn/);
+
+    /* 挂起（HITL）：`suspended` 的 trace 状态是 **ok**（挂起段本身没出错），旧文案因此
+       落进「run 完成（suspended）」—— 那是在说一件没发生的事：这一轮还挂着等人裁决。 */
+    const susp = L.runDoneNotice({ ok: true, stopReason: 'suspended', error: null });
+    assert.equal(susp.isError, false, '挂着等人不是失败');
+    assert.match(susp.text, /审批/, `应说「停在审批」，实际：${susp.text}`);
+    assert.doesNotMatch(susp.text, /完成/, 'suspended 没跑完，不能说「完成」');
+  });
+
+  it('stopReasonClass：四个终态，14 个 stop reason 不许在页面里各写一段 if', () => {
+    const C = L.stopReasonClass;
+    assert.equal(C({ ok: true, stopReason: 'end_turn' }), 'ok');
+    assert.equal(C({ ok: true, stopReason: 'stop_sequence' }), 'ok', 'stop_sequence 也是正常收尾');
+    assert.equal(C({ ok: false, stopReason: 'aborted' }), 'aborted', '中止不是失败');
+    // 挂起：两种 ok 都得认成「等人」—— trace 记 ok，但 ok === false 的宿主也不该被算失败
+    assert.equal(C({ ok: true, stopReason: 'suspended' }), 'suspended');
+    assert.equal(C({ ok: false, stopReason: 'suspended' }), 'suspended');
+    // 被护栏/畸形响应拦下的那些：都算失败，且都要在列表里看得出**为什么**
+    for (const sr of [
+      'max_tokens',
+      'model_context_window_exceeded',
+      'refusal',
+      'pause_turn',
+      'max_iterations',
+      'result_missing',
+      'budget_exceeded',
+      'tool_use_no_blocks',
+      'unknown_stop_reason',
+      'error',
+    ]) {
+      assert.equal(C({ ok: false, stopReason: sr }), 'failed', `${sr} 应算「被拦住」`);
+    }
+    // 框架加了新原因而面板还不认识：落进 failed 并**显示原文** ——
+    // 反过来兜底成 ok，症状就是「新护栏被显示成正常收尾」（正是这次要修的错）
+    assert.equal(C({ ok: false, stopReason: 'brand_new_reason' }), 'failed');
+    assert.equal(L.stopReasonText('brand_new_reason'), 'brand_new_reason', '不认识的串原样显示');
+    assert.equal(L.stopReasonText(null), '', '没有 stop_reason 的老 trace ⇒ 空串，不编一个原因');
+    assert.equal(L.stopReasonText('budget_exceeded'), '撞到预算护栏');
   });
 
   it('路径压短只影响显示（发给子进程的永远是完整绝对路径）', () => {

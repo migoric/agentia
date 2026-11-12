@@ -281,10 +281,18 @@ describe('dev 环显式状态机（dev-machine）', { skip: SKIP }, () => {
     assert.equal(r.state.lastError, null, '成功 ⇒ 旧错误从告警条摘下');
     assert.equal(r.state.pendingNote, null);
     assert.deepEqual(kinds(r.effects), ['disarm-abort-timer', 'note-run', 'emit']);
+    // 回复正文必须**跟着 note 落账**：`finalText` 只活在这一帧 IPC 消息里（trace 上没有它），
+    // 不存下来的话，面板切到别的 run 再切回来就再也取不到这一轮的结论了。
     assert.deepEqual(r.effects[1], {
       kind: 'note-run',
       traceId: 't1',
-      note: { prompt: '跑一下', workdir: '/p', toolSources: null, multiTurn: true },
+      note: {
+        prompt: '跑一下',
+        workdir: '/p',
+        toolSources: null,
+        multiTurn: true,
+        finalText: '回话',
+      },
     });
     assert.deepEqual(r.effects[2].event, {
       kind: 'run-done',
@@ -331,6 +339,28 @@ describe('dev 环显式状态机（dev-machine）', { skip: SKIP }, () => {
     });
     assert.deepEqual(kinds(noTrace.effects), ['disarm-abort-timer', 'emit']);
     assert.equal(noTrace.state.pendingNote, null);
+  });
+
+  it('ipc-run-done：没有回复时不写 `finalText` 键（「没回复」与「回复丢了」要能区分）', () => {
+    const s = {
+      ...ready(),
+      run: 'running',
+      pendingNote: { prompt: 'p', workdir: '/p', toolSources: null, multiTurn: false },
+    };
+    const r = M.update(s, {
+      type: 'ipc-run-done',
+      traceId: 't1',
+      ok: true,
+      stopReason: 'end_turn',
+      error: null,
+      finalText: '',
+    });
+    const noteEffect = r.effects.find((e) => e.kind === 'note-run');
+    assert.ok(noteEffect, '有 note 就该落账（否则连 prompt 都丢了）');
+    assert.ok(
+      !('finalText' in noteEffect.note),
+      '空回复不该写 `finalText: undefined` —— 面板要靠「键在不在」判这一轮有没有回复',
+    );
   });
 
   it('pendingRestart 收敛：run-done / run-error 收尾时各补一条 restart（afterRun）', () => {

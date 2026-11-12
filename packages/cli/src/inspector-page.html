@@ -161,9 +161,12 @@
       /* 被中止的 run 不是失败：给它一个中性偏警告的颜色，不跟失败共用红色 ——
          否则用户会把「我自己按了中止」读成「我把工程改坏了」 */
       .run.aborted .dot { background: var(--warn); }
+      /* 等审批的 run（`suspended`）：**空心点**。它既没跑完也没失败，实心点怎么上色都是
+         在替用户下结论；空心 = 「这一轮还悬着」，与右栏那句「停在审批」同一件事 */
+      .run.suspended .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
       .run .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .run .r2, .run .r3 { margin-top: 3px; color: var(--faint); font-size: 11px; font-family: var(--mono); }
-      .run .r3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .run .r2, .run .r3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .empty { color: var(--faint); padding: 16px; }
       #ttl { color: var(--faint); margin-bottom: 10px; font-family: var(--mono); font-size: 11.5px; }
       .usage { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
@@ -470,9 +473,10 @@
         pushPromptHistory,
         replyBelongsTo,
         runDoneNotice,
-        runIsFailure,
         shortenPath,
         replyMeta,
+        stopReasonClass,
+        stopReasonText,
         summaryMeta,
         traceMeta,
         toggleCompare,
@@ -849,15 +853,26 @@
         runsEl.replaceChildren();
         for (const r of state.list) {
           const b = document.createElement('button');
-          // 三态：失败 / **被中止** / 正常。中止不是失败（判别走 panel-logic 的
-          // runIsFailure，与通知条同一条语义）—— 给中止的 run 标红会让用户以为
-          // 是自己把工程改坏了，而那正是「aborted 也带 error」这条引擎约定造成的误读。
-          const tone = runIsFailure(r) ? ' err' : r.stopReason === 'aborted' ? ' aborted' : '';
+          // 四态：失败 / **被中止** / **等审批** / 正常。判别全走 panel-logic 的
+          // `stopReasonClass`（与通知条同一条语义）—— 各处自己读 `ok` 会出现「列表说失败、
+          // 通知条说已中止」这种同一件事两个结论。
+          // 为什么等审批要单独一态：`suspended` 的 trace 状态是 ok（挂起段本身没出错）
+          // ⇒ 只看 ok 它是一个**正常跑完的蓝点**，而那一轮其实还挂着等人。
+          const cls = stopReasonClass(r);
+          const tone =
+            cls === 'failed'
+              ? ' err'
+              : cls === 'aborted'
+                ? ' aborted'
+                : cls === 'suspended'
+                  ? ' suspended'
+                  : '';
           b.className =
             'run' +
             tone +
             (r.traceId === state.current ? ' active' : '') +
             (state.compare.includes(r.traceId) ? ' cmp' : '');
+
           b.type = 'button';
 
           const r1 = document.createElement('span');
@@ -866,12 +881,22 @@
           dot.className = 'dot';
           const name = document.createElement('span');
           name.className = 'name';
-          name.textContent = r.name; // 模型可控内容 ⇒ 只能 textContent
+          // 首行给**这次 run 到底问了什么**。此前这里是 `r.name`，而 dev 环起的 run
+          // 一律叫 `agent.run`（`engine/loop.ts` 的缺省，dev-runner 不传 runName）
+          // ⇒ 五十条一模一样的条目，只能靠第二行的时间戳认人。
+          // prompt 是模型不可控的**用户输入**，仍走 textContent；多行只取首行（CSS 再省略）。
+          const prompt = (r.note && typeof r.note.prompt === 'string' ? r.note.prompt : '').trim();
+          name.textContent = prompt ? prompt.split('\n')[0] : r.name;
+          // 全文进 title：列表里被省略的那半句常常正是区分两次 run 的部分
+          b.title = prompt || r.name;
           r1.append(dot, name);
 
           const r2 = document.createElement('span');
           r2.className = 'r2';
-          r2.textContent = `${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}`;
+          // 非正常收尾把**原因**写在第二行：`budget_exceeded` / `max_iterations` 的 run
+          // 与 `end_turn` 的 run 在旧版看起来一模一样（同样蓝点亮着），而前者根本没跑完。
+          const why = cls === 'ok' ? '' : ` · ${stopReasonText(r.stopReason)}`;
+          r2.textContent = `${fmtMs(r.ms)} · ${fmtNum(r.tokens)} tok · ${ago(r.startedAt)}${why}`;
 
           b.append(r1, r2);
 
@@ -1350,7 +1375,15 @@
         if (!res.ok) return;
         const trace = await res.json();
         state.current = id;
-        ttlEl.textContent = trace.traceId;
+        // 标题带**收尾原因**（非正常收尾时）。打开一条历史 run 时最容易犯的误读是
+        // 「树画完了 ⇒ 这一轮跑完成了」，而它可能是撞预算停的、被中止的、或正挂着等人。
+        // 原因取自列表的 summary（`stop_reason` 已在那里解析过，别在页面里再挖 attributes）。
+        const sum = state.list.find((x) => x.traceId === id);
+        const cls = sum ? stopReasonClass(sum) : 'ok';
+        ttlEl.textContent =
+          sum && cls !== 'ok'
+            ? `${trace.traceId} · ${stopReasonText(sum.stopReason)}`
+            : trace.traceId;
         usageEl.hidden = false;
         playTrace(view, trace);
         // 排行算一次、两处消费（表格 + 标题栏读数）：标题说「3 项」而表里有 4 行是
@@ -1366,9 +1399,14 @@
         // ⚠️ 但不能**无条件**清：`run-done` 与「这条 trace 的收尾帧」几乎同毫秒到达，
         // 而这条 handler 的链更长（refresh → refreshSession → renderChat → open）——
         // 无条件清会把刚写上去的那句回复擦掉（端到端实测 17 ms，现象是「跑完了但没回复」）。
+        //
+        // 清完之后**立刻从 CLI 侧记账取回**：`finalText` 不在 trace 上，但它跟着 note 一起
+        // 存着（`/api/runs/:id` 的顶层 `note`）。不取的话，切到别的 run 再切回来 ——
+        // 甚至只是刷新一次页面 —— 那一轮的结论就永远看不到了。
         if (!replyBelongsTo(id, state.replyFor)) {
-          state.reply = '';
-          state.replyFor = null;
+          const saved = trace.note && typeof trace.note.finalText === 'string' ? trace.note.finalText : '';
+          state.reply = saved;
+          state.replyFor = saved ? id : null;
           renderReply();
         }
         renderList();
