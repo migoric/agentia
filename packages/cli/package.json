@@ -1,6 +1,6 @@
 {
   "name": "@migor/cli",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "description": "CLI for the Agentia framework: scaffold a project, generate a capability, and open a local trace inspector for runs.",
   "type": "module",
   "bin": {
