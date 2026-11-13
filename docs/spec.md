@@ -8304,7 +8304,15 @@ devState 只报 runner 的 warning / 抢锁那行注释掉 / 放锁那行注释�
     run 命名、四类终态）/ 批量渲染把 O(N²) 收到 1 次 / 总账 · 属性含根 · 时间轴 ·
     树内与列表检索 · 深链 · 回填不自动跑 · 导出 JSONL；**无破坏性变更、无迁移动作**，
     `src/` 仍未动，改动全在 CLI 面板与 trace-view 渲染件内）；
-  `AGENTIA_VERSION = '0.10.10'`。决策均见 §10。
+  → v0.10.11（core 侧四条按仓内契约落地：`rotate:'daily'` 归档但路径不变 /
+    `JsonSchema.maxItems` 收进校验 / `createBudgetPolicy` 坏值构造期拒 /
+    摘要器失败只丢压缩不丢 context editing / `labelKeys` 只认 `labels.<key>`），
+    外加异常 trace 时间戳回退与面板三批续修（在飞态不再被撤销、孤儿告警进 `warning`、
+    预算前置到底栏、父进程持写者锁）；**公共面只增不减**（`src/index.ts` 零改动），
+    ⚠️ **两处行为收紧必须单列、不能写成「无破坏性变更」**：`maxItems` 从「写了不生效」
+    变成超长回 `is_error`、`budgetTokens: Infinity` 与小数从能跑变成构造期 TypeError ——
+    迁移动作见 CHANGELOG 本版节）；
+  `AGENTIA_VERSION = '0.10.11'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
