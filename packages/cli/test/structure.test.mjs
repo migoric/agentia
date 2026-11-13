@@ -166,7 +166,7 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     //       重跑回填（过滤失效能力、空集回落全量 —— `[]` 是框架侧的纯陷阱值）。
     //   +35 注释与口径。
     //   基线 = ceil(1115 × 1.05) = 1171。
-    'panel-logic.ts': 1171,
+    'panel-logic.ts': 1182,
     // 2026-10-05（档 A，**新功能**）：547 → 599（+52）= `registerJsonlSink()`（含它自己
     // 的三条纪律 + 「两个导出都要，缺一不可」那条实测坑）+ `main()` 里一行调用。
     'dev-runner.ts': 629,
@@ -255,6 +255,11 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
     'dev-machine.ts': 744,
     // 2026-09-23 C 阶段新增（自 dev.ts 纯搬移；dev.ts 保留 re-export 守住 dist/dev.js 出口）
     'dev-watch.ts': 236,
+    // 2026-11-13 新增（**新文件**，实测 145；基线 ceil(145×1.05) = 153）。
+    //   为什么值得单独一个文件：`dev-runner.ts` 被 import 就会 `void main()`（它是子进程入口），
+    //   逻辑放那儿一行都测不动 —— 而「两个 dev 实例往同一份 traces 追加」这件事必须能单测
+    //   （`test/dev-lock.test.mjs` 7 条，判据全部注入 pid / isAlive，不碰真实进程表）。
+    'dev-lock.ts': 153,
     // 2026-09-26：82 → 112（+30）—— `killPlanFor` + `KillPlan` 判别联合 + 「为什么必须抽」的注释，
     // 见下方总量补账。
     'dev-child.ts': 118,
@@ -491,7 +496,25 @@ describe('CLI 结构守卫（W1 规模棘轮 / W2 产物零 import / W3 源码�
   //         用户可见的话，含「右栏仍是上一条」的注，+17）、`fmtMs` 改从 panel-logic import
   //         （删本地定义 -1、import 列表 +1）、其余零碎 -2
   //   ⚠️ 本笔**没有新增视图**：改的是「用户刚做的操作在下一帧被自己撤销」与「读失败静默留白」。
-  const TOTAL_BUDGET = 11443;
+  // 2026-11-13 三笔「事实到了终端、没到面板」（**缺陷修复**）：11443 → 11688（+245，与实测同值）。
+  // 五处，逐文件（数字都是**跑一遍数出来的**，`biome --write` 前后会差几行，别手算）：
+  //    +145  dev-lock.ts         **新文件**（实测 145；基线 153）：写者锁 + 三条边界注
+  //     +37  panel-logic.ts      实测 1182（基线 1171 → 1182）：`budgetLine` + `fmtBudgetTokens`
+  //          + 「为什么到百万要进位成 M」的注（`5000k` 看着像谁打错了）
+  //     +33  dev.ts              实测 810（基线 818 内，未抬）：抢锁 / 放锁 / `panelPort` /
+  //          devState 合并两个来源的 warning
+  //     +17  dev-runner.ts       实测 614（基线 629 内，未抬）：孤儿集合与 `orphanWarning`
+  //     +17  inspector-page.html 实测 2109（基线 2166 内，未抬）：`#budget` 读数位 + CSS + 填充
+  //     −4   被替换掉的旧行 + 两处格式化压回来的换行
+  //   ─────
+  //    +245  与实测总量一致（11443 + 245 = 11688，见下方断言）
+  // ⚠️ 本笔**没有新增视图、也没有新命令**：改的是三件事的**去向** —— 框架那句
+  //   「孤儿能力告警」原本只 `console.warn` 在子进程终端（stdio 全 inherit，滚过去就没了）、
+  //   预算上限原本只在总账里（要选中一条**已完成的** run 才看得到）、
+  //   两个实例的写者重叠原本没有任何人知道（`dev-runner.ts` 的「单进程写者前提天然满足」
+  //   只在一次会话内成立）。三处的判据都有用例：`test/dev-lock.test.mjs` 7 条、
+  //   `panel-logic.test.mjs` 的 `budgetLine` 3 条、`panel-truth.test.mjs` 3 条接线守卫。
+  const TOTAL_BUDGET = 11688;
 
   it('W1 规模棘轮：单文件不超基线、总量不超基线、每个文件都登记在表', () => {
     const files = readdirSync(SRC).filter((f) => f.endsWith('.ts') || f.endsWith('.html'));

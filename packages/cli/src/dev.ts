@@ -63,6 +63,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KILL_GRACE_MS, killTree, resolveTsxCli } from './dev-child.js';
+import { type ClaimResult, claimWriterLock, releaseWriterLock } from './dev-lock.js';
 import {
   createInitialState,
   type DevEffect,
@@ -84,6 +85,7 @@ import {
   SESSION_ID_REL,
   SESSION_REL,
   type SessionMessageLike,
+  TRACE_LOG_REL,
 } from './dev-protocol.js';
 import { watchRootEnvFiles, watchTree } from './dev-watch.js';
 import { HttpError, startInspector, type InspectorServer } from './inspector.js';
@@ -141,6 +143,11 @@ export function devServer(argv: string[] = []): number {
 
   // ---------- 接线层持有的句柄（不进机器状态：不可序列化，机器只管「相位 + 数据」） ----------
   let inspector: InspectorServer | null = null;
+  /**
+   * 面板端口（0 = 没起来）。单独存一份是因为 `inspector` 只在 `startPanel` 里赋值，
+   * 而 TS 的控制流分析看不到闭包里的赋值 —— 外面读 `inspector.port` 会被窄成 `null`。
+   */
+  let panelPort = 0;
   let stopWatch: (() => void) | null = null;
   /** 项目根那份 `.env` / `.env.local` 的 watch —— 与 `stopWatch` 是**两个**，两者都要收 */
   let stopEnvWatch: (() => void) | null = null;
@@ -152,6 +159,19 @@ export function devServer(argv: string[] = []): number {
   let chain: Promise<void> = Promise.resolve();
   /** dev token（D0）：每个 dev 会话一个，进程退出即失效 */
   const token = randomBytes(16).toString('hex');
+
+  // ---------- 写者锁（同一工程第二个 dev 实例） ----------
+
+  /**
+   * 锁挨着**它保护的那个文件**放：`dev-runner` 往 `.agentia/traces.jsonl` 追加，
+   * 锁就叫 `.agentia/traces.jsonl.lock`（`cat` 一下就知道被谁占着）。
+   *
+   * ⚠️ 由**父进程**持锁，不是 runner：runner 每次改代码都要重启，拿子进程 pid 做判据
+   * 会把「自己的下一世」当成「另一个实例」—— 每次热重载都误报一次，比不报更坏
+   * （人会学会无视它）。「一个 dev 实例」的身份是父进程，它跨 runner 重启不变。
+   */
+  const lockPath = join(projectRoot, `${TRACE_LOG_REL}.lock`);
+  let writerLock: ClaimResult = { owned: false, warning: null };
 
   // ---------- 会话 id（面板的「清空对话」） ----------
 
@@ -455,7 +475,10 @@ export function devServer(argv: string[] = []): number {
     home: process.env.HOME ?? '',
     capabilities: state.capabilities,
     multiTurn: state.multiTurn,
-    warning: state.warning,
+    // 两个来源共用一条通道：runner 报的（dev.config / 能力菜单 / 会话文件）+
+    // 父进程自己的（写者锁）。面板只读这一个字段，所以任何一侧漏接都等于「面板不说」。
+    warning:
+      [state.warning, writerLock.warning].filter((w): w is string => w !== null).join('\n') || null,
     defaultWorkdir: state.defaultWorkdir,
     // 生效值由 runner 报（就绪前是缺省值）—— 面板显示与实际生效必须是同一份
     budget: state.budget,
@@ -731,6 +754,7 @@ export function devServer(argv: string[] = []): number {
           },
         },
       });
+      panelPort = inspector.port;
       console.log(
         `Inspector: http://127.0.0.1:${inspector.port}/?t=${token}\n` +
           '  （带 token 的完整 URL —— 打开一次就会种进 cookie，之后刷新不用再带）',
@@ -747,6 +771,13 @@ export function devServer(argv: string[] = []): number {
 
   void (async () => {
     await startPanel();
+    // 写者锁：判据、三条边界与「为什么只出声不拒绝启动」都在 dev-lock.ts 的头注。
+    // 放在面板起来之后是为了把端口写进锁（另一个实例的报错里能直接对上「是哪一个」）；
+    // 面板没起来也照抢 —— 落盘 sink 跟面板没关系，两个实例照样会交错。
+    writerLock = claimWriterLock({ lockPath, port: panelPort });
+    if (writerLock.owned) process.on('exit', () => releaseWriterLock(lockPath));
+    if (writerLock.warning !== null) console.warn(`[agentia] ${writerLock.warning}`);
+
     // 拉起第一代 runner（boot ⇒ spawn-child 效果；失败归 boot-failed：终端 error +
     // 唯一一帧 runner-error —— 见机器里那条迁移的注释）
     await dispatch({ type: 'boot' });

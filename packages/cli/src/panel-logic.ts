@@ -665,6 +665,43 @@ function ledNum(n: unknown): number {
 }
 
 /**
+ * 上限里的 token 数：到百万就进位成 `M`（`5M` 而不是 `5000k`）。
+ *
+ * 为什么这里不直接用 `fmtCount`：那个是按**读数**（一条 run 花了多少）设计的，
+ * 而这里是**人挑的一档护栏** —— `5000k` 看着像谁打错了，`5M` 才是人会写的形状。
+ * 两者不会在同一处相遇（总账只报成本上限，不报 token 上限），所以不构成「一个数两套格式」。
+ */
+function fmtBudgetTokens(n: number): string {
+  if (n < 1_000_000) return fmtCount(n);
+  const m = n / 1_000_000;
+  return `${m < 10 ? m.toFixed(1) : String(Math.round(m))}`.replace(/\.0$/, '') + 'M';
+}
+
+/**
+ * 底栏那行「这趟最多花多少」：`$30 / 5M tok`。
+ *
+ * 为什么它必须在**运行前**就可见：此前这个数只出现在总账里（要选中一条**已完成的**
+ * run 才看得到），而按「▶ 运行」的那一刻恰恰是最需要它的时刻 —— 「这一下最多花多少」
+ * 是使用者在踩下去之前唯一想知道的事。
+ *
+ * 口径：返回空串 = 不显示（`null` / 两个上限都不正 ⇒ 没有可报的护栏），而不是 `$0`。
+ * 「不知道上限」与「上限是 0」是两件事。
+ */
+export function budgetLine(
+  budget: { maxCostUsd: number; maxTotalTokens: number } | null | undefined,
+): string {
+  if (!budget) return '';
+  const cost = Number.isFinite(budget.maxCostUsd) && budget.maxCostUsd > 0 ? budget.maxCostUsd : 0;
+  const tokens =
+    Number.isFinite(budget.maxTotalTokens) && budget.maxTotalTokens > 0 ? budget.maxTotalTokens : 0;
+  if (cost === 0 && tokens === 0) return '';
+  const parts: string[] = [];
+  if (cost > 0) parts.push(`$${cost}`);
+  if (tokens > 0) parts.push(`${fmtBudgetTokens(tokens)} tok`);
+  return parts.join(' / ');
+}
+
+/**
  * 一条 run 的账：`3 轮 · 7 次工具 · 2 失败 · in 8.1k / out 1.5k · cache 6.2k · 77% · $0.014`。
  *
  * 为什么值得单独一条纯函数：这五个数此前**一个都没有**（页面上只有 footer 的 in / out），

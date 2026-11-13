@@ -340,6 +340,10 @@
       }
       .cap:hover { background: #202024; }
       #workdir { flex: 1; min-width: 0; font-family: var(--mono); }
+      /* 上限：只读读数，不是控件（所以没有边框、不进 tab 顺序）。不换行 ——
+         `$30 / 500k tok` 折成两行会让人以为有两个数。 */
+      #budget { color: var(--faint); font-family: var(--mono); font-size: 11px; white-space: nowrap; align-self: center; }
+      #budget[hidden] { display: none; }
       #prompt { flex: 1; min-width: 0; }
       #run {
         background: var(--ice); border-color: var(--ice); color: #04222a;
@@ -488,6 +492,9 @@
           <div class="pop" id="caps-pop"></div>
         </details>
         <input id="workdir" class="ctl" type="text" spellcheck="false" placeholder="工作目录（绝对路径）" />
+        <!-- 这趟的上限：数据来自 runner 报的 budget（DEFAULT_BUDGET ⊕ dev.config.ts）。
+             放在运行按钮同一行而不是总账里 —— 总账只在选中已完成的 run 时才有。 -->
+        <span id="budget" hidden></span>
         <button id="browse" class="ctl mini" type="button">浏览…</button>
         <!-- 系统选择…：浏览器弹不出系统目录对话框（拿不到绝对路径），由 dev 进程代弹
              （POST /api/fs/pick）。与「浏览…」（服务端列目录）并列，互为兜底。 -->
@@ -526,6 +533,7 @@
         HISTORY_DRAFT,
         applyTraceEvent,
         browseTarget,
+        budgetLine,
         autoPairTarget,
         capabilityBadge,
         chatViewVisible,
@@ -588,6 +596,7 @@
       const capsSumEl = $('caps-sum');
       const capsPopEl = $('caps-pop');
       const workdirEl = $('workdir');
+      const budgetEl = $('budget');
       const mtEl = $('mt');
       const mtLabelEl = $('mt-label');
       const promptEl = $('prompt');
@@ -914,6 +923,14 @@
         // 工作目录：默认值来自 dev.config / 项目根；这里是 per-run 的输入
         if (workdirEl.value === '') workdirEl.value = dev.defaultWorkdir;
         state.workdir = workdirEl.value;
+        // 上限：跑之前就要看到「这趟最多花多少」（判定与格式在 panel-logic，带单测）
+        const cap = budgetLine(dev.budget);
+        budgetEl.textContent = cap === '' ? '' : `上限 ${cap}`;
+        budgetEl.hidden = cap === '';
+        budgetEl.title =
+          cap === ''
+            ? ''
+            : '本趟 run 的护栏（DEFAULT_BUDGET ⊕ dev.config.ts 的 budget）—— 超了以 budget_exceeded 收尾';
         runEl.disabled = dev.running;
         runEl.textContent = dev.running ? '运行中…' : '▶ 运行';
         // 中止（§6 待定 5 的 kill 按钮）：只在有在飞 run 时出现。
