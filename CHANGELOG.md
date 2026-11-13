@@ -5,6 +5,74 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.11] - 2026-11-13
+
+### 变更
+
+`v0.10.10..main` 的 5 个提交（#308–#312），27 文件 +1539/−61。**这一版框架本体真的动了**
+（前几版 `src/` 只有版本常量变化）：`core` / `engine` / `integrations` 共 7 个源文件，
+另有 CLI 面板与 trace-view 的续修。两包同步 0.10.10 → 0.10.11。
+
+⚠️ **公共 API 形状向后兼容，但有两处行为收紧，不能写成「无破坏性变更」** ——
+见下面「迁移」一节。`src/index.ts` 零改动、零新导出；`rotate?` 与 `onCompactionFailure?`
+只是既有类型上新增的**可选**字段。
+
+### 迁移（两处行为收紧，必须单列）
+
+1. **`JsonSchema.maxItems` 从「写了不生效」变成真护栏**。此前它属于「未覆盖的关键字一律
+   放行」：工具作者写 `maxItems: 10`，传 100 个元素的数组照样通过、零报错。
+   现在超长数组回**带路径与实际长度的 `is_error` tool_result**（模型能据此自我修正），
+   `0` 按 JSON Schema 读作「只许空数组」（不是「不限」），NaN / 负数 / 小数 / 非数一律
+   构造期 `TypeError`（`length > NaN` 恒假会让闸静默消失）。
+   **要做什么**：如果你在工具 schema 上声明了 `maxItems`、且实际调用会传超过它的数组，
+   现在这次调用会被拒 —— 请把 `maxItems` 调成真实上界，或在调用侧先截短。
+   「写了但没生效」不是可依赖的旧契约。
+2. **`createBudgetPolicy` 的数量旋钮坏值改为构造期拒绝**。`budgetTokens: Number.POSITIVE_INFINITY`
+   旧行为是「预算永不超」＝事实上的「不限」，`60_000.5` 这类小数从前也能跑；
+   现在连同 NaN / ±Infinity / 负数 / 非数一律抛 `TypeError`。理由是 token 记账按整数算，
+   而 `Infinity` 让 `countTokens(...) <= budgetTokens` 恒真、把护栏彻底关掉，
+   `NaN` 则让它恒假 ⇒ **每回合都走压缩**，而压缩是业务注入的模型调用（静默烧钱）。
+   **要做什么**：要「不限」就**别传 policy**，不要传一个能骗过闸的值；小数改成整数。
+   ⚠️ **四个旋钮的 `0` 读法刻意不动**（`Math.max(1, keepRecent)` 的钳位是存量行为），
+   所以别顺手把 `0` 也当坏值处理 —— 它仍然有意义。
+
+### 五个提交
+
+- **#308 · core 四条按仓内契约落地**：① `jsonlTraceSink({rotate:'daily'})` 跨天归档旧内容，
+  但 `path` **仍是当前文件**（`report` / dev 面板固定路径消费，改成「每天一个文件名」会让
+  它们集体读不到新数据）；日期单调不减、归档冲突不覆盖不删除、重启认得旧文件。
+  ② `maxItems` 进校验子集（见上）。③ `createBudgetPolicy` 坏值构造期拒（见上）。
+  ④ 摘要器失败**只丢压缩、不丢已做完的 context editing** —— 此前异常一路抛到 `turn.ts`
+  的 catch，那里把 `next` 留在 `undefined` ⇒ 连 `trimToolPairs` 已经安全做完的结果也一起丢了；
+  现在 `ContextPolicy.beforeTurn` 的 `info` 加可选 `onCompactionFailure` 降级出口，
+  `context.policy_failed` 事件与 warn 走引擎同一个出口；没有该出口时照旧抛（不无声吞异常）。
+  ⑤ `labelKeys` 只认 `labels.<key>`，**不**从 `model` / `session.id` / `source` 等根属性派生
+  —— 高基数根属性自动上指标会当场把 `maxLabelValues` 打爆。
+- **#309 · 异常 trace 时间戳**：`dayKeyOf` 除了 NaN / 缺字段，还须处理「有限但超出 `Date`
+  可表示区间」的 `startedAt`；非法值回退写盘时刻，避免 `RangeError: Invalid time value`
+  让该条 trace 在写盘前丢失。
+- **#310 · 面板二次修的三处残留**：`ConversationRunLike` 改 `Pick<RunSummary, …>`、
+  `.r2` / `.r3` 补 `display:block`、收尾原因为空时不再挂一个孤立的「 · 」。
+- **#311 · 在飞时不再自己撤销用户操作**：展开态 / 检索序号 / 滚动位置不被每帧重画带走；
+  折叠态活在渲染之外。`open()` 读失败现在出声；run 级总账加耗时。
+- **#312 · 三件「事实到了终端、没到面板」**：① 框架的孤儿能力告警原先只落在子进程终端
+  （`stdio` 全 `inherit`），现在进 `warning` 通道；② 预算上限**前置到底栏**，运行前就可见
+  （此前只在总账里，而总账要选中一条**已完成**的 run 才存在）；③ 同一工程开两个
+  `agentia dev` 会往同一份 `.agentia/traces.jsonl` 追加 ⇒ 新增 `dev-lock.ts` 写者锁，
+  **由父进程持有**（runner 每次改代码都重启，拿子进程 pid 做判据会把「自己的下一世」
+  当成另一个实例，每次热重载误报一次比不报更坏）。
+
+### 验证与守卫
+
+- 决策见 `docs/spec.md` §10 2026-11-13 ref-checklist-four、2026-11-13 ref-dev-loud；
+  守卫登记见 `docs/guards.md` §1。
+- 新增测试文件两个：`packages/cli/test/dev-lock.test.mjs`（锁的判据全部注入 pid / `isAlive`，
+  不碰真实进程表）与 `packages/cli/test/panel-truth.test.mjs`（源码级接线）。
+  core 侧的 8 条变异各自咬住（长度闸摘掉 / `maxItems` 坏值不拦 / policy 坏值不拦 /
+  回退不到编辑结果 / 日期不单调 / 不轮转 / 重启不认旧文件 / `labelKeys` 回退读根属性）。
+  ⚠️ dev 侧第一版守卫是**假绿**：未锚定正则对「注释掉的那行」照样命中，改成锚行首后才咬住。
+- 读数（本机各跑一遍）：CLI **278 → 297**、trace-view **113 → 117**。
+
 ## [0.10.10] - 2026-11-12
 
 ### 变更
@@ -4621,7 +4689,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.10...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.11...HEAD
+[0.10.11]: https://github.com/migoric/agentia/releases/tag/v0.10.11
 [0.10.10]: https://github.com/migoric/agentia/releases/tag/v0.10.10
 [0.10.9]: https://github.com/migoric/agentia/releases/tag/v0.10.9
 [0.10.8]: https://github.com/migoric/agentia/releases/tag/v0.10.8
