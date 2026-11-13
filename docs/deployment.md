@@ -120,6 +120,9 @@ gracefulShutdown({
     `InMemoryTaskStore` 的 runner，表现为「任务时有时无」而**不报错**；
   - `approve` / `cancel` / `signal` 的互斥是**进程内**的 ⇒ 必须按 `taskId` 粘到 owner；
   - 能无状态横向扩的只有同步 `/run`；`/tasks` 那一半要么收敛到单写者，要么按 `taskId` 分片。
+  - **多轮对话要换 `RedisSessionStore`**：内建的 `InMemorySessionStore` 让历史跟着 pod 走
+    （换一台就「第一次见面」，不报错）；且同一 `sessionId` 的并发 run 仍要自己串行化
+    （append-only 不保证角色交替）—— 见 `multi-replica.md` §3.8。
 
 ## 9. 回滚
 

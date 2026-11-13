@@ -1376,7 +1376,8 @@ span 本身（`attributes.subagent`），后者**只是事件**（`approval.requ
 | `createAnthropicClient` | 默认 ModelClient（Anthropic）：自定义只传 `apiKey` / `baseURL`；框架**零运行时依赖**，不装厂商 SDK |
 | `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、DeepSeek 的 `prompt_cache_hit_tokens` 映射进 `cache_read_input_tokens` 并从 input_tokens 拆出不双计，其余端点 cache token 恒 0） |
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
-| `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用 |
+| `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用；**进程内**，多副本各一份 |
+| `RedisSessionStore` | 同一接口的**多副本共享**实现（duck-typed 客户端，零依赖）：`rpush`/`lrange` 列表语义，`prefix` 分命名空间、`ttlSeconds` 按「最后一次 append 后 N 秒」回收、`maxMessages` 按条数裁。**不解决**同 session 并发顺序（要自己排队） |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
 | `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
 | `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |

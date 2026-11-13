@@ -8143,6 +8143,64 @@ devState 只报 runner 的 warning / 抢锁那行注释掉 / 放锁那行注释�
 `structure.test.mjs` 头注）。公共面**零变化**：没有新参数、没有新导出（`dev-lock` 只在
 `dev.ts` 与单测里用），`@migor/agentia` 一行未动。
 
+### 2026-11-13 ④ ref-session-multi-pod：**多副本下会话历史跟着 pod 走 —— 补一个 Redis 实现，并把两条没写清的边界写进部署文档**
+
+**由头**：业务框架接 agentia 之后问「并发和多 pod 怎么保证稳定」。逐条对账
+`docs/multi-replica.md`（它已经写了拓扑、六个会坏的点、故障转移 runbook）后发现：文档覆盖了
+任务那一半，**漏了会话那一半**；而会话恰恰是「多副本一接就坏、且不报错」的那一个。
+
+**判断一：这不是「宿主自己写」能算完的缝，实现该在框架里**
+
+`docs/database.md` 原先写「`SessionStore` 只有内存版，多实例各写一个实现，接口很小」。接口确实
+只有 `load` / `append` 两个方法 —— 但这条缝的两个坑都会**静默**发生：
+
+- `rpush(key, ...messages)` 展开传参在十几万条时抛 `RangeError`（V8 实参上限），而
+  `runtime/run.ts` 的 `appendSession` 会把异常吞成一行 warn ⇒ **这一轮对话白聊**；
+- 「读整段 → 拼 → 写回」形态（string 而不是 list）在两个副本同时 append 时**丢一轮**。
+
+把这两条钉进实现并配用例，比让每个宿主各自重踩一遍便宜；且与 `RedisTaskStore` 完全同构
+（duck-typed 客户端、零依赖、构造期校验坏值），没有引入新范式。
+
+**落地**：`src/runtime/session.ts` 新增 `RedisSessionStore`（+ `RedisSessionClient` 接口、
+`RedisSessionStoreOptions`）。要点：
+
+- **list 语义而不是 string**：RPUSH 是服务端原子追加，两个副本同时写也丢不了；
+- **分片发送**（`RPUSH_CHUNK = 512`）：单次实参有上限，且单条命令别撑太大；
+- **空数组提前返回**：不创建空键、也不为「什么都没写」刷新 TTL；
+- **`ttlSeconds`** 语义是「最后一次 append 之后 N 秒」（每次 append 刷新），不设则永久驻留；
+- **`maxMessages`** 按条数裁（`ltrim(-N, -1)`，起点由服务端钳位，不必先 `llen`）；
+- **坏元素响亮抛错**（带键名与序号），与脚手架 `FileSessionStore` 对坏 JSON 同一口径 ——
+  静默跳过会改变角色交替；`executeRun` 会把异常降级成一行 warn + 「当作没有历史」，
+  run 不击穿但上下文确实丢了。
+- 构造期拒绝：空前缀；`ttlSeconds` 为 NaN / 负数 / 小数；`maxMessages` 为负数 / 小数 / NaN；
+  设了旋钮但客户端缺 `expire` / `ltrim`（静默失效比启动期报错难查，与 `RedisTaskStore` 同款）。
+
+**判断二：两条边界只写进文档，不改框架行为**
+
+- **同一 session 并发**：`append` 是 append-only，不覆盖不丢，但**不保证角色交替** ——
+  两个并发 run 交错成「连续两条 user」后，下一轮 `load` 撞厂商校验（400）。要串行化就排队，
+  那是锁不是存储；框架不提供锁（与「只给缝不给策略」一致）。
+- **两个写者同时 `resumePending`**：认领是 `list()` → 改 `ownerId` → `save()` → 派发，
+  **三步无原子性**，`TaskStore` 也没有 CAS/租约接口；进程内有重入闸，跨进程没有对应物。
+  加 CAS 会与「`save` 必须保持两次 SET 的写入顺序（延迟幂等去重依赖它）」正面冲突，
+  且「加时间硬上限」会把租约换回新鲜度猜测（长跑被抢那个 bug 会原样回来）。
+  ⇒ 维持「部署层收敛为单写者」的既有结论，但把**为什么 `staleAfterMs` 兜不住**、
+  **滚动升级要走交接而不是滚动**写成可执行口径。
+
+**刻意没做**：不在框架里加 session 级锁（`SET NX` + 续期是新子系统，且租约参数没真源）；
+不给 `TaskStore` 加 CAS（同上，半成品的原子认领会造出「以为挡住了」的假安全感）。
+
+**验证**：`tests/runtime/session-redis.test.ts` **17 条**（多副本可见 / key 形状 / 追加不覆盖 /
+空数组不碰 Redis / 13 万条分片 / 裁剪方向 / 短列表不裁坏 / TTL 刷新 / 坏 JSON 响亮 /
+五类构造期坏值 / 两个 write 的缺口各 1 条 / `executeRun` 换 pod 接得上）。**6 条变异各自咬住**：
+去掉分片（`RangeError`）/ 不挡空数组 / load 静默跳过坏元素 / 裁剪方向反了 / 不刷 TTL /
+`ttlSeconds` 放行 NaN；逐条还原后 `git diff` 只多出本笔的 161 行。
+
+**代价**：`src/runtime/session.ts` 49 → 210 行；公共面多两个值/类型导出
+（`RedisSessionStore`、`RedisSessionClient` / `RedisSessionStoreOptions`），零依赖、
+无破坏性变更。文档三处同步：`multi-replica.md` §3.8 / §3.9 + 自检清单两条、
+`database.md` §0 与 §4、`deployment.md` §8。
+
 ## 11. 开放项
 
 

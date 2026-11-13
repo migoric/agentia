@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>251</b> 个导出</span>
+          <span class="api-chip"><b>254</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -190,7 +190,8 @@
             <tr><td>RunMeta / RunStatus</td><td><code>{ runId; status; idempotencyKey?; createdAt; startedAt?; finishedAt?; error?; suspendedReason?; wakeAt? }</code> / <code>'queued' | 'running' | 'suspended' | 'succeeded' | 'failed' | 'cancelled'</code></td><td>运行记录与状态。<code>suspended</code>（挂起）是<strong>非终态</strong>：不占并发槽、<code>resumePending</code> 不捡、<code>awaitTask</code> 继续等；等什么由 <code>suspendedReason</code>（<code>'approval'</code> = 等人工决定、<code>'timer'</code> = 等一个时刻）说，<code>wakeAt</code> 是后者的目标时刻。<code>cancelled</code>（被<strong>取消</strong>，宿主调 <code>runner.cancel</code>）是<strong>终态</strong>，与 <code>failed</code> <strong>分开</strong>：取消不是失败（引擎侧 <code>aborted</code> 收尾的口径），运维读数不该把「人按的」与「跑挂的」混成一类；机制是同一条 abort signal，差别在<strong>意图</strong> —— <code>runTimeoutMs</code> 超时仍然落 <code>failed</code>。</td></tr>
             <tr><td>SystemPrompt</td><td><code>class：new SystemPrompt({ version? })；add(name, text, stable?) / add(section) / build({ cache? })</code></td><td>分段组装 system：stable 段进可缓存前缀打 ephemeral breakpoint，volatile 段放其后；version 自动写入 run 根 <code>system.version</code>。</td></tr>
             <tr><td>SystemPromptOptions / SystemSection</td><td><code>{ version? }</code> / <code>{ name; text; stable? }</code></td><td>构造选项与段落；stable=false 不进可缓存前缀。</td></tr>
-            <tr><td>SessionStore / InMemorySessionStore</td><td><code>interface：load(id) / append(id, messages)</code></td><td>跨 run 的<strong>对话历史</strong>（append-only），与 MemoryStore（键值黑板）正交，可同时用；只有跑成功的轮次才回写。</td></tr>
+            <tr><td>SessionStore / InMemorySessionStore</td><td><code>interface：load(id) / append(id, messages)</code></td><td>跨 run 的<strong>对话历史</strong>（append-only），与 MemoryStore（键值黑板）正交，可同时用；只有跑成功的轮次才回写。⚠️ 进程内实现 —— <strong>多副本各一份</strong>，换一台 pod 就是「第一次见面」（不报错）。</td></tr>
+            <tr><td>RedisSessionStore / RedisSessionClient / RedisSessionStoreOptions</td><td><code>new RedisSessionStore(client, { prefix?, ttlSeconds?, maxMessages? })</code>；client 只需 <code>rpush / lrange</code>（+ <code>ltrim</code> / <code>expire</code>）</td><td>同一接口的<strong>多副本共享</strong>实现（duck-typed 客户端，零依赖）：列表语义（RPUSH 原子追加，两个副本同时写不丢轮次）；单次 RPUSH 按 512 分片（V8 实参上限会抛 <code>RangeError</code>，而回写失败只留一行 warn）；<code>ttlSeconds</code> 语义是「最后一次 append 之后 N 秒」，<code>maxMessages</code> 只留最后 N 条（按条数切、不知轮次边界）。坏元素<strong>响亮抛错</strong>。⚠️ 它<strong>不解决</strong>同一 session 的并发顺序 —— append-only 不保证角色交替，要串行化得自己排队。</td></tr>
             <tr><td>normalizeMessages</td><td><code>(input: RunInput | unknown) → MessageParam[]</code></td><td>任意任务入参（string / messages / { prompt | text | messages }）规范成 messages；空数组抛错。</td></tr>
             <tr><td>RunInput</td><td><code>string | MessageParam[] | { prompt?; text?; messages? }</code></td><td>transport 层接受的原始入参形态。</td></tr>
             <tr><td>RunSpec</td><td><code>{ messages; options?; source? }</code></td><td>一次任务的规范化入参；source 标记触发来源（sync / async / schedule:&lt;id&gt;）。</td></tr>
