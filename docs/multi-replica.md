@@ -20,6 +20,7 @@
 | 跨进程互斥（审批 / 取消 / 唤醒） | **没有**：互斥靠**进程内** Map | `src/transport/approval-supervisor.ts` |
 | 选主 / 租约续约 | **没有** | 本文 |
 | 跨进程实时流（SSE） | **没有**：给一帧 `unavailable` 让客户端转轮询 | `src/transport/async.ts` |
+| 会话历史（对话轮次） | **给了两个实现**：`InMemorySessionStore`（进程内）/ `RedisSessionStore`（多副本共享） | `src/runtime/session.ts` |
 | 指标聚合 | **没有**：进程内累加，重启清零 | usage-guide §7 |
 | 全局背压 | **没有**：`maxQueued` 只算本进程 | usage-guide §7 |
 
@@ -132,6 +133,70 @@
 
 **含义**：调用频率 × 表规模 = 你的启动/巡检开销。大表上不要「每秒扫一次」；终态记录要有
 清理策略（Redis 用 `ttlSeconds`，File / Sqlite 自行 `compact()` 或定期删）。
+
+### 3.8 会话历史跟着 pod 走：换一台就「第一次见面」
+
+**现象**：多轮对话第一句正常，第二句忽然「忘了上文」——而且**不报错**，看起来像模型没理解。
+负载均衡轮询下大约每 N 次出现一次。
+
+**真因**：`SessionStore` 是**宿主注入**的（`session: { store, id }`），而缺省只有
+`InMemorySessionStore`（`src/runtime/session.ts`）——进程内 Map。A 写入、B 读取 ⇒ B 读到空数组
+⇒ 这一轮就当「首轮」处理。
+
+**兜法**：换成 `RedisSessionStore`（同一份 Redis、同一个 `prefix`）：
+
+```ts
+import { RedisSessionStore } from '@migor/agentia';
+
+const sessions = new RedisSessionStore(redis, {
+  prefix: 'app:',
+  ttlSeconds: 7 * 24 * 3600, // 语义是「最后一次 append 之后 N 秒」，每次 append 刷新
+  maxMessages: 200,          // 0 = 不裁；按条数切，未知轮次边界
+});
+// 每个副本都用它，且 sessionId 由你的身份体系给出（不要用客户端可自填的值）
+```
+
+三条边界，都要知道：
+
+- **它只解决「跨副本可见」，不解决「同一 session 并发」**。`append` 是 append-only：
+  不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 各自追加 `[user, assistant]`，
+  交错成「连续两条 user」后，下一轮 `load` 出来直接撞厂商的角色交替校验（400）。
+  同一 session 的并发请按 session 排队（每 session 一把锁 / 一条队列）——
+  那是锁，框架不提供。
+- **`maxMessages` 按条数切，不知道轮次边界**：取奇数可能让历史以 `assistant` 开头，同样撞
+  角色交替。要按轮次裁就自己管，或取偶数并接受「切在被截断的一轮中间」。
+- **坏数据响亮抛错**（与服务端 `FileSessionStore` 同一口径）：某一条不是合法 JSON 时 `load`
+  抛 `TypeError`（带键名与序号）。框架的 `executeRun` 会把它降级成一行 warn + 「当作没有历史」
+  —— run 不击穿，但这一轮上下文**确实丢了**，日志里能看到。
+
+⚠️ 反过来说：`sessionId` 必须由身份体系给出。用客户端传上来的值等于让任意租户读别人的对话
+（同 `resolveRunOptions` 那条纪律，见 `deployment.md` §3）。
+
+### 3.9 两个写者同时扫描 ⇒ 同一个孤儿被两边各认领一次
+
+**现象**：同一个 `taskId` 跑两遍，工具副作用与模型花费翻倍；两边各写一份结果，最后落库的是
+后到的那份。
+
+**真因**：认领是 `list()` → 改 `ownerId` → `save()` → 派发（`src/transport/resume-scanner.ts`），
+**这三步没有原子性**，`TaskStore` 也没有 CAS/租约接口。进程内有重入闸（`#inflightResume`），
+跨进程没有对应物。于是两个写者各自 `list()` 到同一份旧快照、都判「这条是孤儿」、都认领、都派发。
+
+为什么不能靠 `staleAfterMs` 兜：它是**新鲜度**，不是租约 —— 而且**跨主机时判不了活**
+（`ownerId` 里的 pid 只在本机能问），恰好退回这个启发式。`src/transport/resume-scanner.ts`
+的 `ResumePendingOptions` 注释逐字写着「别再指望它单独把『重复执行』挡住」。
+
+**兜法**（按可靠性排序）：
+
+1. **任何时刻只有一个写者调 `resumePending()`**。这是拓扑 C/D 的前提，也是本条唯一的根治手段。
+2. **滚动升级要「交接」而不是「滚动」**：先让旧写者 `drain()` 并从 LB 摘除、**确认进程已退出**，
+   再让新写者接流量并调一次 `resumePending()`。两个写者并存的窗口里不要都调扫描。
+3. **按 `taskId` 分片**（拓扑 D）：每个分片一个写者，分片之间不共享扫描目标。
+4. 万一重叠了：以「至少一次」的代价接受它 —— 把工具副作用做成幂等（业务侧），
+   或在 `onFinished` 的 webhook 里按 `runId` 去重。
+
+⚠️ 不要试图用 Redis 事务 / `WATCH` / Lua 给 `save` 补原子性：`AsyncRunner` 的延迟幂等去重
+**依赖** `RedisTaskStore.save` 「先记录、后幂等索引」的两次 SET 顺序（见 §3.1），
+加事务会让去重时灵时不灵，且只在并发下复现。
 
 ## 4. 拓扑 C：单写者 + 只读副本（推荐起点）
 
@@ -250,6 +315,10 @@
 - [ ] `stream` 的客户端实现了 `unavailable → 轮询` 降级
 - [ ] `Scheduler` 只在**一个**副本上 `start()`
 - [ ] `resumePending()` 只在**写者**上接线，且 `staleAfterMs` 的值与**为什么是这个值**写进了运维文档
+- [ ] 多轮对话型能力用的是 `RedisSessionStore`（或你自己的跨进程实现），**不是**内建的
+      `InMemorySessionStore`；`sessionId` 来自身份体系而不是请求体
+- [ ] 同一 `sessionId` 的并发 run 已串行化（每 session 一把锁 / 一条队列），或已确认业务上不会并发
+- [ ] 确认过「任一时刻只有一个写者调 `resumePending()`」；滚动升级走**交接**，不是两个写者并存
 - [ ] 故障转移演练做过：杀写者 → 起备 → 同库 → 挂起任务被捡回（`/healthz` 的 `suspended` 对得上）
 - [ ] `/metrics` 与 `/healthz` 的聚合在**采集端**做（不假设单进程读数）
 - [ ] 已确认**不会**在 `drain()` 之后试图恢复服务（单向闩，必须退出进程）

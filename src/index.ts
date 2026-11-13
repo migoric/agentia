@@ -202,8 +202,12 @@ export { createAnthropicClient } from './integrations/anthropic.js';
 export type { AnthropicClientOptions } from './integrations/anthropic.js';
 export { InMemoryMemoryStore } from './runtime/memory.js';
 export type { MemorySnapshot, MemoryStore, MemoryWriteResult } from './runtime/memory.js';
-export { InMemorySessionStore } from './runtime/session.js';
-export type { SessionStore } from './runtime/session.js';
+export { InMemorySessionStore, RedisSessionStore } from './runtime/session.js';
+export type {
+  RedisSessionClient,
+  RedisSessionStoreOptions,
+  SessionStore,
+} from './runtime/session.js';
 export { RedisTaskStore } from './store/redisStore.js';
 export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/redisStore.js';
 export type { MaybePromise } from './store/store.js';

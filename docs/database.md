@@ -16,7 +16,7 @@
 |---|---|---|---|
 | **业务数据**（订单 / 客户 / 工单 / SKU） | 你的应用 | **什么都不给**，也不该给 | 一个 provider + 若干 `@Tool` |
 | **agent 任务状态**（队列 / 挂起 / 审批决定 / 事件簿记） | 你的任务宿主 | `InMemoryTaskStore` / `FileTaskStore` / `SqliteTaskStore` / `RedisTaskStore` | 只在「多实例共用一个队列」时：一个 `TaskStore` 实现 |
-| **会话历史 / 记忆** | 你的宿主 | `SessionStore` / `MemoryStore` 的**内存版** | 多实例时：各一个实现 |
+| **会话历史 / 记忆** | 你的宿主 | `SessionStore`：`InMemorySessionStore` / `RedisSessionStore`（多副本共享）；`MemoryStore` 只有内存版 | 多实例且不用 Redis 时：各写一个实现 |
 
 三者可以放在**同一个 mysql** 里（一个库、不同表），但**不要塞进同一个事务** —— 见 §3.4。
 
@@ -254,11 +254,17 @@ run 的持久化边界是「一次 `save`」，业务事务是你自己的。想
 
 ## 4. 会话与记忆
 
-`SessionStore` / `MemoryStore` 只有内存版。多实例部署时各写一个实现，接口很小
-（`MemoryStore` 的 CAS 必须**成对**实现 `loadWithRev` + `saveIfRev`），签名见
-[usage-guide](./usage-guide.md) 的 store 小节。
+`SessionStore` 有两个实现：`InMemorySessionStore`（进程内，缺省/测试）与
+`RedisSessionStore`（多副本共享同一段历史；`prefix` 分命名空间、`ttlSeconds` 按「最后一次
+append 之后 N 秒」回收、`maxMessages` 按条数裁）。`MemoryStore` **只有内存版**，需要持久化时
+自己写一个实现，接口很小（`MemoryStore` 的 CAS 必须**成对**实现 `loadWithRev` + `saveIfRev`），
+签名见 [usage-guide](./usage-guide.md) 的 store 小节。
 
-⚠️ `sessionId` 的并发要自己串行化：同一个 session 上并发两个 run，消息历史的顺序由你的实现决定。
+⚠️ **`RedisSessionStore` 不解决并发顺序**：`append` 是 append-only，不覆盖、不丢数据，但两个
+并发 run 的 `[user, assistant]` 可能交错成「连续两条 user」，下一轮 `load` 出来撞角色交替校验
+（400）。同一 session 的并发 run 要自己串行化（每 session 一把锁 / 一条队列）——
+框架给的是存储，不是锁。多副本下还会多一层：`sessionId` 必须来自身份体系，
+别用请求体里客户端可自填的值（否则任意租户可读别人的对话）。
 
 ## 5. 另一条路：数据库 MCP server
 
