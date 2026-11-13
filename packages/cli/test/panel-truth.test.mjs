@@ -20,6 +20,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, '..', 'src');
 const PAGE = readFileSync(join(SRC, 'inspector-page.html'), 'utf8');
 const LOGIC = readFileSync(join(SRC, 'panel-logic.ts'), 'utf8');
+const RUNNER = readFileSync(join(SRC, 'dev-runner.ts'), 'utf8');
+const DEVSERVER = readFileSync(join(SRC, 'dev.ts'), 'utf8');
 
 it('列表第二/三行是块级：否则 ellipsis 与 3px 间距都是装饰', () => {
   // 同一条 CSS 规则可能被拆成多条（颜色一条、溢出行为一条），只要求其中有 display:block
@@ -66,5 +68,57 @@ it('run 列表形状是 RunSummary 的投影，不是手抄的 interface', () =>
   assert.ok(
     !/export interface ConversationRunLike/.test(LOGIC),
     '别改回 interface：手抄形状在编译期看不出漂移',
+  );
+});
+
+/* ---------- 2026-11-13 三处「事实没到面板」----------
+ *
+ * 这一批的共同点：数据**都已经在手边**了，只是没接到 `warning` / 底栏上。
+ * 它们的失败态同样在 Node 里跑不出来（要起子进程、要有浏览器），所以钉接线本身。
+ */
+
+it('本趟上限在底栏、且只在运行前那一处读 dev.budget', () => {
+  assert.ok(/<span id="budget" hidden><\/span>/.test(PAGE), '底栏少了上限那个读数位');
+  assert.ok(
+    /^\s+budgetLine,$/m.test(PAGE),
+    '页面没 import budgetLine —— 自己拼一份格式就会和总账两套写法',
+  );
+  assert.ok(
+    /^\s+const cap = budgetLine\(dev\.budget\);$/m.test(PAGE),
+    '上限必须在运行前就填（`dev.budget` 早就在 /api/dev 里了，此前只在总账用过）',
+  );
+  assert.ok(
+    /^\s+budgetEl\.hidden = cap === '';$/m.test(PAGE),
+    '没有护栏时要把读数位收起来：留着空白会让人以为「上限是 0」',
+  );
+});
+
+it('孤儿能力告警要进 warning 通道（框架那句只落在终端，面板看不到）', () => {
+  assert.ok(
+    /^\s+:\s+names\.filter\(\(n\) => !toolSources\.includes\(n\)\);$/m.test(RUNNER),
+    '孤儿集合 = 能力名 − toolSources。这条删了，终端里那句「孤儿能力告警」就再也上不了面板',
+  );
+  assert.ok(
+    /^\s+const warnings = \[configWarning, menuWarning, turnWarning, orphanWarning, sessionWarning\]\.filter\($/m.test(
+      RUNNER,
+    ),
+    '算出来却不在 warnings 数组里 = 白算（本仓最忌的「建了变量没人用」）',
+  );
+});
+
+it('两个 dev 实例共用一份 trace 时要出声（写者锁在父进程手里）', () => {
+  assert.ok(
+    /^\s+writerLock = claimWriterLock\(\{ lockPath, port: panelPort \}\);$/m.test(DEVSERVER),
+    '没有抢锁这一步，`.agentia/traces.jsonl` 就是两个 runner 交错追加 —— 且不报错',
+  );
+  assert.ok(
+    /^\s+\[state\.warning, writerLock\.warning\]\.filter\(/m.test(DEVSERVER),
+    '锁的告警必须并进 devState.warning：面板只读这一个字段，另开一条通道等于没人看',
+  );
+  assert.ok(
+    /^\s+if \(writerLock\.owned\) process\.on\('exit', \(\) => releaseWriterLock\(lockPath\)\);$/m.test(
+      DEVSERVER,
+    ),
+    '退出要放锁，否则下一次启动（以及别的实例）会一直看到「有人占着」',
   );
 });

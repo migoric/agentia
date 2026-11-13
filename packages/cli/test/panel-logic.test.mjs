@@ -1185,3 +1185,26 @@ describe('深链与重跑（2026-11-13）', { skip: SKIP }, () => {
     assert.equal(L.rerunFromNote(null, ['a']), null);
   });
 });
+
+describe('底栏上限（budgetLine）', { skip: SKIP }, () => {
+  it('两个上限都在 ⇒ `$30 / 500k tok`（与总账同一套数字格式）', () => {
+    assert.equal(L.budgetLine({ maxCostUsd: 30, maxTotalTokens: 5_000_000 }), '$30 / 5M tok');
+    assert.equal(L.budgetLine({ maxCostUsd: 1, maxTotalTokens: 200_000 }), '$1 / 200k tok');
+  });
+
+  it('只给一项 ⇒ 只报那一项（缺的那项不当 0 显示）', () => {
+    assert.equal(L.budgetLine({ maxCostUsd: 3, maxTotalTokens: 0 }), '$3');
+    assert.equal(L.budgetLine({ maxCostUsd: 0, maxTotalTokens: 120_000 }), '120k tok');
+  });
+
+  it('没有护栏 / 两个上限都不正 ⇒ 空串（不显示，而不是 `$0`）', () => {
+    assert.equal(L.budgetLine(null), '');
+    assert.equal(L.budgetLine(undefined), '');
+    assert.equal(L.budgetLine({ maxCostUsd: 0, maxTotalTokens: 0 }), '');
+    assert.equal(
+      L.budgetLine({ maxCostUsd: Number.NaN, maxTotalTokens: -1 }),
+      '',
+      '「不知道上限」与「上限是 0」是两件事 —— 后者不该被显示成免费的护栏',
+    );
+  });
+});

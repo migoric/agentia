@@ -8085,6 +8085,64 @@ combo 必须是 `model=,source=,tenant=acme`，不许借别的属性填空。反
 还须处理「有限但超出 Date 可表示区间」的 startedAt；非法值回退写盘时刻。新增真实 export
 回归用例，防止 `RangeError: Invalid time value` 让该条 trace 在写盘前丢失。
 
+### 2026-11-13 ③ ref-dev-loud：**三件「事实到了终端、没到面板」**
+
+来源：另一台机器上有人对着一个**下游工程**的 dev 实例（`@migor/cli` 0.10.10，非 main）读面板
+源码 + 实时接口，报回五条。逐条追到源码后是**三条可修 + 一条设计边界 + 一条下游工程的事**。
+本轮只做那三条，判据都是「数据已经在手边，只是没接到使用者眼前」。
+
+1. **孤儿能力告警进 `warning` 通道**（`dev-runner.ts`）。框架自己在
+   `src/toolkit/module.ts` 用 `console.warn` 报「某 provider 上的 N 个能力不在 toolSources 内」，
+   而子进程 `stdio` 全 `inherit`（`dev.ts` 的 `spawn`）⇒ 那句话只落在启动终端里，面板告警条
+   只读 `warning` 字段 ⇒ **界面上永远看不到**（终端滚过去就没了）。而 CLI 两侧数据都在手边：
+   `names`（能力文件夹名 ∩ 容器注册，来自 `listCapabilities`）与 `toolSources`（收窄白名单）
+   ⇒ `orphan = names − toolSources`，与框架那句同义，补进同一条通道。
+   ⚠️ 与 `turnWarning` 同一条前提：菜单本身没起来（`menuWarning` 在场）时不判 —— 那时 `names`
+   是空的，判了只会是 0 条。
+2. **预算上限挪到运行前**（`panel-logic.ts` 的 `budgetLine` + `inspector-page.html` 底栏）。
+   `budget` 早就在 `/api/dev` 的 snapshot 里（`dev-runner` 报的是「生效的那份」），此前只被总账
+   用过一次 —— 而总账要**选中一条已完成的 run** 才存在。「这一下最多花多少」是使用者在按
+   「▶ 运行」之前唯一想知道的事，却要等跑完才看得到。`fmtBudgetTokens` 单独一个：上限是**人挑的
+   一档**，`5M` 而不是 `5000k`（`fmtCount` 是给读数用的，两者不会在同一处相遇 —— 总账不报
+   token 上限）。空串 = 不显示（「不知道上限」≠「上限是 0」）。
+3. **两个 dev 实例的写者重叠出声**（新文件 `dev-lock.ts` + `dev.ts` 接线）。
+   `dev-runner.ts` 挂落盘 sink 时写着「单进程写者前提天然满足 —— dev 环只有 runner 这一个写者」，
+   而那条前提**只在一次 dev 会话内成立**：同一工程开两个终端（或一个正常实例 + 一个只读实例）
+   就有两个 runner 往同一个 `.agentia/traces.jsonl` 追加，交错的行让 `agentia view` / `report`
+   读到半条 JSON，且不报错 —— 而 `jsonlTraceSink` 的契约明写「多进程写同一文件会交错」，它不管。
+   三条判断：
+
+   - **只出声、不拒绝启动**。只读实例（只想看、不点运行）是合法用法，锁住它等于把人挡在门外；
+     判据因此是「有人**可能**在写」这个事实，不是「不许有第二个进程」。
+   - **锁由父进程持**，不是 runner。runner 每次改代码都重启，拿子进程 pid 做判据会把「自己的
+     下一世」当成「另一个实例」—— 每次热重载误报一次，比不报更坏（人会学会无视它）。
+   - `openSync(..., 'wx')` 保证「要么我建、要么别人已建」，死锁（pid 不在 / 半条 JSON）能接管，
+     同一个 pid 直接接管（那是上一世），退出只删**自己**那把。锁挨着它保护的文件放
+     （`.agentia/traces.jsonl.lock`），`cat` 一下就知道被谁占着。
+
+**刻意没做（两条，都写清了理由）**：
+
+- **落盘 trace 进 run 列表**：这是**已声明的边界**，不是缺陷 —— `view.ts` 头注逐字写着「面板是
+  **在飞**的（run 列表是内存 ring，重启即空）」，落盘那条缝按 `dev-runner.ts` 是给
+  `report` / `diff` / `harvest` / `export` 用的。真接进面板是新特性（要定「按什么顺序混排
+  在飞与历史」「历史淘汰线」「同一 traceId 出现两次怎么办」），不该混在一笔修复里。
+- **工作目录三控件「没有消费方」**：CLI 把 `workdir` 喂进了 `createAgentApp`（`dev-runner.ts`
+  的注释就是「四个控件都要从这里喂进去」），是那个下游工程的工厂收下没注入。CLI 也无法机械
+  判定（`container.registered()` 只回 token，查不到 deps），**做不出一条会撒谎的体检**。
+
+**验证**：CLI **291/291**（`dev-lock` 7 条 + `budgetLine` 3 条 + 接线守卫 3 条）。**8 条变异
+各自咬住**：孤儿集合改成 `toolSources.includes` / `orphanWarning` 不进 `warnings` 数组 /
+devState 只报 runner 的 warning / 抢锁那行注释掉 / 放锁那行注释掉 / 上限填充注释掉 /
+上限 token 退回 `fmtCount`（`5000k` 断言红）/ 锁不判死活 / 释放时不认自己。
+⚠️ **第一条变异曾漏网**（「把抢锁那行注释掉」当时仍然绿）：原来的守卫用
+`/claimWriterLock\(\{ ... \}\)/`，注释掉的代码字符串还在 ⇒ 照样命中。全部改成 `^\s+…$` 锚行首
+之后才咬住 —— 「守卫匹配到被注释掉的代码」是源码级守卫的典型假绿，记在这里。
+
+**代价**：`dev-lock.ts` 新文件 145 行 + 四处接线（`dev.ts` / `dev-runner.ts` /
+`panel-logic.ts` / `inspector-page.html`），规模棘轮显式补账 11443 → 11688（逐文件对账写在
+`structure.test.mjs` 头注）。公共面**零变化**：没有新参数、没有新导出（`dev-lock` 只在
+`dev.ts` 与单测里用），`@migor/agentia` 一行未动。
+
 ## 11. 开放项
 
 

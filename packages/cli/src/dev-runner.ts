@@ -394,8 +394,23 @@ async function build(): Promise<BuildResult> {
     menuWarning === null && unknownTurns.length > 0
       ? `${DEV_CONFIG_REL} 的 multiTurn 里有不认识的能力：${unknownTurns.join('、')} —— 是不是改名了？`
       : null;
+  // 孤儿能力（= 被 toolSources 收窄排除的那些）：框架**自己**在 `toolkit/module.ts` 里
+  // 用 `console.warn` 报这件事，而子进程的 stdio 全 inherit ⇒ 那句话只落在启动的那个终端里，
+  // 面板的告警条（只读 `warning` 通道）永远看不到 —— 实测症状就是「终端滚过去就没了」。
+  // 两侧数据这里都在手边（`names` = 能力文件夹名 ∩ 容器注册，`toolSources` = 收窄白名单），
+  // 所以补一条进同一条通道，文案与框架那句同义。
+  // ⚠️ 菜单本身没起来（`menuWarning` 在场）时不判：那时 `names` 是空的，判了只会是 0 条。
+  const orphan =
+    toolSources === null || menuWarning !== null
+      ? []
+      : names.filter((n) => !toolSources.includes(n));
+  const orphanWarning =
+    orphan.length > 0
+      ? `能力已装配但不在 toolSources 内：${orphan.join('、')} —— 不进主菜单（模型无法直接调用），` +
+        '若被其他能力的 tools 引用仍可被调用'
+      : null;
   const sessionWarning = await probeSessionFile(mod);
-  const warnings = [configWarning, menuWarning, turnWarning, sessionWarning].filter(
+  const warnings = [configWarning, menuWarning, turnWarning, orphanWarning, sessionWarning].filter(
     (w): w is string => w !== null,
   );
   return {
