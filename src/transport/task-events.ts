@@ -259,6 +259,24 @@ export class TaskEventStreams {
     };
   }
 
+  /**
+   * 丢掉一条**本进程从未推进过、也没人在读**的空流表项（2026-11-14：跟随放弃后的清理）。
+   *
+   * 场景：`submit` 在同步段就 `open()` 了流（保证「返回 taskId 后立刻可订阅」），但随后的
+   * 提交仲裁发现这条任务归**别的进程**，本进程放弃跟随 —— 这条流就成了一块永远不会有事件、
+   * 也永远不会 `markDone` 的空桩（`#evictTerminal` 只回收终态流）。
+   *
+   * 为什么删表项在这里**不违反**约束 4/1：被删的前提是「缓冲为空、从未终态、无订阅者」——
+   * 没有 `nextIndex` 走过的历史可丢，也就不存在「拿 `Last-Event-ID` 续订的读者筛不出东西」。
+   * 有事件或有订阅者的流一律不动：那不是空桩，删了会真的静默丢历史/正文。
+   */
+  releaseUnwatched(taskId: string): void {
+    const s = this.streams.get(taskId);
+    if (!s || s.done || s.events.length > 0) return;
+    if (s.subscribers.size > 0 || s.doneListeners.size > 0) return;
+    this.streams.delete(taskId);
+  }
+
   /** 标记终态：此后不再有事件（`task.end` 由调用方发），并按 LRU 丢掉最旧的终态流 */
   markDone(taskId: string): void {
     const s = this.streams.get(taskId);

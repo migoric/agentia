@@ -821,6 +821,14 @@ async function executeOneTool<S extends JsonSchema>(
     ok = false;
     errorKind = 'denied';
     content = `审批被拒绝：${decision.reason ?? '未给出理由'}`;
+  } else if (tool.approval === 'required' && decision === undefined) {
+    // fail closed：同一 assistant 回合的两个块若复用 tool_use_id，预检看到的是同一份
+    // 批准；第一个块把它消费后，第二个块仍会进入这里。没有独立决定就绝不能执行，
+    // 否则一条批准会在同一回合里放行任意多个同名 id 的副作用。
+    ok = false;
+    errorKind = 'denied';
+    content =
+      '审批决定缺失或该 tool_use_id 的决定已被消费；本次调用未执行，请使用新的 tool_use_id 重新申请审批';
   } else {
     // 模型给的 input 先过 schema 校验：不合法直接回 is_error（含路径，
     // 模型可自我修正），不进方法体 —— schema 是方法与模型间的运行时契约。

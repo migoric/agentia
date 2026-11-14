@@ -8201,6 +8201,146 @@ devState 只报 runner 的 warning / 抢锁那行注释掉 / 放锁那行注释�
 无破坏性变更。文档三处同步：`multi-replica.md` §3.8 / §3.9 + 自检清单两条、
 `database.md` §0 与 §4、`deployment.md` §8。
 
+### 2026-11-13 ⑤ ref-pg-adapter-and-store-hardening：**PG 宿主适配包落地，并把 schema / 发布 / Redis 会话 / 跨进程 janitor 的边界收口**
+
+**决定**（新增 `@migor/agentia-pg` 与随包复核对齐；公共 API 只增不改）：
+
+1. **新增 `packages/pg`**：`PgTaskStore` / `PgSessionStore` 落到普通 PG 表，
+   `ensureSchema` / `schemaDdl` 提供幂等建表与“无 DDL 权限”导出 SQL；客户端 duck-typed
+   （只要求 `query(text, params)`），`@migor/agentia` 为 peer，运行时第三方依赖仍为零。
+   `PgTaskStore` 用单语句 UPSERT + 显式 `save_seq` 保证幂等键 last-wins；`PgSessionStore`
+   整批一条 `INSERT ... unnest($n::text[])`，按轮次（`payload->>'role'`）裁剪。
+2. **`schema` 选项的索引名不再带 schema 限定**：PostgreSQL `CREATE INDEX` 的索引名不能
+   写成 `public.xxx`（索引自动落在父表 schema）；旧实现的 `public.agentia_tasks_due_idx`
+   会让文档里的 `ensureSchema(pool, { schema: 'public' })` 直接 syntax error。
+3. **`ensureSchema` 不再宣称 `IF NOT EXISTS` 能自己挡并发**：PG 的并发首启仍可能撞
+   `42P07` / `42710` / `23505`；改为逐条 DDL 重试这几类竞态。**不**把 DDL 包进
+   `BEGIN` —— `PgClient` 可能是 `Pool`，`Pool.query` 不保证连续语句在同一连接上。
+4. **`PgSessionStore.prune` 补 `(session_id, created_at)` 索引**：支撑按会话的
+   `max(created_at)` 聚合；清理仍以整段会话为单位，不能按行删（会切坏轮次）。文档示例
+   改成等价的 `DELETE ... GROUP BY/HAVING`，不再点名不存在的 SQL 函数。
+5. **发布链路登记第三包**：`release.mjs` 的 `PACKAGES` / artifact 核对 / tag 文案 / bump
+   指令都加入 `@migor/agentia-pg`，避免 tag 在 PG 未发布时照样成功。
+6. **`RedisSessionStore` 同时接受 ioredis 与 node-redis v4 的列表命令**
+   （`rpush/rPush`、`lrange/lRange`、`ltrim/lTrim`）；TTL 刷新放 `finally`（裁剪失败不能
+   让这一批按旧 TTL 过期）；多分片失败带分片位置明确报「可能半批」；`load` 对合法 JSON
+   但非 `MessageParam` 的标量/`null` 响亮拒绝。
+7. **跨进程 janitor 有界并发 + 判据异常上报**：一拍最多 32 个任务并发 poll；`isTerminal`
+   抛错走 `onError`（调用方 warn 一次）而不是静默吞掉。
+8. **四处复核回归收口**：同一 assistant 回合重复 `tool_use_id` 不得复用审批决定；
+   嵌套 capability 的 usage 只给顶层行（内层仍计 calls/errors/耗时）；PG 任务 JSON 改 `text`
+   以无损保存 NUL（会话 `jsonb` 继续显式拒绝）；异步幂等提交在首次落库前查旧 succeeded，
+   `awaitTask` 等同一条初始化，查询/首存失败 fail closed，不启动可能重复副作用的 run。
+9. **发布闸门覆盖 PG 工作区锁版本**：lock 的受管 version 从 4 处增至 5 处；PG scoped 包
+   显式 `publishConfig.access=public`，避免首次发布走 npm 默认受限。跨进程并发仍无 CAS，
+   PGlite 只验单连接语义，不能把上述幂等修复表述成分布式恰好一次。
+
+**代价**：`ensureSchema` 多最多 5 次短重试；Redis 多分片仍不是跨命令事务（README 已如实
+写明半批边界）；PG 的 `schema` 选项只接受小写标识符（不变）。
+
+### 2026-11-13 ⑥ ref-pg-live-concurrency：**真实 PG 多连接 / 多进程补验，重复执行从推演变成可见边界**
+
+**决定**：默认 `packages/pg/test/` 的 47 条 PGlite 用例保持不变；新增显式 opt-in 的
+`packages/pg/test-live/`（6 条，不进默认 `npm test`，也不进发布 tarball）。`pg` 只作为该包的
+测试 devDependency，不进入运行时 dependencies。运行前先 `npm run build && npm run build:pg`，
+再由 `AGENTIA_PG_TEST_URL` 指向测试库；每条用例使用独立 schema 并最终删除，不碰宿主既有
+`agentia_*` 表。多进程用例等待 worker 退出，失败时先打开 IPC 闸门再清理，不能留下后台执行者。
+
+**真实 PostgreSQL 18.4 + pg 8.23.1 的验证结果**：
+
+1. 4 条真实 `Client` 连接 × 8 轮全新 schema 并发首启，实际触发过
+   `pg_class_relname_nsp_index` 唯一约束竞争，`42P07` / `42710` / `23505` 重试后全部收敛。
+2. 真实 `node-postgres Pool` 下任务 `text` 中的 NUL 逐字往返；会话 `jsonb` 的 NUL 明确报
+   `TypeError`，不靠 PGlite 推断真实驱动行为。
+3. 两个独立 OS 进程首次同键并发提交，经 IPC 保证两边都已进入 `app.run` 后放行，calls 为
+   `[1,1]`；已有 `succeeded` 的另一进程则 calls 为 0，采纳同一 runId / finalText。
+4. 两个进程都 `list()` 到同一旧 `ownerId` 后恢复同一孤儿，calls / resumed 均为 `[1,1]`；
+   换用 README 的专用连接 advisory lock，等另一方也尝试过锁后再放行，总执行次数为 1、
+   另一方 skipped。这验证的是**单次扫描互斥**，不是选主。
+
+**边界**：重复首提与重复恢复的断言是当时无跨进程 CAS 的**实证**，不是把重复执行立成目标；
+跨进程语义仍为 at-least-once，不承诺分布式恰好一次。Neon HTTP、多 PG 版本、性能、多机部署
+与完整故障切换仍未验证，README 与 `multi-replica.md` 同步保留这些限制。两个重复窗口的后续收口
+见 2026-11-14 `ref-pg-atomic-claim`。
+
+### 2026-11-14 ① ref-pg-atomic-claim：**幂等首提与孤儿恢复改为可选原子能力；PG 关闭两个同快照双认领窗口**
+
+**决定**：`TaskStore` 保持五个必需方法不变，新增两个可选能力。`claimSubmission(rec)` 用
+`submissionTaskId(key)`（`task_` + 幂等键的 SHA-256）让同键提交争同一个主键，只有返回 `true`
+的调用方执行；活跃或成功记录由失败者跟随，失败／取消记录可原子重置重试。`compareAndSave(rec,
+expected)` 以变异前**完整任务快照**为比较条件，只有仍持有同一快照的恢复者能保存、派发与计数。
+没有这两个方法的 store 保留原路径与 at-least-once 边界，不把普通 UPSERT 冒充认领。
+
+**PG 落地**：`PgTaskStore` 用一条 `INSERT ... ON CONFLICT ... WHERE 旧状态 IN
+('failed','cancelled') ... RETURNING` 仲裁首提，用 `UPDATE ... WHERE task_id = ... AND json =
+expected` 做全快照 CAS；两条都刷新 `save_seq`，不需要 schema 迁移。跟随者不进入 `app.run`，
+不重复发 `TaskSink`。升级前的随机 taskId 活跃记录也能跟随，终态映射回本次确定性 id。认领请求
+报错可能发生在服务端已提交之后：只允许用认领前快照 CAS 纠正自己的 queued；若记录已被其他
+认领者推进则转为观察，禁止用 failed 无条件覆盖。完全无记录且无法耐久写入时，只向本次等待者
+返回本地失败并走 `onPersistError`，不伪造落库成功。
+
+**明确保留的边界**：
+
+- 两条能力分别关闭「首次同键提交」与「同一旧快照的孤儿恢复」；审批、事件投递、到期唤醒、
+  取消及普通 `save` 没有顺带变成跨进程 CAS，部署仍须按 owner 路由这些控制路径。
+- 新旧版本混跑时旧进程仍写随机 taskId、不会原子认领，整个滚动窗口按 at-least-once；要严格
+  避免重叠仍做写者交接。advisory lock 在全新 PG 路径上只是可选的扫描互斥，不是两条能力的替代品。
+- 确定性 taskId 是标识，不是鉴权或租户隔离；HTTP 仍须 `authenticate` / `authorizeTask`。
+- 原子认领不等于分布式 exactly-once：外部副作用后崩溃、误判 owner 已死、终态落库失败仍可能
+  重复副作用，业务幂等与 `onPersistError` 告警仍是宿主责任。
+
+**验证面**：PGlite 增加原子首提／CAS 回归，实测 52／52；框架增加双 runner、失败重试、升级前
+随机 id、claim 已提交后报错及共享旧快照恢复等用例。真实 PostgreSQL 18.4 + pg 8.23.1 连续跑
+3 轮，每轮 6／6（共 18／18）：首提执行计数 `[0,1]` 且 runId 相同，孤儿恢复计数与执行计数
+均为 `[0,1]`；advisory lock 只保留为可选互斥配方。历史条目 `ref-pg-live-concurrency` 记录的是
+修复前的重复实证，不再代表当前这两个窗口。
+
+### 2026-11-14 ② ref-follow-bounded-and-append-guard：**跟随他进程认领有界退出；会话写入点补上读时同口径的守卫**
+
+**来路**：`ref-pg-atomic-claim` 落地后按「日常配合使用的费力度」复核一遍，找出两处「能无限期
+不报错地挂着 / 能静默把历史写坏」的形态。两条都不是新能力，是既有能力的收口。
+
+**① 跟随他进程认领：从无限轮询改成按直接证据退出**。`waitForObserved` 此前是纯粹的 250ms
+无限轮询。认领输掉（`claimSubmission` 返回 `false`）的那一趟会一直占着 `active`，两个后果都
+实测过：`drain()` 永不结算（SIGTERM 之后被编排层硬杀）、`inFlight` 读数虚高（`maxConcurrentRuns`
+的 503 闸被幽灵任务占着）。出口只有两条，都是**直接证据**，没有一条是「等太久了」——
+任务可能在别的进程正常跑几小时（HITL 审批），时间不是「没人推进」的证据：
+
+- 本 runner 已进入 `drain`：不再替别的进程等（跟随者不是「本进程在执行的任务」）；
+- 目标记录的 `ownerId` 是同主机、且 `process.kill(pid, 0)` 给出 `ESRCH`（复用
+  `owner-liveness.ts` 的三态判定）：认领者进程崩了。跨主机判不了活（`undefined`）时继续等 ——
+  那类孤儿仍归部署层的 `resumePending`；
+- 记录**明确不存在**（`get` 没抛错、连续 3 次约 750ms 都读不到）：等不到终态了 —— 它可能被
+  TTL / `prune()` 回收，也可能从来没落库。留这几次抖动是给「认领者刚提交、本进程读的是只读
+  副本」的复制延迟，再读不到就放手。
+
+放弃**不等于失败**：本进程不落库、不发 `TaskSink`（同确定性 taskId 时写 `failed` 就等于覆盖
+真正的认领者），只登记为「别处的活」，并回收那条从未推进过的**空流桩**
+（`TaskEventStreams.releaseUnwatched`；有事件或有订阅者的流一律不动 —— 删了会真的丢历史）。
+整趟跟随（`followClaim` / `followStopReason`）搬进 `transport/submission.ts`，`async.ts`
+由 800 行降到 **799** 行（`source-size` 的预算行同步下调，不是抬上限）。
+
+**② `RedisSessionStore.append` 补上 `load` 同口径的守卫**。`load` 只接受 `user` / `assistant`，
+而 `MessageParam['role']` 含 `'system'`（与 SDK 类型逐字对齐，见 `core/message.ts` 头注 2）。
+此前只在读时校验 ⇒ 一条 system 消息能被 `append` 静默写进列表，之后**整段**历史每次 `load`
+都响亮抛错，而 `executeRun` 把它降级成「当作没有历史」：会话从此永久失忆，写入那一刻却
+没有任何信号。现在 `append` **先全量校验、再分片写**（第 N 条非法 ⇒ 一条都不落库，不产生
+半批；校验与序列化在同一趟里完成），`system` 的错误文案点名「类型允许、但会话历史与 Messages
+API 都只接受 user/assistant」。
+
+**明确保留的边界**：跟随的两条出口都不覆盖「异主机主人已死」—— 判不了活时仍无限等，
+部署必须真的接 `resumePending`（`multi-replica.md` 已把它写成前提，不是可选项）。
+`append` 的拒绝是**行为变更**：把 system prompt 塞进 SessionStore 的既有用法会从「静默写坏」
+变成「当场抛错」，正确位置是 `RunInvocationOptions.system`。
+
+**验证面**：新增 2 条会话用例（`system` 被拒且既有历史仍可读；一批里第 2 条非法 ⇒ 零写入、
+不建键、不刷 TTL）与 3 条跟随用例（主人已死 ⇒ 退出且一个字节都不改别人的记录、`drain` 通过；
+主人在 ⇒ 不误判放弃、继续跟到终态并映射落库；记录被回收 ⇒ 容忍几次抖动后退出）。四条变异
+各自咬住对应用例并已还原（去掉放弃判据 ⇒「已死」那条挂且测试进程被 SIGTERM；把「活着」判成死
+⇒「主人在」那条挂；「记录不存在」永不放弃 ⇒「被回收」那条挂；去掉 `append` 校验 ⇒ 两条会话
+用例挂）。框架套件 1986／1986，覆盖率 97.98 行 / 92.27 分支 / 98.88 函数（阈值 95 / 89 / 95）。
+
+
 ## 11. 开放项
 
 

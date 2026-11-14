@@ -5,7 +5,7 @@
 // 恰好放着 harvest / diffTraces 的「移植副本逐字对拍」守卫，跳过它等于放掉防线；
 // 且 verify-all.sh / CI 把 npm test 当单步，整条链上无人发现跳过。
 //
-// 本脚本依次 spawn 三个套件，**无论前面成败三个都跑完**，各自透传输出，
+// 本脚本依次 spawn 清单里的每个套件，**无论前面成败全都跑完**，各自透传输出，
 // 最后统一汇总并决定退出码。glob 参数原样传给 node --test（由 node 自己展开），
 // 与原脚本行为一致；用 process.execPath 起手，不依赖 PATH 里的 node（Windows 同理）。
 
@@ -75,6 +75,21 @@ const suites = [
     name: 'trace-view 套件（packages/trace-view/test/*.test.js）',
     args: ['--test', 'packages/trace-view/test/*.test.js'],
   },
+  {
+    // ⚠️ 与 CLI 套件同一个前提：**测的是 `dist/`**，改了 `packages/pg/src` 就得先
+    // `npm run build:pg`（根包改了也要 `npm run build` —— pg 从根包 dist 解析类型）。
+    // 这条前提不再只靠注释：`packages/pg/test/helpers.mjs` 有一条 dist 新鲜度守卫，
+    // 产物比源码旧时直接失败（CLI 套件缺这条，别照抄它的沉默）。
+    //
+    // 驱动是 PGlite（PostgreSQL 编译到 WASM）—— 真引擎、真 SQL，不是假客户端。
+    // 边界：PGlite 单连接无并发，多写者并发那一档它验不了（见包内 README）。
+    //
+    // `--test-concurrency=1`：四个测试文件各自 `new PGlite()`，并发初始化 WASM 实例时
+    // 实测有偶发失败（26 次里 1 次，报在会话套件里，重跑即绿）。串行多花 0.4s，
+    // 换掉一个会不定期把 CI 打红的 3.8% —— 这笔买卖值。
+    name: 'PG 适配包套件（packages/pg/test/*.test.mjs，PGlite 真引擎）',
+    args: ['--test', '--test-concurrency=1', 'packages/pg/test/*.test.mjs'],
+  },
 ];
 
 // 依次跑完全部套件；任一失败不中断后续套件。
@@ -101,4 +116,4 @@ if (failed.length > 0) {
   console.error(`\n✖ ${failed.length} 个套件失败：${failed.map(({ name }) => name).join('、')}`);
   process.exit(1);
 }
-console.log('\nOK  三个套件全部通过');
+console.log('\nOK  全部 ' + suites.length + ' 个套件通过');

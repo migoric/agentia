@@ -2,7 +2,7 @@
 /**
  * 发版一致性自检 —— 把**整个发布面**在**发布前**钉死。
  *
- * 发布面定义在 `scripts/release-surface.mjs`（单源，18 项替换面 + 3 项结构面）。这里只做
+ * 发布面定义在 `scripts/release-surface.mjs`（替换面 + 3 项结构面的唯一真源）。这里只做
  * 「跑一遍 + 加一条网络闸门 + 决定退出码」。
  *
  * 为什么挂在 `prepublishOnly` 而不是 `verify-all`：未发布窗口内 `AGENTIA_VERSION` 是
@@ -18,7 +18,9 @@
  *   - **bump 闸门**：要发的版本必须高于 npm 已发布版本（查官方 registry；E404 = 首发，放行）
  *
  * 用法：
- *   node scripts/check-release.mjs                    # 全跑（含网络闸门，即 prepublishOnly 的行为）
+ *   node scripts/check-release.mjs                    # 全跑（含网络闸门，即根包 prepublishOnly 的行为）
+ *   node scripts/check-release.mjs --package @migor/cli
+ *                                                     # 工作区包发布时指定要查 registry 的包名
  *   node scripts/check-release.mjs --offline          # 跳过网络闸门（无网 / 测试）
  *   node scripts/check-release.mjs --allow-pending    # CHANGELOG 正文未填降级为警告
  *                                                     #   （release.mjs bump 刚跑完就是这状态）
@@ -36,27 +38,34 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 
 /** 网络闸门：要发的版本必须**高于** npm 已发布版本。返回问题字符串或 null。 */
-function publishedGate(v) {
+function publishedGate(v, packageName) {
   let published = null;
   try {
     published = execFileSync(
       'npm',
-      ['view', '@migor/agentia', 'version', '--registry=https://registry.npmjs.org'],
+      ['view', packageName, 'version', '--registry=https://registry.npmjs.org'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     ).trim();
   } catch (e) {
     const stderr = String(e?.stderr ?? e);
     if (!stderr.includes('E404')) {
-      return `查询 npm 已发布版本失败（发布需要网络）：${stderr.slice(0, 200)}`;
+      return `查询 ${packageName} 已发布版本失败（发布需要网络）：${stderr.slice(0, 200)}`;
     } // E404 = 从未发布过（首发），放行
   }
   if (published && compareSemver(v, published) <= 0) {
-    return `要发的版本 ${v} 不高于 npm 已发布的 ${published} —— 先 bump 再发（破坏性变更走 minor）`;
+    return `要发的 ${packageName}@${v} 不高于 npm 已发布的 ${published} —— 先 bump 再发（破坏性变更走 minor）`;
   }
   return null;
 }
 
-const flags = new Set(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const flags = new Set(argv);
+const packageFlag = argv.indexOf('--package');
+const packageName = packageFlag >= 0 ? (argv[packageFlag + 1] ?? '') : '@migor/agentia';
+if (packageFlag >= 0 && packageName === '') {
+  console.error('--package 需要一个包名（如 @migor/agentia-pg）');
+  process.exit(1);
+}
 const { problems, warnings } = checkSurfaces(root, version, {
   allowPending: flags.has('--allow-pending'),
 });
@@ -64,7 +73,7 @@ const { problems, warnings } = checkSurfaces(root, version, {
 // 网络闸门：要发的版本必须**高于** npm 已发布版本 —— 只验一致不验高低时，
 // 破坏性变更可能压在旧版本号上发出去（0.6.0 窗口真踩过）。挂 prepublishOnly（发布必有网络）。
 if (!flags.has('--offline')) {
-  const g = publishedGate(version);
+  const g = publishedGate(version, packageName);
   if (g) problems.push(g);
 }
 

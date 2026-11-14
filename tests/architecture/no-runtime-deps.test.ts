@@ -60,14 +60,25 @@ import { type SpecKind, classify, scan } from './lib/source-scan.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** 铁律覆盖的源码目录（发布面：三个包的 src）。 */
+/**
+ * 铁律覆盖的源码目录（**只**这三个包的 src）。
+ *
+ * ⚠️ `packages/pg/src` 刻意**不在**这里，理由是它的情况与铁律的前提相反：
+ * 本包的存在意义就是复用框架的公共面（`TaskStore` 类型 + `serializeTaskRecord` /
+ * `parseTaskRecord` 这两个"落库/读回唯一入口"），必须 `import '@migor/agentia'`。
+ * 铁律防的是"框架 import 第三方客户端"（ioredis / kafkajs / pg 驱动）；`@migor/agentia`
+ * 是**自家框架的 peer**，不是第三方，且它不进任何人的依赖树。
+ * 第三方运行时依赖对它仍是零：PG 客户端 duck-typed，PGlite 在 devDependencies ——
+ * 这一半由下方 IN_SCOPE_PACKAGES 的元数据层继续守着（它不许有非空 `dependencies`）。
+ */
 const IN_SCOPE = ['src', join('packages', 'cli', 'src'), join('packages', 'trace-view', 'src')];
 
-/** 铁律覆盖的包清单（元数据层用）。 */
+/** 铁律覆盖的包清单（元数据层用）。注意它比 IN_SCOPE 多一个 `pg` —— 见上方注释。 */
 const IN_SCOPE_PACKAGES = [
   'package.json',
   join('packages', 'cli', 'package.json'),
   join('packages', 'trace-view', 'package.json'),
+  join('packages', 'pg', 'package.json'),
 ];
 
 /**
@@ -160,9 +171,36 @@ test('源码层：三个包的 src 只 import 相对路径 / node: 内置模块'
   );
 });
 
+// ─────────────────────────── ①-b PG 适配包源码层 ───────────────────────────
+
+/**
+ * `packages/pg/src` 不在主 `IN_SCOPE` 里，但也不能完全裸奔：它必须允许
+ * `@migor/agentia`（自家 peer），禁止任何**第三方**运行时 import。否则以后有人
+ * 在 pg 包里 `import { Pool } from 'pg'`，零依赖铁律就会从这里漏过去。
+ */
+test('packages/pg/src：只允许相对路径 / node: / 自家 @migor/agentia', () => {
+  const bad: string[] = [];
+  for (const abs of walkFiles(join(repoRoot, 'packages', 'pg', 'src'))) {
+    const raw = readFileSync(abs, 'utf8');
+    for (const { spec, index } of scan(raw).specs) {
+      const kind = classify(spec, isBuiltin);
+      if (kind === 'relative' || kind === 'builtin') continue;
+      if ((kind === 'external' || kind === 'workspace') && spec === '@migor/agentia') continue;
+      bad.push(
+        `${relative(repoRoot, abs)}:${raw.slice(0, index).split('\n').length}  →  '${spec}'（${kind}）`,
+      );
+    }
+  }
+  assert.deepEqual(
+    bad,
+    [],
+    'packages/pg/src 只允许 node: / 相对路径 / @migor/agentia（PG 客户端必须 duck-typed）',
+  );
+});
+
 // ─────────────────────────── ② 元数据层 ───────────────────────────
 
-test('元数据层：三个包的 package.json 无非空 dependencies', () => {
+test('元数据层：登记的每个包 package.json 无非空 dependencies', () => {
   const bad: string[] = [];
   for (const rel of IN_SCOPE_PACKAGES) {
     const abs = join(repoRoot, rel);

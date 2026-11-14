@@ -36,15 +36,27 @@ export interface SessionStore {
  * （后写的覆盖先写的），而 RPUSH 是服务端原子追加，丢不了。
  */
 export interface RedisSessionClient {
-  /** 原子追加（可一次多个）。ioredis / node-redis 同名同形 */
-  rpush(key: string, ...values: string[]): Promise<unknown>;
-  /** 区间读取（`0, -1` = 整段）。两家同名同形 */
-  lrange(key: string, start: number, stop: number): Promise<string[]>;
+  /**
+   * 原子追加（可一次多个）。
+   *
+   * ⚠️ 两家客户端的列表命令**不是**同名同形：ioredis 是 `rpush` / `lrange` / `ltrim`，
+   * node-redis v4 是 `rPush` / `lRange` / `lTrim`。这里两种都接受，构造期解析一次；
+   * 都不给才是配置错误（不静默退化成「没有历史」）。
+   */
+  rpush?(key: string, ...values: string[]): Promise<unknown>;
+  /** node-redis v4 的 camelCase 形态（与 `rpush` 至少给一个） */
+  rPush?(key: string, ...values: string[]): Promise<unknown>;
+  /** 区间读取（`0, -1` = 整段）。ioredis 形态 */
+  lrange?(key: string, start: number, stop: number): Promise<string[]>;
+  /** node-redis v4 的 camelCase 形态（与 `lrange` 至少给一个） */
+  lRange?(key: string, start: number, stop: number): Promise<string[]>;
   /**
    * 只保留区间。设了 `maxMessages > 0` 时**必需**：不裁的列表会无界增长，
-   * 而 Redis 不会替你把「太旧的历史」丢掉。
+   * 而 Redis 不会替你把「太旧的历史」丢掉。ioredis 形态。
    */
   ltrim?(key: string, start: number, stop: number): Promise<unknown>;
+  /** node-redis v4 的 camelCase 形态（与 `ltrim` 至少给一个） */
+  lTrim?(key: string, start: number, stop: number): Promise<unknown>;
   /** 设过期秒数。设了 `ttlSeconds > 0` 时**必需**（与 `RedisTaskStore` 同一条理由） */
   expire?(key: string, seconds: number): Promise<unknown>;
 }
@@ -74,6 +86,46 @@ export interface RedisSessionStoreOptions {
 const RPUSH_CHUNK = 512;
 
 /**
+ * 历史消息的形状守卫（合法 JSON 不等于合法 MessageParam）。
+ *
+ * **读写两端共用同一口径**（2026-11-14 复核）：`load` 只收 `user` / `assistant`，
+ * 而 `MessageParam['role']` 含 `'system'`（与 SDK 类型逐字对齐，见 core/message.ts 头注 2）。
+ * 若只在读时校验，一条「类型合法、引擎读不出」的消息就能被 `append` 静默写进列表，
+ * 之后**整段**历史每次 `load` 都抛错 ⇒ `executeRun` 把它降级成「当作没有历史」——
+ * 会话从此永久失忆，而写入那一刻没有任何信号。所以在写入点也拦。
+ *
+ * 两处文案不同是因为**处置方式不同**：读时坏数据要人工修键，写时是调用方该改。
+ */
+function assertHistoryMessage(
+  raw: unknown,
+  key: string,
+  index: number,
+  where: 'load' | 'append',
+): MessageParam {
+  const advice =
+    where === 'load'
+      ? '历史已损坏，请人工确认后修复或删掉该键（跳过它会让角色交替错位）'
+      : '拒绝写入：这条消息一旦落库，整段历史会永久读不出（load 只接受 user/assistant）—— 请检查调用方';
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new TypeError(
+      `RedisSessionStore：${key} 的第 ${index} 项不是消息对象（得到 ${raw === null ? 'null' : typeof raw}）—— ${advice}`,
+    );
+  }
+  const m = raw as { role?: unknown; content?: unknown };
+  if ((m.role !== 'user' && m.role !== 'assistant') || !('content' in m)) {
+    // `system` 单列一句：它是唯一「类型允许、但引擎不接受」的取值，误用率最高
+    const why =
+      m.role === 'system'
+        ? '（role: system 与 SDK 类型对齐才存在于 MessageParam 里，但会话历史与 Messages API 都只接受 user/assistant）'
+        : '';
+    throw new TypeError(
+      `RedisSessionStore：${key} 的第 ${index} 项不是合法 MessageParam（role=${String(m.role)}，content ${'content' in m ? '有' : '缺失'}）${why}—— ${advice}`,
+    );
+  }
+  return raw as MessageParam;
+}
+
+/**
  * Redis 实现：**多副本共享同一段对话历史**（`InMemorySessionStore` 的进程内版本在
  * N 个 pod 下各一份 —— 同一用户下一句话落到别的 pod 就是「第一次见面」）。
  *
@@ -89,25 +141,33 @@ const RPUSH_CHUNK = 512;
  */
 export class RedisSessionStore implements SessionStore {
   private readonly prefix: string;
-  private readonly client: RedisSessionClient;
+  /** 已解析的两家客户端命令（构造期绑定 `this`，调用路径不再分支） */
+  private readonly push: (key: string, values: string[]) => Promise<unknown>;
+  private readonly range: (key: string, start: number, stop: number) => Promise<string[]>;
   /** 裁剪函数（`maxMessages > 0` 时构造期已确保存在） */
   private readonly trim?: (key: string) => Promise<unknown>;
   /** TTL 刷新函数（`ttlSeconds > 0` 时构造期已确保存在） */
   private readonly refreshTtl?: (key: string) => Promise<unknown>;
 
   constructor(client: RedisSessionClient, opts: RedisSessionStoreOptions = {}) {
-    if (typeof client.rpush !== 'function' || typeof client.lrange !== 'function') {
+    // ioredis: rpush/lrange/ltrim；node-redis v4: rPush/lRange/lTrim。
+    // 两种都接受；构造期解析一次，调用路径不再做 `??` 分支。
+    const rpush = client.rpush ?? client.rPush;
+    const lrange = client.lrange ?? client.lRange;
+    if (typeof rpush !== 'function' || typeof lrange !== 'function') {
       throw new TypeError(
-        'RedisSessionStore 需要 client 提供 rpush / lrange（会话是 append-only 列表）',
+        'RedisSessionStore 需要 client 提供 rpush/rPush 与 lrange/lRange（会话是 append-only 列表）—— ' +
+          'ioredis 用小写，node-redis v4 用 camelCase',
       );
     }
+    this.push = (key, values) => Promise.resolve(rpush.call(client, key, ...values));
+    this.range = (key, start, stop) => Promise.resolve(lrange.call(client, key, start, stop));
     const prefix = opts.prefix ?? 'agentia:';
     if (!prefix) {
       // 空前缀 = 与其他命名空间混在一起（`session:` 键撞上别的系统的同名键）
       throw new TypeError('RedisSessionStore 的 prefix 不能为空串（会与其他命名空间混用）');
     }
     this.prefix = prefix;
-    this.client = client;
 
     const ttl = opts.ttlSeconds ?? 0;
     // !(ttl >= 0) 同时拦 NaN —— NaN 会让 `ttl > 0` 恒假，TTL 静默失效（同 RedisTaskStore）
@@ -135,11 +195,11 @@ export class RedisSessionStore implements SessionStore {
       );
     }
     if (max > 0) {
-      const ltrim = client.ltrim;
+      const ltrim = client.ltrim ?? client.lTrim;
       if (typeof ltrim !== 'function') {
         throw new TypeError(
-          'RedisSessionStore 设了 maxMessages > 0，但 client 没有 ltrim(key, start, stop) —— ' +
-            '裁剪会静默失效（列表无界增长）。请用 ioredis / node-redis，或补一个 ltrim 实现。',
+          'RedisSessionStore 设了 maxMessages > 0，但 client 没有 ltrim/lTrim(key, start, stop) —— ' +
+            '裁剪会静默失效（列表无界增长）。请用 ioredis / node-redis v4，或补一个实现。',
         );
       }
       // `-max` 起点由 Redis 自己钳位：列表比 max 短时等于整段，不需要先 LLEN 问长度
@@ -158,17 +218,19 @@ export class RedisSessionStore implements SessionStore {
    */
   async load(sessionId: string): Promise<MessageParam[]> {
     const key = this.keyOf(sessionId);
-    const raw = await this.client.lrange(key, 0, -1);
+    const raw = await this.range(key, 0, -1);
     const out: MessageParam[] = [];
     for (let i = 0; i < raw.length; i++) {
+      let parsed: unknown;
       try {
-        out.push(JSON.parse(raw[i] as string) as MessageParam);
+        parsed = JSON.parse(raw[i] as string);
       } catch {
         throw new TypeError(
           `RedisSessionStore：${key} 的第 ${i} 项不是合法 JSON —— 会话历史已损坏，` +
             '请人工确认后修复或删掉该键（跳过它会让角色交替错位）',
         );
       }
+      out.push(assertHistoryMessage(parsed, key, i, 'load'));
     }
     return out;
   }
@@ -177,16 +239,35 @@ export class RedisSessionStore implements SessionStore {
     // 空数组提前返回：RPUSH 没有实参是命令错误，且不该为了「什么都没写」刷新 TTL
     if (messages.length === 0) return;
     const key = this.keyOf(sessionId);
-    const payload = messages.map((m) => JSON.stringify(m));
+    // 全量校验 + 序列化先做完，再开始分片写 —— 顺序是 load-bearing：边校边写会让
+    // 「第 3 条非法」留下前 2 条已落库的半批，那正是这个守卫要避免的状态。
+    const payload = messages.map((m, i) =>
+      JSON.stringify(assertHistoryMessage(m, key, i, 'append')),
+    );
     // 分片而不是 `rpush(key, ...payload)`：V8 实参上限约 12 万，超了抛 RangeError，
     // 而那条异常会被 appendSession 吞掉 ⇒ 这一轮对话白聊（InMemorySessionStore 的
     // 同类坑写在它的 append 注释里）。分片后单次命令也不会因为值太多被服务端拒。
     for (let i = 0; i < payload.length; i += RPUSH_CHUNK) {
-      await this.client.rpush(key, ...payload.slice(i, i + RPUSH_CHUNK));
+      try {
+        await this.push(key, payload.slice(i, i + RPUSH_CHUNK));
+      } catch (err) {
+        // 多分片没有跨命令事务：前面的分片已经落库，这一批是**半批**。
+        // 不要把它伪装成「整批失败、什么都没写」；调用方（executeRun）会把它降级成 warn，
+        // 但日志里必须能看出「已写入几片、从哪一片开始失败」。
+        throw new Error(
+          `RedisSessionStore：会话 ${key} 的分片追加在第 ${i / RPUSH_CHUNK + 1} 片失败；` +
+            '前面的分片已经写入 Redis，历史可能是半批（需按业务清理/重试）',
+          { cause: err },
+        );
+      }
     }
-    // 顺序：先追加、再裁、最后刷 TTL。裁在 TTL 之前 ⇒ 即使裁失败，历史也不会「过期但没裁」
-    if (this.trim) await this.trim(key);
-    if (this.refreshTtl) await this.refreshTtl(key);
+    // 顺序：先追加、再裁、最后刷 TTL。**TTL 必须放 finally**：裁剪失败时这一批已经
+    // 落库，若不刷新 TTL，旧 TTL 会让「最后一次 append 后 N 秒」提前生效。
+    try {
+      if (this.trim) await this.trim(key);
+    } finally {
+      if (this.refreshTtl) await this.refreshTtl(key);
+    }
   }
 }
 

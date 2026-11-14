@@ -675,6 +675,7 @@ const app = await createApp({ ... });
 | `SqliteTaskStore` | `node:sqlite` 耐久存储（WAL + busy_timeout） |
 | `RedisTaskStore` | duck-typed Redis 存储（可设 `ttlSeconds`）；客户端结构面 `get` / `set` / `del` / `keys`（或 `scanIterator`），外加设 TTL 时必需的 `expire`。`set` **只传两参** —— 尾参的选项形状两家相反：ioredis 认位置参数 `('EX', n)`、node-redis 认对象 `{ EX: n }`，取任何一种都会在另一家上失效（ioredis 会把对象字符串化成 `"[object Object]"` 报语法错；**node-redis 的 `SET` 只声明三个形参，位置参数被静默丢弃**）。所以 TTL 一律走 `expire(key, seconds)`（两家同名同形）；设了 `ttlSeconds > 0` 却没给 `expire` 时**构造期抛错**，不静默丢掉 TTL |
 | `parseTaskRecord` | 自定义 store 的公共读回入口：JSON 解析 + 形状守卫 + 旧版本归一；坏 JSON 抛错，非记录返回 undefined |
+| `serializeTaskRecord` | 自定义 store 的公共落库入口（与 `parseTaskRecord` 配对）：剥掉 `signal` / `client` / `tools` / 回调与 fallback 环里的 client（属于提交进程、跨重启无意义），并把剥掉了什么记进内部标记让恢复段能出声。**别自己 `JSON.stringify`** —— `AbortSignal` 会变成 `{}`、工具菜单半残，而崩在恢复段、离现场很远 |
 
 **`compact()` / `close()` 是接口上的可选能力，但由宿主按需调**：`FileTaskStore.compact()`
 （压实 JSONL：一 task 一行、丢掉历史覆写行）与 `SqliteTaskStore.close()` 此前只活在具体类上 ——
@@ -767,7 +768,7 @@ npm run client    # 另一个终端：把四个 RPC 跑一遍
 | 端点 | 请求 | 响应 |
 |---|---|---|
 | `POST /run` | body 是 `RunInput`（string / messages / `{prompt\|text\|messages}`）；带 `Accept: text/event-stream` 则走 SSE | 200 `{ runId, status, stopReason, finalText, typed?, trace, error? }` —— **`status=failed` 也照返 200**（`rethrow:false` 语义：硬失败以 `error` 字段表达，不用 HTTP 错误码） |
-| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 只接受**白名单**：`traceContext` / `maxCostUsd` / `maxTotalTokens`（多一个键 → 400，含 `blackboard` / `tools` / `model`）。**身份与租户不走 body** —— 由宿主的 `resolveRunOptions` 按请求注入 | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重、直接返回既有记录（**同步 store** 当场判定；**异步 store** 下只保证**同进程内并发提交**不重复执行，跨进程与终态后重提仍是 at-least-once —— 见 §7「同键去重的能力边界」） |
+| `POST /tasks` | `{ input, idempotencyKey?, options? }` —— `input` 同 `RunInput`；`options` 只接受**白名单**：`traceContext` / `maxCostUsd` / `maxTotalTokens`（多一个键 → 400，含 `blackboard` / `tools` / `model`）。**身份与租户不走 body** —— 由宿主的 `resolveRunOptions` 按请求注入 | 202 `TaskRecord`（`status: 'queued'`）；同 `idempotencyKey` 未失败则去重（**同步 store** 当场返回既有记录；**异步 store** 的同进程在飞提交直接命中认领表，已有成功结果则在首次落库前查出并采纳、不再执行）。实现 `claimSubmission` 的 store（如 `PgTaskStore`）还以同一确定性 taskId 原子仲裁跨进程首提；其他 store 保持 at-least-once —— 见 §7「同键去重的能力边界」 |
 | `GET /tasks/:id` | — | 200 `TaskRecord`；不存在 → 404。**停机中仍可轮询**（否则拿不到在飞任务的结果） |
 | `GET /tasks/:id/stream` | — | **任务进度流（SSE）**：先在 `id:` 里给流序号，逐帧下发 `trace.event`（body 即 `TraceRecordEvent`），终态发 `task.end` 并关闭。断线重连带 `Last-Event-ID`（或 `?from=<序号>`）即可续订 —— 只补该序号之后的事件。缓冲超限先发一帧 `stream.truncated{droppedBefore}`；别的进程在跑的任务发 `stream.unavailable` 后收口（**不假装实时**）。任务不存在 → 404；方法不对 → 405。⚠️ 它的读者是**旁观者**：背压/断开只收口这条流，**不中止任务** |
 | `POST /tasks/:id/approve` | `{ decisions: { <tool_use_id>: { approved, reason? } }, decidedBy? }` | 200 `TaskRecord`（HITL 审批：批准/拒绝挂起任务，见 §6.6「人工审批」）；任务不存在 → 404；**挂起原因不是 `approval`**（含未挂起）→ 409；`decisions` 里有不在该任务 `pendingApprovals` 里的 id → **400（整批拒，记录一字不动）**；body 非法 → 400。**停机中仍可审批**（与 GET 轮询同理由） |
@@ -1019,7 +1020,7 @@ trace 出去之后能干什么：指标、调用树面板、调优报告、生�
 | `TraceRecorder` | 内存 recorder（一次 run 一个）；`addLink(spanId, { traceId, spanId? })` 记一条跨 trace 链路（见 §6「跨进程关联」） |
 | `parseTraceparent` | 解析 W3C `traceparent` 头 → `{ traceId, spanId? }`；**非法 / 缺头一律返回 `undefined`**（不抛、不打 400）—— 结果直接交给 `traceContext` 选项，见 §6「跨进程关联」 |
 | `createOtlpExporter` | OTLP/JSON 导出，零依赖；选项见下面「`OtlpExporterOptions`」表 |
-| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path, fsync? })` → `TraceSink`（`fsync: true` 时每次追加后同步落盘；缺省 false 保持旧性能），一行一条裸 Trace 追加落盘（父目录自动创建、追加不覆盖）—— **`agentia report` / `diff` / `harvest` / `export` / `view` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
+| `jsonlTraceSink` | JSONL 文件 sink：`jsonlTraceSink({ path, fsync?, rotate? })` → `TraceSink`（`fsync: true` 时每次追加后同步落盘；缺省 false 保持旧性能；`rotate: 'daily'` 按 UTC 自然日把旧内容归档成 `<stem>.<YYYY-MM-DD><ext>`，`path` 仍是当前文件）—— **`agentia report` / `diff` / `harvest` / `export` / `view` 的输入格式**，见 §6「调优报告」。⚠️ **同一路径进程内幂等**（两次调用返回同一个 sink）：两条 sink 对口一个文件会让一次 run 落两行同 traceId，而下面的命令按「一行 = 一次 run」计数 ⇒ 一次 run 被数两次（不报错，比不落盘更难发现）。所以「应用级 `sinks` 与 `registerDefaultTraceSink` 都往 `.agentia/traces.jsonl` 写」是安全的 |
 | `TraceRecordEvent` | **增量记账事件**（`onTraceEvent` 的回调参数）：`span.begin` / `span.end` / `span.event` / `span.attribute` / `span.link`，每条带单调 `seq`。载荷是**增量 + 此刻的拷贝**（`span.begin` 只给初始形状，属性/事件/链路各走自己的类型）；按 `seq` 升序折回必须**逐字等于**收尾时的 trace |
 | `metricsSink` | 指标累加器（Prometheus 文本 / OTLP metrics），满足 `TraceSink` 即接入 —— 见 §6「指标」 |
 | `buildRunReport` | 从一条 trace 生成**调优报告**（能力/模型的耗时、token、成本、错误率排行）—— 见 §6「调优报告」 |
@@ -1377,7 +1378,8 @@ span 本身（`attributes.subagent`），后者**只是事件**（`approval.requ
 | `createOpenAIClient` | OpenAI 兼容端点适配（DeepSeek 等；**真流式**、图片块转 `image_url`、DeepSeek 的 `prompt_cache_hit_tokens` 映射进 `cache_read_input_tokens` 并从 input_tokens 拆出不双计，其余端点 cache token 恒 0） |
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
 | `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用；**进程内**，多副本各一份 |
-| `RedisSessionStore` | 同一接口的**多副本共享**实现（duck-typed 客户端，零依赖）：`rpush`/`lrange` 列表语义，`prefix` 分命名空间、`ttlSeconds` 按「最后一次 append 后 N 秒」回收、`maxMessages` 按条数裁。**不解决**同 session 并发顺序（要自己排队） |
+| `RedisSessionStore` | 同一接口的**多副本共享**实现（duck-typed 客户端，零依赖）：列表语义（ioredis 的 `rpush`/`lrange`/`ltrim`，node-redis v4 的 `rPush`/`lRange`/`lTrim` 都接受），`prefix` 分命名空间、`ttlSeconds` 按「最后一次 append 后 N 秒」回收、`maxMessages` 按条数裁。**不解决**同 session 并发顺序（要自己排队）；多分片不是跨命令事务，半批失败会带位置报错 |
+| `PgSessionStore`（`@migor/agentia-pg`） | 同接口的 **Postgres** 共享实现（独立包，不进核心）：整批一条 `INSERT ... unnest($n::text[])`（单语句原子）、`maxTurns` 按**轮次**裁（以 user 消息为界，不会裁成以 assistant 开头）、PG 无 TTL 故回收靠显式 `prune()` + `pg_cron`（**以会话为单位**——按行删会切在轮次中间，让历史以 assistant 开头）。jsonb 存不下 `\u0000`，`append` 会把那句 PG 报错换成指得出位置的 `TypeError` |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
 | `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
 | `diffTraces` | 两条 trace 的 A/B 比对（prompt / 模型实验）：run 级 summary + 逐 span 字段差；纯函数，llm.turn 配对**忽略模型名**，缺省忽略墙钟 |
@@ -1979,7 +1981,8 @@ const callable = {
 | `strict` 只是透传 | 框架**不校验** schema 的合规性（是否 `additionalProperties:false` 等） |
 | schema 校验是**子集** | 只覆盖 `type/properties/required/additionalProperties/enum/items`；`format`/`minimum`/`oneOf` 一律放行 |
 | 历史畸形就放弃裁剪 | `trimToolPairs` 遇到非严格交替历史会整体放弃（宁可少裁，也不切出孤立 tool_use 让请求 400） |
-| 同键去重的能力边界 | `idempotencyKey` 的去重分三档：**同步 store** 下 `submit` 当场返回既有记录；**异步 store**（Redis / SQLite 等）下 `submit` 是同步门面、无法 await，去重靠**进程内认领表**，只覆盖「**同进程内并发提交**」（2026-09-21 修复前这里会两次都执行）；**跨进程并发**与**终态之后重提同键**仍是 at-least-once —— store 的 idem 索引是 last-wins（重提即新任务，`redisStore` / `fsStore` / `sqliteStore` 头注释同口径）。要严格一次，请让副作用自身幂等（或在 store 层做唯一约束） |
+| 同键去重的能力边界 | **同步 store** 下 `submit` 当场返回既有的未失败记录；**异步 store** 下 `submit` 仍是同步门面：同进程在飞提交靠认领表去重，首次落库前还会查询旧幂等结果，旧任务已成功则采纳其结果、不再执行，旧任务失败/取消则允许新任务重试。旧结果查询或首次落库失败会 fail closed，不启动可能重复副作用的 run。实现 `claimSubmission` 的 store（现成的是 `PgTaskStore`）会让跨进程同键首提争同一个确定性 taskId，只有认领者执行，失败者跟随同一任务，失败／取消后可原子重试；未实现的 store 仍可能各跑一次。`compareAndSave` 另管孤儿恢复的同快照竞争，二者都**不**覆盖审批、事件、唤醒、取消。新旧版本混跑、外部副作用后崩溃、owner 误判与终态落库失败仍是 at-least-once，业务副作用必须幂等 |
+| 确定性 taskId 不是授权 | 原子首提能力把 taskId 定为 `task_` + 幂等键的 SHA-256，便于各进程争同一主键；它不是秘密、不证明调用者身份，也不提供租户隔离。HTTP 任务控制面仍须配置 `authenticate` 与 `authorizeTask`，不能靠 id 是否可猜来决定谁能读或改任务 |
 | 增量出口与 sink 是**两条缝** | `onTraceEvent` 是「运行期逐笔」，`sinks` 是「收尾拿整棵」——消费者与保证都不同：sink 的抛错被吞但仍会**投递**（有兜底语义），`onTraceEvent` **不保证送达**（宿主自己的流断了就断了，没有重试/重放）。要「一条都不能少」用 `sinks`；要「现在就看到」用 `onTraceEvent` |
 | 任务进度流的边界（内存 / 跨进程） | `GET /tasks/:id/stream` 的事件缓冲在**跑任务的进程内存**里：每任务最近 500 条（可用 `AsyncRunner` 的 `streamBufferEvents` 调，须为正整数，坏值构造期抛错），超限丢**最旧**并先发一帧 `stream.truncated`；终态流只留最近 16 条。**没跑完**的流另有一道**缓冲配额**（`streamNonTerminalBuffers`，缺省 32 条流；`0` = 不留）：超出即从最旧、**没有订阅者**的流开始回收**回放历史** —— 表项与序号都留着，连上来的读者先收一帧 `stream.truncated` 再转实时（**不会**变成 `stream.unavailable`，那是对别的进程说的话）；正在被订阅的流不受配额约束（不抽走正在读的数据）。**跨进程**（队列消费者在别的进程）时没有实时流：发一帧 `stream.unavailable` 后**立即收口** —— 任务已终态则补 `task.end`（随后关连接）；**非终态**则补一帧 `stream.closed`（流级收尾，不是伪造终态）并关连接，客户端此后应转去轮询 `GET /tasks/:id`。要跨进程实时请用 `onTraceEvent` 把事件转发到宿主自己的总线（Redis Streams / Kafka） |
 | 异步任务的**排队段**边界（内存） | `concurrency` 管「同时在跑几个」，**不管**「跑不上、排在后面」那一段 —— 缺省**排队段无上限**：`submit` 总是收单、`POST /tasks` 总是 202，灌多少就在内存里排多少（每条 = 一条记录 + 一棵悬挂的 `#execute` promise + 一个槽位等待者）。要背压就配 `AsyncRunner({ maxQueued })`：超限 `submit` 抛 `TaskQueueFullError`、HTTP 回 **503 + `Retry-After`**（**只在 `submit` 判** —— 恢复路径推进的是已受理任务，拦下来等于把它搁死在 store 里；幂等键命中的重复提交也不吃 503）。`runner.queued` 是实时读数（与闸同一判据）。⚠️ 进程内拒单**不等于**集群级背压：多副本各算各的，要全局就得上队列 |

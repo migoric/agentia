@@ -7,8 +7,8 @@
  *   node scripts/release.mjs retag 0.6.1    # 把已存在的 lightweight tag 就地改成 annotated（默认只演练）
  *
  * 为什么 `npm publish` **不在**这个脚本里：它是唯一不可逆的一步 —— 版本号一旦花掉就收不回，
- * 而它在同一脚本里与「重写十几个文件」相邻，等于把一次笔误的爆炸半径放到最大。它仍然是两条
- * 显式命令，由 `bump` 打印（顺序**刻意**是 发布 → 合并 → 打 tag，理由一并打印）。
+ * 而它在同一脚本里与「重写十几个文件」相邻，等于把一次笔误的爆炸半径放到最大。它仍然是三条
+ * 逐包显式命令，由 `bump` 打印（顺序**刻意**是 发布 → 合并 → 打 tag，理由一并打印）。
  *
  * 为什么 tag 消息走 `-F <文件>` 而不是 `-m "<消息>"`：消息里全是反引号与星号，而
  * \`git tag -a v1.2.3 -m "…<反引号>@migor/agentia<反引号>…"\` 里的反引号会被 shell 当**命令替换**
@@ -47,7 +47,7 @@ import {
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_BRANCH = 'main';
 const REGISTRY = 'https://registry.npmjs.org/';
-const PACKAGES = ['@migor/agentia', '@migor/cli'];
+const PACKAGES = ['@migor/agentia', '@migor/cli', '@migor/agentia-pg'];
 
 const say = (s) => console.log(s);
 const ok = (s) => console.log(`  ✓ ${s}`);
@@ -271,7 +271,7 @@ function cmdBump(to, { dryRun, offline }) {
   say(`\n${gate ?? '（自检未通过 —— 见上）'}`);
 
   say(`
-接下来（三步顺序**不能换**，理由在每步后面）：
+接下来（顺序**不能换**，理由在每步后面）：
 
   1. 填掉两个 TODO —— CHANGELOG 里 [${to}] 一节、spec §11 的链说明
      （roadmap.md 的状态行已同步；想让状态行也累计本轮摘要，照 “+ **v0.6.1**（…）” 的样子补一句）
@@ -279,6 +279,7 @@ function cmdBump(to, { dryRun, offline }) {
   3. 开 PR 并等必需检查全绿（分支保护：线性历史 + squash）
   4. **先发布**：npm publish --registry https://registry.npmjs.org/
               npm publish -w @migor/cli --registry https://registry.npmjs.org/
+              npm publish -w @migor/agentia-pg --registry https://registry.npmjs.org/
      —— 顺序是「发布 → 合并 → 打 tag」：反过来（先合并）的话，main 上会挂着
         「已发布」而 registry 还没有；这条链唯一不撒谎的顺序就是先发。
   5. 合并 PR（squash）
@@ -361,6 +362,18 @@ function verifyArtifacts(version, { docFrom = 'worktree' } = {}) {
     }
     ok('CLI 产物里 dist/inspector/ 在场（渲染器拷贝成功）');
 
+    const pgPkg = JSON.parse(
+      readFileSync(join(unpacked['@migor/agentia-pg'], 'package.json'), 'utf8'),
+    );
+    if (pgPkg.version !== version) {
+      fail(`PG 包 tarball 版本是 ${pgPkg.version}，不是 ${version}`);
+    }
+    const pgIndex = readFileSync(join(unpacked['@migor/agentia-pg'], 'dist/index.js'), 'utf8');
+    if (!pgIndex.includes('PgTaskStore') || !pgIndex.includes('PgSessionStore')) {
+      fail('PG 包产物 dist/index.js 缺少 PgTaskStore / PgSessionStore 导出');
+    }
+    ok('PG 包产物版本与两个 store 导出在场');
+
     return { hash: want };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -373,7 +386,7 @@ function tagMessage(version, { sha, hash, title }) {
   const sec = changelogSection(read('CHANGELOG.md'), version);
   const lines = [`v${version}${title ? ` —— ${title}` : ''}`, ''];
   lines.push(
-    `\`@migor/agentia@${version}\` 与 \`@migor/cli@${version}\` 已发布到 registry.npmjs.org。`,
+    `${PACKAGES.map((p) => `\`${p}@${version}\``).join(' / ')} 已发布到 registry.npmjs.org。`,
     '',
   );
   if (sec) lines.push('本版变更（CHANGELOG 原文）：', '', sec.body, '');

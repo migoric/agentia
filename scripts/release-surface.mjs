@@ -8,7 +8,7 @@
  * 注释，示例就再也装不上；lock 的 version 被整轮跳过而全链全绿。
  *
  * 两个消费者：
- *   - `scripts/check-release.mjs` —— 发布闸门（挂两包 `prepublishOnly`）：逐项断言「== 包版本」
+ *   - `scripts/check-release.mjs` —— 发布闸门（挂三包 `prepublishOnly`）：逐项断言「== 包版本」
  *   - `scripts/release.mjs`       —— `bump`：逐项替换，每项都带**计数断言**；计数不符即中止，
  *     且**一个字节都不写盘**（先算完全部文件的新内容，再统一落盘）
  *
@@ -47,6 +47,12 @@ export const SURFACES = [
     pattern: /"version": "(\d+\.\d+\.\d+)"/g,
     count: 1,
     why: 'workspace 内版本一致（不单独发布，构建期拷进 CLI 的 dist/inspector）',
+  },
+  {
+    file: 'packages/pg/package.json',
+    pattern: /"version": "(\d+\.\d+\.\d+)"/g,
+    count: 1,
+    why: 'PG 适配包（独立发布）版本跟主包同步；其 peerDependencies 用 `>=` 区间，故不随 bump 变',
   },
   {
     file: 'packages/website/package.json',
@@ -138,12 +144,13 @@ export const SURFACES = [
     file: 'package-lock.json',
     // ⚠️ **按包名锚定**，不要退回裸 `"version"` 计数：那种写法会被**恰好同版本号的第三方依赖**
     // 撞上 —— 真发生过：`@grpc/proto-loader` 恰好 @0.8.1，发布 0.8.1 时闸门报「4 处应为 0.8.1，
-    // 实际命中 5 处」，读起来像清单漏项。锚定后 4 处各带自己的包名，第三方版本再撞也不进网
+    // 实际命中 5 处」，读起来像清单漏项。锚定后 5 处各带自己的包名，第三方版本再撞也不进网
     // （`@migor/website` 是 `private: true`、版本恒 0.0.0，本就不在网里 —— 它不出现在下面的
     // 备选里是有意的）。
-    pattern: /"name": "@migor\/(?:agentia|cli|trace-view)",\n\s+"version": "(\d+\.\d+\.\d+)"/g,
-    count: 4,
-    why: 'lock 的 4 个 version 字段（顶层 + 根 + packages/cli + packages/trace-view）—— 手改 manifest 却漏 lock 真的发生过；按包名锚定防同版本第三方依赖撞网',
+    pattern:
+      /"name": "@migor\/(?:agentia|agentia-pg|cli|trace-view)",\n\s+"version": "(\d+\.\d+\.\d+)"/g,
+    count: 5,
+    why: 'lock 的 5 个 version 字段（顶层 + 根 + packages/cli + packages/pg + packages/trace-view）—— 手改 manifest 却漏 lock 真的发生过；按包名锚定防同版本第三方依赖撞网',
   },
   {
     file: 'package-lock.json',

@@ -47,6 +47,7 @@ const FIXTURE: Record<string, string> = {
   'package.json': `{\n  "name": "@migor/agentia",\n  "version": "${V0}"\n}\n`,
   'packages/cli/package.json': `{\n  "name": "@migor/cli",\n  "version": "${V0}"\n}\n`,
   'packages/trace-view/package.json': `{\n  "name": "@migor/trace-view",\n  "version": "${V0}",\n  "private": true\n}\n`,
+  'packages/pg/package.json': `{\n  "name": "@migor/agentia-pg",\n  "version": "${V0}"\n}\n`,
   'packages/website/package.json': `{\n  "name": "@migor/website",\n  "version": "0.0.0",\n  "dependencies": {\n    "@migor/trace-view": "${V0}"\n  }\n}\n`,
   'src/index.ts': `export const AGENTIA_VERSION = '${V0}';\n`,
   // 脚手架模板里有**两条**版本面：框架 pin 与 CLI pin（CLI 也装进新工程）。
@@ -72,7 +73,7 @@ const FIXTURE: Record<string, string> = {
     `想用发布版就把这一行换成 ^${V0}：\n\n` + `docker build 之后再改成 ^${V0} 也行。\n`,
   'examples/deploy/Dockerfile': `# 想改用发布版，依赖改成 ^${V0}，即可退回常规写法。\n`,
   'examples/deploy/README.md': `> 想改用发布版就把这一行换成 ^${V0}（与脚手架模板一致）。\n`,
-  // lock 里除了我们那 4 个 version 字段，**故意**放一个第三方版本号：
+  // lock 里除了我们那 5 个 version 字段，**故意**放一个第三方版本号：
   // 「同文件里还有几百个别处的版本号」正是这一面最容易改错的地方
   'package-lock.json':
     '{\n' +
@@ -85,6 +86,10 @@ const FIXTURE: Record<string, string> = {
     '    },\n' +
     '    "packages/cli": {\n' +
     '      "name": "@migor/cli",\n' +
+    `      "version": "${V0}"\n` +
+    '    },\n' +
+    '    "packages/pg": {\n' +
+    '      "name": "@migor/agentia-pg",\n' +
     `      "version": "${V0}"\n` +
     '    },\n' +
     '    "packages/trace-view": {\n' +
@@ -162,6 +167,16 @@ describe('发版工具：清单覆盖与夹具完整性', () => {
       [],
       `这些面的正则已经匹配不到东西（文件改过格式？）：${empty.join(' / ')}`,
     );
+  });
+
+  it('三个公开发布的 scoped 包都显式 access=public（新包不能靠 npm 默认值）', () => {
+    for (const file of ['package.json', 'packages/cli/package.json', 'packages/pg/package.json']) {
+      const pkg = JSON.parse(read(repoRoot, file)) as {
+        name?: string;
+        publishConfig?: { access?: string };
+      };
+      assert.equal(pkg.publishConfig?.access, 'public', `${pkg.name} 首次发布会默认受限`);
+    }
   });
 });
 

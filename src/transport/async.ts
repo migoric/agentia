@@ -8,7 +8,13 @@ import type { RunStatus, TaskEvent } from '../core/run.js';
 import { isTerminalStatus } from '../core/run.js';
 import { normalizeMessages, TaskInputError } from '../engine/spec.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
-import { InMemoryTaskStore, cloneTaskRecord, isThenable, nextTaskId } from '../store/store.js';
+import {
+  InMemoryTaskStore,
+  cloneTaskRecord,
+  isThenable,
+  nextTaskId,
+  submissionTaskId,
+} from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { combineSignals, releaseCombinedSignal } from '../core/abort.js';
 import { abortedError } from '../engine/turn.js';
@@ -35,6 +41,10 @@ import type { TaskStreamEvent } from './task-events.js';
 import { adoptSucceededOutcome, buildRunCallOptions } from './run-call-options.js';
 import type { RunSessionStore } from './run-call-options.js';
 import { applySuspendedOutcome, applyTerminalOutcome, readClaimed } from './run-outcome.js';
+import { followClaim, followStopReason, initializeSubmission } from './submission.js';
+import type { FollowDeps, SubmissionInit } from './submission.js';
+import { waitForTask } from './task-awaiter.js';
+import { notifyTaskSinks, reportPersistError, saveTaskRecord } from './task-observers.js';
 
 // 三个监督件（2026-09-29 抽出）的实现与类型现在各自在文件里 —— 审批（approval-supervisor.ts）、
 // 事件投递（signal-supervisor.ts）、恢复扫描（resume-scanner.ts）。下面 **re-export** 它们的
@@ -61,9 +71,10 @@ export type { ResumePendingOptions } from './resume-scanner.js';
  * 异步 TaskStore（R6，TaskStore 方法返回 MaybePromise）：
  * - 内部执行路径（#execute / awaitTask / resumePending）全部 await 化，两种 store 通吃；
  * - submit/poll/byIdempotency/list 是**同步门面**，为同步 store 保持原有用法与返回类型
- *   （http/scheduler/既有调用方零改动）。接异步 store 时：submit 的即时去重无法进行
- *   （推迟到 #execute：同键已有 succeeded 记录则采纳其结果、不重复执行），poll 等
- *   返回 Promise 需调用方自行 await。
+ *   （http/scheduler/既有调用方零改动）。接异步 store 时：submit 先返回新建快照，
+ *   在首次落库前查询旧幂等结果；同键已有 succeeded 记录则采纳其结果、不重复执行。
+ *   同进程在飞提交仍由同步认领表去重；实现 claimSubmission 的 store 由同一主键
+ *   原子仲裁跨进程同键提交，其他 store 保持 at-least-once。poll 等返回 Promise 需调用方自行 await。
  */
 
 /**
@@ -244,7 +255,7 @@ export interface AsyncRunnerOptions {
    * 为什么需要它：`docs/usage-guide.md` §7 那条边界（「终态落库失败无告警」）写着
    * 「store 抖动时任务可能永远停在 `running`，重启后 `resumePending` 会重跑一个**实际已成功**
    * （副作用已发生）的任务 —— **耐久 store 的故障告警是宿主的事**」。但在本选项出现之前，
-   * 框架把这个失败**吞掉且不留任何出口**（`#safeSave`）—— 宿主**做不到**它被要求做的事：
+   * 框架把这个失败**吞掉且不留任何出口**（`saveTaskRecord`）—— 宿主**做不到**它被要求做的事：
    * 它拿不到失败、也不该靠轮询 store 去猜。
    *
    * 本仓同因、同形、只差一个名字的先例：`createOtlpExporter({ onExportError })`
@@ -442,14 +453,22 @@ export class AsyncRunner {
    * **同进程内的幂等键认领表**（idempotencyKey → 在飞记录）。
    *
    * 为什么必须有它（2026-09-21 外部复核实测）：`submit` 是同步门面，**无法 await** 异步 store 的
-   * `byIdempotency`；而 `#executeInner` 只采纳已 `succeeded` 的既有记录。于是「同时提交两个
-   * 相同 idempotencyKey」在异步 store 下**两次都执行**（实测 appRunCalls=2）——
-   * 文档承诺的「同键未失败直接返回既有记录」实际只对同步 store 成立。
+   * `byIdempotency`；没有同步认领时，「同时提交两个相同 idempotencyKey」会两次都执行
+   * （实测 appRunCalls=2）。认领在 `#execute` 的同步前段完成，所以连续 `submit` 之间没有窗口。
    *
-   * 这里把那条承诺补回到「**同进程内**并发提交」这一档：认领在 `#execute` 的同步前段完成，
-   * 所以两次连续的 `submit` 之间没有窗口。跨进程仍是 at-least-once（诚实边界，见 usage-guide §7）。
+   * 终态后的同键提交改由 #submissions 的「先查旧 succeeded、再首次落库」处理；
+   * 有 claimSubmission 的 store 另由同一主键原子仲裁跨进程首提；其他 store 仍是
+   * at-least-once（诚实边界，见 usage-guide §7）。
    */
   readonly #claims = new Map<string, TaskRecord>();
+  /**
+   * 异步 store 的首次提交初始化：先查旧幂等结果，再决定是否写新 queued。
+   * 按 taskId 索引，让 awaitTask 在记录首次落库前也能等同一条初始化；兑现后立即清理。
+   * 恢复派发没有这张表项，仍走 #executeInner 的既有去重路径。
+   */
+  readonly #submissions = new Map<string, Promise<SubmissionInit>>();
+  /** 只跟随其他进程终态的执行趟：不是任务完成者，不能再发一次 TaskSink。 */
+  readonly #observed = new WeakSet<TaskRecord>();
   private readonly taskSinks: TaskSink[];
   private readonly onPersistError: AsyncRunnerOptions['onPersistError'];
   /**
@@ -561,9 +580,9 @@ export class AsyncRunner {
 
   /**
    * 提交一次异步任务。入参可为 string / messages / {prompt|text|messages}。
-   * 幂等键存在且上一任务未失败 → 直接返回既有记录（去重）；失败的同键可产生新任务。
-   * 同步门面：同步 store 下立即去重并返回快照；异步 store 下 save 在后台完成、
-   * 去重推迟到执行前（见 #execute），返回新建任务的提交时刻快照。
+   * 同步 store 下立即去重并返回既有快照；异步 store 下先返回新建任务的提交时刻快照，
+   * 同进程在飞提交走认领表，旧 succeeded 结果在首次落库前查询并采纳；失败/取消可重试。
+   * 有 claimSubmission 的 store 可跨进程单认领；其他 store 保持 at-least-once，不承诺恰好一次。
    */
   submit(
     input: unknown,
@@ -582,18 +601,15 @@ export class AsyncRunner {
           '给 AsyncRunner 传 sessionStore，或去掉 sessionId',
       );
     }
+    let pendingExisting: Promise<TaskRecord | undefined> | undefined;
     if (opts.idempotencyKey) {
-      // 同步快路径：**同进程内已有同键在飞** → 直接返回它。异步 store 下 byIdempotency 是
-      // Promise，同步门面等不了；而 #executeInner 只采纳已 succeeded 的记录 ⇒ 不认领这条，
-      // 「同时提交两个同键任务」会两次都执行（见 #claims 的注释）。
+      // 同进程内的在飞认领仍是同步快路；异步 store 的旧记录查询则留到首次落库之前 await。
       const inFlight = this.#claims.get(opts.idempotencyKey);
       if (inFlight) return cloneTaskRecord(inFlight);
       const existing = this.store.byIdempotency(opts.idempotencyKey);
       if (isThenable(existing)) {
-        // 异步 store 返回 Promise —— 同步门面无法 await，去重交给 #execute。
-        // 但**必须订阅它**：byIdempotency 的 reject（Redis 抖动等）若无人处理就是
-        // unhandledRejection（Node ≥15 默认终止宿主进程）。这里只做「查不到既有记录」
-        // 处理，拒绝即视为无记录，交 #execute 的去重兜底。
+        pendingExisting = existing;
+        // 排队闸若同步拒绝，下面的初始化链来不及挂上；这里先兜住 reject，避免终止宿主进程。
         existing.catch(() => undefined);
       } else if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') {
         // at-least-once 去重：不重复执行。`failed` 被刻意排除（失败后同键重提要真跑）；
@@ -620,25 +636,44 @@ export class AsyncRunner {
       );
     }
     const rec: TaskRecord = {
-      taskId: nextTaskId(),
+      taskId:
+        opts.idempotencyKey !== undefined && this.store.claimSubmission !== undefined
+          ? submissionTaskId(opts.idempotencyKey)
+          : nextTaskId(),
       status: 'queued',
       idempotencyKey: opts.idempotencyKey,
       spec: { messages, options: opts.options, source: opts.source ?? 'async' },
       createdAt: Date.now(),
       ownerId: this.ownerId,
     };
-    const saved = this.store.save(rec);
-    if (isThenable(saved)) {
-      // 异步落库失败：尽力把任务标记为 failed 重存，避免静默吞错 / unhandled rejection。
-      // 但只在任务**尚未被 #execute 推进**时改判：初始 save 的 reject 可能迟到，
-      // 那时 run 已跑完并写了成功终态，无条件覆写会把成功翻成失败（落库终态与真实结果相反）。
-      saved.catch((e) => {
-        if (rec.status !== 'queued' || rec.finishedAt !== undefined) return;
-        rec.status = 'failed';
-        rec.error = classifyError(e);
-        rec.finishedAt = Date.now();
-        void this.#safeSave(rec, 'initial');
+    if (pendingExisting) {
+      const initializing = initializeSubmission({
+        store: this.store,
+        rec,
+        existing: pendingExisting,
+        safeSave: (r, phase) => saveTaskRecord(this.store, this.onPersistError, r, phase),
+        report: (r, error, phase) => reportPersistError(this.onPersistError, r, error, phase),
       });
+      this.#submissions.set(rec.taskId, initializing);
+      void initializing.then(
+        (outcome) => {
+          // follow 的表项保留到观察结束：升级前的随机目标 id 期间，新 taskId 尚未落库。
+          if (outcome.action !== 'follow') this.#submissions.delete(rec.taskId);
+        },
+        () => this.#submissions.delete(rec.taskId),
+      );
+    } else {
+      const saved = this.store.save(rec);
+      if (isThenable(saved)) {
+        // 无幂等键路径保持原行为：初始 save 的迟到 reject 不得覆写已经成功的终态。
+        saved.catch((e) => {
+          if (rec.status !== 'queued' || rec.finishedAt !== undefined) return;
+          rec.status = 'failed';
+          rec.error = classifyError(e);
+          rec.finishedAt = Date.now();
+          void saveTaskRecord(this.store, this.onPersistError, rec, 'initial');
+        });
+      }
     }
     // 派发走唯一入口（闸在 #dispatch 里）—— ⚠️ 这里是**结构一致性**，不是行为依赖：
     // 本方法开头那道 `isDraining` 检查（拒绝语义：对调用方的承诺是抛错 / 503，不是静默排期）
@@ -741,10 +776,22 @@ export class AsyncRunner {
         janitorCleanup();
       };
       if ((opts.pollMs ?? STREAM_CROSS_PROCESS_POLL_MS) > 0) {
+        const onError = (() => {
+          let warned = false;
+          return (err: unknown): void => {
+            if (warned) return;
+            warned = true;
+            console.warn(
+              `[agentia:stream] 任务 ${taskId} 的跨进程收口判据抛错，本流继续轮询:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          };
+        })();
         janitorCleanup = this.#streamJanitors.add(taskId, {
           isTerminal: (rec) => isTerminalTask(rec as TaskRecord),
           onTerminal: () => this.#streams.markDone(taskId),
           onClosed: () => listener({ type: 'closed', reason: 'not-in-this-process' }),
+          onError,
         });
       }
       return cleanup;
@@ -914,15 +961,15 @@ export class AsyncRunner {
     rec.suspendedReason = undefined;
     rec.wakeAt = undefined;
     this.#approvals.unmarkSuspended(taskId);
-    // ⚠️ 落库**当场发生**（2026-10-13 ref-run-root-close）：不走 `#safeSave` 的微任务延迟 —— cancel 的临界段
+    // ⚠️ 落库**当场发生**（2026-10-13 ref-run-root-close）：不走 `saveTaskRecord` 的微任务延迟 —— cancel 的临界段
     // 必须原子。落库推迟一个微任务，「重读再判」那几条路（readClaimed / 恢复路径的进闸重读）
     // 就会在这个缝里读到取消前的旧状态、照常起跑/派发（「绝不起跑」承诺就是这样被破的）。
-    // 失败口径与 #safeSave 相同：不遮罩（记账继续），但必须可观测（onPersistError）。
+    // 失败口径与 saveTaskRecord 相同：不遮罩（记账继续），但必须可观测（onPersistError）。
     let saved: MaybePromise<void>;
     try {
       saved = this.store.save(rec);
     } catch (error) {
-      this.#reportPersistError(rec, error, 'outcome');
+      reportPersistError(this.onPersistError, rec, error, 'outcome');
       saved = undefined;
     }
     // 只有「确实有一趟活着的 #execute 会消费这个标记」才登记；`queued` 但本进程没有
@@ -946,10 +993,10 @@ export class AsyncRunner {
     };
     return isThenable(saved)
       ? Promise.resolve(saved)
-          .catch((error) => this.#reportPersistError(rec, error, 'outcome'))
-          .then(() => this.#notifySinks(rec))
+          .catch((error) => reportPersistError(this.onPersistError, rec, error, 'outcome'))
+          .then(() => notifyTaskSinks(this.taskSinks, rec))
           .then(finish)
-      : this.#notifySinks(rec).then(finish);
+      : notifyTaskSinks(this.taskSinks, rec).then(finish);
   }
 
   /**
@@ -1163,33 +1210,15 @@ export class AsyncRunner {
     taskId: string,
     opts: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<TaskRecord> {
-    const timeoutMs = opts.timeoutMs ?? 30_000;
-    // 坏值防线（2026-11-07 深评 F6）：`timeoutMs: NaN` 会让 `deadline` 变 NaN、
-    // `left <= 0` 恒假 ⇒ 永不超时；`Math.min(intervalMs, left)` 再把 NaN 交给
-    // setTimeout（Node 钳到 1ms）⇒ 每毫秒读一次 store。本仓其它定时旋钮全都挡了，这条漏了。
-    assertTimerDelay(timeoutMs, 'AsyncRunner.awaitTask 的 timeoutMs');
-    // intervalMs 现在只是**兜底轮询**间隔，不是主路径：本进程把任务写到终态会主动唤醒
-    // （见 task-waiters.ts 的 notify）。默认从 5ms 放宽到 250ms —— 旧实现每 5ms 读一次 store，
-    // 等 30s 就是约 6000 次读（SQLite/Redis 下是 6000 次往返）。用异步 store 且终态由
-    // **他进程**写入时唤不醒，才靠这个间隔兜底。
-    const intervalMs = opts.intervalMs ?? 250;
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-      throw new TypeError(
-        `AsyncRunner.awaitTask 的 intervalMs 必须是正的有限数（毫秒），收到 ${String(opts.intervalMs)}`,
-      );
-    }
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      // 走 poll 而不是裸 store.get：惰性审批超时的判定挂在那里（HITL）
-      const rec = await this.poll(taskId);
-      if (!rec) throw new Error(`task 不存在: ${taskId}`);
-      // ⚠️ 终态集合走 `isTerminalTask` 这个**单一真源**：手写枚举会让新加的终态（`cancelled`）
-      // 在这里被漏掉 —— 表现为「取消了但 awaitTask 一直等到超时」，看起来像取消没生效
-      if (isTerminalTask(rec)) return rec;
-      const left = deadline - Date.now();
-      if (left <= 0) throw new Error(`task ${taskId} 等待超时（${rec.status}）`);
-      await this.#taskWaiters.wait(taskId, Math.min(intervalMs, left));
-    }
+    return waitForTask(
+      {
+        submissions: this.#submissions,
+        poll: (id) => this.poll(id),
+        wait: (id, ms) => this.#taskWaiters.wait(id, ms),
+      },
+      taskId,
+      opts,
+    );
   }
 
   /**
@@ -1241,8 +1270,12 @@ export class AsyncRunner {
       try {
         // HITL：挂起不是终态 —— onFinished 的承诺是「任务达终态」，对它不开火。
         // 已由 `cancel` 自己收尾过的那一条也不开火（`#cancelSettled`）：两处都记会触发两次
-        if (rec.status !== 'suspended' && !this.#cancelSettled.has(rec.taskId)) {
-          await this.#notifySinks(rec);
+        if (
+          rec.status !== 'suspended' &&
+          !this.#observed.has(rec) &&
+          !this.#cancelSettled.has(rec.taskId)
+        ) {
+          await notifyTaskSinks(this.taskSinks, rec);
         }
       } finally {
         this.active--;
@@ -1281,32 +1314,50 @@ export class AsyncRunner {
     }
   }
 
-  /** 通知任务完成回调。逐个 await，**sink 抛错被吞** —— 回调失败不得影响任务状态。 */
-  async #notifySinks(rec: TaskRecord): Promise<void> {
-    if (this.taskSinks.length === 0) return;
-    // 传快照：回调拿到的是「此刻的终态」，之后记录再被改动不会串进回调持有的引用
-    const snapshot = { ...rec };
-    for (const sink of this.taskSinks) {
-      try {
-        await sink.onFinished(snapshot);
-      } catch {
-        /* 回调失败不影响任务状态（同 trace sink / memory 回写的防护） */
-      }
-    }
+  /**
+   * 跟随他进程认领所需的宿主能力（判据与收尾都在 `submission.ts` 的 `followClaim`：
+   * 这里只把 runner 的内部件交出去 —— 放在分支里会把 `#executeInner` 撑长，而这段
+   * 每加一行都顶在 `source-size` 的预算上）。
+   */
+  #followDeps(): FollowDeps {
+    return {
+      store: this.store,
+      wait: (taskId, ms) => this.#taskWaiters.wait(taskId, ms),
+      report: (r, error, phase) => reportPersistError(this.onPersistError, r, error, phase),
+      saveOutcome: (r) => saveTaskRecord(this.store, this.onPersistError, r, 'outcome'),
+      observed: (r) => this.#observed.add(r),
+      abandonStream: (taskId) => this.#streams.releaseUnwatched(taskId),
+      stopReason: (current) =>
+        followStopReason(current, { host: this.#host, draining: this.#drain.isDraining }),
+    };
   }
 
   async #executeInner(rec: TaskRecord): Promise<void> {
     // 顶层容错：异步 store（网络客户端）任何一处 reject 都不得逃逸成
     // unhandled rejection（Node ≥15 默认终止进程）——任务标记失败尽力落库。
     try {
-      // 异步 store 的幂等去重在此补齐（submit 同步门面无法 await）。三条判据（存在既有记录 /
-      // 不是自己 / 状态是 succeeded）与那条 load-bearing 的顺序依赖（`store.save` 先写记录、
-      // 后写 idem 索引）都搬进了 `adoptSucceededOutcome` 的注释里 —— 一字未改。
-      if (rec.idempotencyKey) {
+      const initializing = this.#submissions.get(rec.taskId);
+      if (initializing) {
+        const outcome = await initializing;
+        if (outcome.action === 'done') {
+          Object.assign(rec, outcome.record);
+          return;
+        }
+        if (outcome.action === 'follow') {
+          try {
+            // 一整趟跟随（等终态 / 按直接证据放弃、映射落库、流的回收）都在 submission.ts
+            await followClaim(rec, this.#followDeps(), outcome.targetId);
+          } finally {
+            this.#submissions.delete(rec.taskId);
+          }
+          return;
+        }
+      } else if (rec.idempotencyKey) {
+        // 恢复派发没有提交初始化；它已先落 queued/running，所以保留执行前去重。
         const existing = await this.store.byIdempotency(rec.idempotencyKey);
         if (adoptSucceededOutcome(rec, existing)) {
           // 采纳既有结果：落库失败也不该把一次已知成功的任务翻成 failed
-          await this.#safeSave(rec, 'outcome');
+          await saveTaskRecord(this.store, this.onPersistError, rec, 'outcome');
           return;
         }
       }
@@ -1507,7 +1558,7 @@ export class AsyncRunner {
         if (rec.status !== 'suspended') rec.finishedAt = Date.now();
         // 落库失败不遮罩、槽位必须释放：释放放在内层 finally，即便落库实现抛错也必达
         try {
-          await this.#safeSave(rec, 'outcome');
+          await saveTaskRecord(this.store, this.onPersistError, rec, 'outcome');
         } finally {
           this.#slots.release();
         }
@@ -1520,42 +1571,8 @@ export class AsyncRunner {
       rec.status = 'failed';
       rec.error = classifyError(e);
       rec.finishedAt = Date.now();
-      await this.#safeSave(rec, 'outcome');
+      await saveTaskRecord(this.store, this.onPersistError, rec, 'outcome');
       console.error(`[agentia] task ${rec.taskId} 执行异常:`, e);
-    }
-  }
-
-  /**
-   * 尽力落库：**先包成 Promise 再挂 catch**。
-   *
-   * 同步 store（FileTaskStore 的 writeFileSync、node:sqlite）的 save 是**同步抛错**的。
-   * 若写成 `Promise.resolve(this.store.save(rec)).catch(...)`，`this.store.save(rec)`
-   * 会在 `Promise.resolve` 之前求值并同步抛出 —— 异常逃出 finally（跳过 #releaseSlot，
-   * 并发槽位永久泄漏），再被外层 catch 里同一写法抛第二次，最终逃出 #execute 变成
-   * unhandled rejection（Node ≥15 默认终止宿主进程）。
-   */
-  async #safeSave(rec: TaskRecord, phase: PersistFailureInfo['phase']): Promise<void> {
-    try {
-      await Promise.resolve().then(() => this.store.save(rec));
-    } catch (error) {
-      this.#reportPersistError(rec, error, phase);
-    }
-  }
-
-  /**
-   * 落库失败的上报口（`#safeSave` 与 `cancel` 的临界段共用，2026-10-13 ref-run-root-close 抽出）。
-   * 落库失败不遮罩主流程：任务结果仍在内存记录里可见。
-   * 但它**必须有人能收到** —— 宿主无法自己发现这件事（见 onPersistError 的注释）。
-   */
-  #reportPersistError(rec: TaskRecord, error: unknown, phase: PersistFailureInfo['phase']): void {
-    if (this.onPersistError) {
-      try {
-        // 传快照（与 #notifySinks 同纪律）：回调拿到的是「此刻的记录」，之后记录
-        // 再被推进不会串进回调持有的引用
-        this.onPersistError({ record: { ...rec }, error, phase });
-      } catch {
-        /* 观测是辅助动作：回调抛错不得影响 run（与 onUnpricedModel 同口径） */
-      }
     }
   }
 
