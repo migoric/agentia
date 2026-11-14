@@ -169,10 +169,10 @@ describe('AsyncRunner', () => {
     assert.notEqual(t2.taskId, 'task_stale', '终态后认领必须已释放，不得命中老记录');
     await runner.awaitTask(t2.taskId);
     assert.equal((await runner.poll(t2.taskId))?.status, 'succeeded');
-    // 异步 store 的 idem 索引是 **last-wins**（redisStore / fsStore / sqliteStore 头注释同口径），
-    // 而 submit 的同步快路走不了 thenable ⇒ 终态后重提同键按设计就是**新任务、真执行**。
-    // 这里把它钉住：这是「同进程并发」之外的 at-least-once 边界（usage-guide §7 已写明）。
-    assert.equal(app.calls, 2, '终态后重提同键在异步 store 下会真执行（at-least-once 边界）');
+    // 首次异步查询必须先于新记录的 queued save 完成；否则 PG 的单行 UPSERT 会让
+    // 新快照自己成为 last-wins，把旧 succeeded 遮住。终态后重提应采纳首次结果。
+    assert.equal(app.calls, 1, '终态后重提同键必须采纳首次成功结果，不得再执行');
+    assert.equal((await runner.poll(t2.taskId))?.runId, 'r-1');
   });
 
   it('幂等键去重（异步 store）：HITL 挂起恢复后再提同键不得命中老记录', async () => {
@@ -214,8 +214,10 @@ describe('AsyncRunner', () => {
     const before = calls; // 挂起段 + 恢复段各一次 app.run（HITL 恢复是重跑）
     const t2 = runner.submit('x', { idempotencyKey: 'k' });
     assert.notEqual(t2.taskId, t.taskId, '挂起过的同键在终态后必须已释放认领');
-    await runner.awaitTask(t2.taskId);
-    assert.equal(calls - before, 1, '第二个任务必须真跑一次（老记录被永久命中的话这里是 0）');
+    const adopted = await runner.awaitTask(t2.taskId);
+    assert.equal(calls - before, 0, '第二个任务应采纳首次成功结果，不得再跑一次');
+    assert.equal(adopted.runId, (await runner.poll(t.taskId))?.runId);
+    assert.equal(adopted.result?.finalText, '第一次');
   });
 
   it('concurrency=1：第二个任务在槽位释放前保持 queued；submit 返回快照不被原地改', async () => {
@@ -653,20 +655,23 @@ describe('AsyncRunner', () => {
           map.set(rec.taskId, { ...rec });
         },
         get: (id) => map.get(id),
-        // 异步 store：**submit 的即时去重**这一次 lookup 直接 reject（Redis 抖动）。
-        // submit 的同步门面无法 await，但必须订阅该 Promise —— 否则就是
-        // unhandledRejection（Node ≥15 终止宿主）。后续 #execute 的 lookup 正常。
+        // 首次旧记录查询失败时必须 fail closed：不能假装没有旧 succeeded 而重复执行。
+        // 同步门面仍须订阅 Promise，不能让它成为 unhandledRejection。
         byIdempotency: () => {
           lookups++;
-          return lookups === 1 ? Promise.reject(new Error('redis down')) : undefined;
+          return Promise.reject(new Error('redis down'));
         },
         list: () => [...map.values()],
         clear: () => map.clear(),
       };
-      const runner = new AsyncRunner(fakeApp(), { store });
+      const app = fakeApp();
+      const runner = new AsyncRunner(app, { store });
       const t = runner.submit('a', { idempotencyKey: 'k' });
       const rec = await runner.awaitTask(t.taskId, { timeoutMs: 2_000 });
-      assert.equal(rec.status, 'succeeded', '即时去重的 lookup 失败不得影响任务执行');
+      assert.equal(rec.status, 'failed');
+      assert.equal(lookups, 1, '首次保存前必须查询一次旧幂等结果');
+      assert.equal(app.calls, 0, '查不清旧结果时不得启动可能重复副作用的 run');
+      assert.match(rec.error?.message ?? '', /redis down/);
       await new Promise((r) => setTimeout(r, 20));
       assert.deepEqual(rejections, [], '被拒的 Promise 必须已订阅，不得逃逸');
     } finally {

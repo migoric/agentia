@@ -24,9 +24,11 @@ import type { TaskRecord, TaskStore } from './store.js';
  * 前提：**单宿主写者**。save 是两次 SET（记录 + 幂等索引），未走 MULTI 事务；
  * 多写者并发下同键写可能交错，跨进程协调属部署层职责（与 FileTaskStore 一致）。
  *
- * 注意（load-bearing）：AsyncRunner 的延迟幂等去重依赖本实现「先 SET 记录、
- * await 后再 SET idem 索引」的写入顺序（见 async.ts #execute 注释）——若改为
- * 先写索引或 MULTI 事务，需同步复核该去重路径。
+ * 注意（load-bearing，仅恢复派发）：AsyncRunner 在恢复路径会先落 queued/running，
+ * 再按 idem 索引查既有成功结果；这条去重依赖本实现「先 SET 记录、await 后再 SET
+ * idem 索引」的写入顺序（见 run-call-options.ts 的 adoptSucceededOutcome）。
+ * 初始异步提交已在首次落库前查旧结果，不依赖这条顺序。若调整恢复路径或写入顺序，
+ * 需同步复核该去重路径；跨进程并发没有 CAS，仍不是恰好一次。
  */
 /**
  * @deprecated 本 store 已不再使用它。历史：这是「对象形态 SET 选项」，对象形态是
@@ -151,7 +153,7 @@ export class RedisTaskStore implements TaskStore {
     // 代价如实记：一条**永远等不到**审批的挂起记录会永久驻留（批不批是人的事，
     // store 无从判死）—— 与内存 store 同款取舍，清理属部署层职责。
     const expires = isTerminalStatus(rec.status);
-    // 写入顺序是 load-bearing（AsyncRunner 的延迟幂等去重依赖它）：先记录、后幂等索引
+    // 写入顺序是 load-bearing（仅恢复派发的延迟去重依赖它）：先记录、后幂等索引
     await this.write(this.taskKey(rec.taskId), json, expires);
     if (rec.idempotencyKey) {
       // 幂等索引与记录**同生共死**：非终态时索引若先过期，同一键重提会绕过去重、

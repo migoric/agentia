@@ -56,6 +56,7 @@
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "build:cli": "node scripts/clean-dist.mjs cli && npm run build -w @migor/trace-view && tsc -p packages/cli/tsconfig.json && tsc --noEmit -p packages/cli/tsconfig.templates.json && node packages/cli/scripts/copy-assets.mjs",
+    "build:pg": "tsc -p packages/pg/tsconfig.json",
     "build:website": "npm run build -w @migor/trace-view && npm run build -w @migor/website",
     "deploy:website": "npm run build:website && npx --yes wrangler@4.131.0 pages deploy packages/website/dist --project-name=agentia-web",
     "prepublishOnly": "node scripts/check-release.mjs && npm run build",

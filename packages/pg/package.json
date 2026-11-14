@@ -1,0 +1,51 @@
+{
+  "name": "@migor/agentia-pg",
+  "version": "0.10.11",
+  "description": "PostgreSQL 宿主适配：Agentia 的 TaskStore / SessionStore 落到普通 PG 表，附幂等建表与可导出 SQL",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:live": "node --test --test-concurrency=1 test-live/*.test.mjs",
+    "prepublishOnly": "node ../../scripts/check-release.mjs --package @migor/agentia-pg && npm run build"
+  },
+  "peerDependencies": {
+    "@migor/agentia": ">=0.10.11"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@migor/agentia": "file:../..",
+    "pg": "^8.23.1"
+  },
+  "keywords": [
+    "agentia",
+    "postgres",
+    "postgresql",
+    "pg",
+    "agent",
+    "task-store",
+    "session-store"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/migoric/agentia.git",
+    "directory": "packages/pg"
+  }
+}

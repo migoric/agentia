@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc --noEmit -p tsconfig.templates.json && node scripts/copy-assets.mjs",
     "test": "node --test \"test/*.test.mjs\"",
-    "prepublishOnly": "node ../../scripts/check-release.mjs && npm run build"
+    "prepublishOnly": "node ../../scripts/check-release.mjs --package @migor/cli && npm run build"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

@@ -127,11 +127,11 @@ describe('createStreamJanitorGroup —— 跨进程 SSE 兜底收口', () => {
     group.close();
   });
 
-  it('一拍里的意外（isTerminal 抛）不外逃，也不耽误同拍其它任务', async () => {
+  it('一拍里的意外（isTerminal 抛）上报且不外逃，也不耽误同拍其它任务', async () => {
     // `setInterval` 回调里的 rejection = unhandledRejection（Node ≥15 终止宿主）。
-    // `isTerminal` 是本进程的判据（不是宿主的回调），所以它抛错**不**走 safe()，
-    // 由 tick 的 catch 兜住 —— 这条同时是那个 catch 的用例。
+    // `isTerminal` 是本进程的判据：错误经 onError 上报，target 留下重试，同拍其它任务照常推进。
     let closed = 0;
+    const errors: unknown[] = [];
     const group = createStreamJanitorGroup({
       // ⚠️ `bad` 必须读到**一条记录**，否则 `checkOne` 先走 `rec === undefined` 的收口分支、
       // 根本调不到 `isTerminal` —— 第一版就是这么写的，那个 catch 一行没跑到（覆盖率当场
@@ -146,13 +146,43 @@ describe('createStreamJanitorGroup —— 跨进程 SSE 兜底收口', () => {
       },
       onTerminal: () => {},
       onClosed: () => {},
+      onError: (e) => errors.push(e),
     });
     group.add('good', {
       isTerminal: () => false,
       onTerminal: () => {},
       onClosed: () => closed++,
     });
-    await waitFor(() => closed === 1, '同拍的另一个任务照常收口');
+    await waitFor(() => closed === 1 && errors.length > 0, '同拍推进且判据错误已上报');
+    group.close();
+    assert.ok(errors.length > 0, '判据抛错必须上报，不能静默吞掉');
+    assert.match(String(errors[0]), /判据炸了/);
+  });
+
+  it('一拍里的 poll 有界并发（不会为每个订阅同时打 store）', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const group = createStreamJanitorGroup({
+      poll: async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((r) => setTimeout(r, 5));
+        active--;
+        return rec('me');
+      },
+      ownerId: 'me',
+      pollMs: 5,
+    });
+    for (let i = 0; i < 100; i++) {
+      group.add(`t${i}`, {
+        isTerminal: () => false,
+        onTerminal: () => {},
+        onClosed: () => {},
+      });
+    }
+    await waitFor(() => maxActive > 0, '第一拍开始');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(maxActive <= 32, `并发上限应 ≤32，实测 ${maxActive}`);
     group.close();
   });
 

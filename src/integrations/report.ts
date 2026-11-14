@@ -1,4 +1,4 @@
-import { capabilityKindOf } from '../core/trace.js';
+import { capabilityKindOf, hasCapabilityAncestor } from '../core/trace.js';
 import type { Span, Trace, Usage } from '../core/trace.js';
 import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
@@ -143,22 +143,9 @@ export function buildRunReport(trace: Trace): RunReport {
   const unpriced = new Set<string>();
   const usageMissing = new Set<string>();
 
-  // 嵌套判定（沿 parentSpanId 上爬；seen 防手写 trace 的环）——与 trace-view 的
-  // summarizeTrace 同款：usage 只计顶层 capability，嵌套行的 token 是它外层祖先行那笔。
+  // usage 只计顶层 capability，嵌套行的 token 是它外层祖先行那笔；判据与指标共用 core。
   const byId = new Map<string, Span>();
   for (const s of trace.spans) byId.set(s.spanId, s);
-  const hasCapabilityAncestor = (span: Span): boolean => {
-    let p = span.parentSpanId;
-    const seen = new Set<string>();
-    while (p != null && !seen.has(p)) {
-      seen.add(p);
-      const ps = byId.get(p);
-      if (!ps) return false;
-      if (ps.kind === 'capability') return true;
-      p = ps.parentSpanId;
-    }
-    return false;
-  };
 
   for (const span of trace.spans) {
     if (span.kind === 'capability') {
@@ -166,7 +153,7 @@ export function buildRunReport(trace: Trace): RunReport {
       a.calls++;
       if (span.status === 'error') a.errors++;
       if (span.endedAt !== undefined) a.durations.push(Math.max(0, span.endedAt - span.startedAt));
-      if (span.usage && !hasCapabilityAncestor(span)) {
+      if (span.usage && !hasCapabilityAncestor(byId, span)) {
         a.tokens = a.tokens ? { ...a.tokens } : emptyUsage();
         addUsage(a.tokens, span.usage);
         if (span.usage.costEstimate != null) a.costUsd = (a.costUsd ?? 0) + span.usage.costEstimate;

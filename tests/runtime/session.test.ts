@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { executeRun, InMemorySessionStore } from '../../src/index.js';
-import type { MessageParam, SessionStore } from '../../src/index.js';
+import type { Message, MessageParam, SessionStore } from '../../src/index.js';
 import { endTurnMsg } from '../helpers.js';
 
 const user = (text: string): MessageParam => ({ role: 'user', content: text });
@@ -9,9 +9,9 @@ const user = (text: string): MessageParam => ({ role: 'user', content: text });
 /**
  * 记录**发送时刻** messages 快照的 client。
  *
- * 不能用 helpers 的 mockClient：它 push 的是 params **引用**，而主循环会往同一个
- * messages 数组里继续 push（assistant / tool_result）—— 于是 `seen[0].messages`
- * 是「跑完后的最终态」，拿它断言「发出去的是什么」会永远看到多出来的那一轮。
+ * `buildTurnRequest` 自 2026-11-14 起交出的就是快照（见那条「交给客户端的 messages 是快照」
+ * 用例），这里的 `structuredClone` 因此是**双保险**：断言「发出去的是什么」不该依赖被测
+ * 实现内部的拷贝保证 —— 哪天有人把它改回传引用，这条注释下的用例要能自己站住。
  */
 function capturingClient(script: Array<Record<string, unknown>>) {
   const sent: MessageParam[][] = [];
@@ -118,6 +118,27 @@ describe('会话持久化接进 executeRun（C4）', () => {
       ],
       '历史在前、本轮在后，且角色严格交替（否则下一轮会撞 API 校验）',
     );
+  });
+
+  it('交给客户端的 messages 是快照：主循环后续 push 不得穿进已发出的请求', async () => {
+    const { store } = spyStore();
+    const refs: MessageParam[][] = [];
+    let i = 0;
+    const answers = [endTurnMsg('第一答'), endTurnMsg('第二答')];
+    const client = {
+      messages: {
+        stream: (params: { messages: MessageParam[] }) => {
+          // 故意保留**引用**（宿主把 params 排队 / 缓存 / 录制的形态），不做 clone
+          refs.push(params.messages);
+          return { on() {}, finalMessage: async () => answers[i++] as unknown as Message };
+        },
+      },
+    };
+    await executeRun({ messages: [user('第一问')], client, session: { store, id: 's1' } });
+    await executeRun({ messages: [user('第二问')], client, session: { store, id: 's1' } });
+    assert.equal(refs.length, 2);
+    assert.equal(refs[0].length, 1, '第一次请求的数组不得被后续轮次（assistant / 工具结果）撑大');
+    assert.equal(refs[1].length, 3, '第二次请求：历史两条 + 本轮一条');
   });
 
   it('会话互相隔离：不同 id 不串历史', async () => {

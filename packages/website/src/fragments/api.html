@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>254</b> 个导出</span>
+          <span class="api-chip"><b>255</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -191,7 +191,7 @@
             <tr><td>SystemPrompt</td><td><code>class：new SystemPrompt({ version? })；add(name, text, stable?) / add(section) / build({ cache? })</code></td><td>分段组装 system：stable 段进可缓存前缀打 ephemeral breakpoint，volatile 段放其后；version 自动写入 run 根 <code>system.version</code>。</td></tr>
             <tr><td>SystemPromptOptions / SystemSection</td><td><code>{ version? }</code> / <code>{ name; text; stable? }</code></td><td>构造选项与段落；stable=false 不进可缓存前缀。</td></tr>
             <tr><td>SessionStore / InMemorySessionStore</td><td><code>interface：load(id) / append(id, messages)</code></td><td>跨 run 的<strong>对话历史</strong>（append-only），与 MemoryStore（键值黑板）正交，可同时用；只有跑成功的轮次才回写。⚠️ 进程内实现 —— <strong>多副本各一份</strong>，换一台 pod 就是「第一次见面」（不报错）。</td></tr>
-            <tr><td>RedisSessionStore / RedisSessionClient / RedisSessionStoreOptions</td><td><code>new RedisSessionStore(client, { prefix?, ttlSeconds?, maxMessages? })</code>；client 只需 <code>rpush / lrange</code>（+ <code>ltrim</code> / <code>expire</code>）</td><td>同一接口的<strong>多副本共享</strong>实现（duck-typed 客户端，零依赖）：列表语义（RPUSH 原子追加，两个副本同时写不丢轮次）；单次 RPUSH 按 512 分片（V8 实参上限会抛 <code>RangeError</code>，而回写失败只留一行 warn）；<code>ttlSeconds</code> 语义是「最后一次 append 之后 N 秒」，<code>maxMessages</code> 只留最后 N 条（按条数切、不知轮次边界）。坏元素<strong>响亮抛错</strong>。⚠️ 它<strong>不解决</strong>同一 session 的并发顺序 —— append-only 不保证角色交替，要串行化得自己排队。</td></tr>
+            <tr><td>RedisSessionStore / RedisSessionClient / RedisSessionStoreOptions</td><td><code>new RedisSessionStore(client, { prefix?, ttlSeconds?, maxMessages? })</code>；client 需提供 ioredis 的 <code>rpush / lrange</code> 或 node-redis v4 的 <code>rPush / lRange</code>（+ <code>ltrim/lTrim</code>、<code>expire</code>）</td><td>同一接口的<strong>多副本共享</strong>实现（duck-typed 客户端，零依赖）：列表语义（单次 RPUSH 原子追加，两个副本同时写不丢轮次）；单批超过 512 条时分片发送（分片之间不是跨命令事务，失败会带位置说明可能留下半批；V8 实参上限会抛 <code>RangeError</code>）；<code>ttlSeconds</code> 语义是「最后一次 append 之后 N 秒」，<code>maxMessages</code> 只留最后 N 条（按条数切、不知轮次边界）。坏元素<strong>响亮抛错</strong>。⚠️ 它<strong>不解决</strong>同一 session 的并发顺序 —— append-only 不保证角色交替，要串行化得自己排队。</td></tr>
             <tr><td>normalizeMessages</td><td><code>(input: RunInput | unknown) → MessageParam[]</code></td><td>任意任务入参（string / messages / { prompt | text | messages }）规范成 messages；空数组抛错。</td></tr>
             <tr><td>RunInput</td><td><code>string | MessageParam[] | { prompt?; text?; messages? }</code></td><td>transport 层接受的原始入参形态。</td></tr>
             <tr><td>RunSpec</td><td><code>{ messages; options?; source? }</code></td><td>一次任务的规范化入参；source 标记触发来源（sync / async / schedule:&lt;id&gt;）。</td></tr>
@@ -211,6 +211,7 @@
             <tr><td>RedisTaskStore</td><td><code>new RedisTaskStore(client, { prefix?, ttlSeconds? })</code></td><td>duck-typed Redis 客户端（ioredis/node-redis 均可，可选 peer），TaskStore 方法支持异步。</td></tr>
             <tr><td>RedisLike / RedisTaskStoreOptions / RedisSetOptions</td><td><code>{ get; set; del; expire?; keys | scanIterator }</code> 等</td><td>Redis 客户端的最小结构面与选项类型（框架不 import redis 包）。TTL 经 <code>expire(key, seconds)</code> 施加（两家客户端同名同形）；<code>set</code> 只传两参 —— 尾参的选项形状两家相反，取任何一种都会在另一家上静默失效。</td></tr>
             <tr><td>parseTaskRecord</td><td><code>(raw: string) → TaskRecord | undefined</code></td><td>自定义 TaskStore 的公共读回入口：JSON 解析 + 形状守卫 + 旧版本归一。坏 JSON 抛错，由 store 决定跳过或上抛；非记录返回 undefined。</td></tr>
+            <tr><td>serializeTaskRecord</td><td><code>(rec: TaskRecord) → string</code></td><td>自定义 TaskStore 的公共落库入口，与 <code>parseTaskRecord</code> 配对。剥掉 <code>signal</code> / <code>client</code> / <code>tools</code> / 回调与 fallback 环里的 client（它们属于提交进程，跨重启无意义），并把剥掉了什么记进内部标记让恢复段能出声。自己 <code>JSON.stringify</code> 会让 <code>AbortSignal</code> 变成 <code>{}</code>、工具菜单半残 —— 恢复段才炸，且离现场很远。</td></tr>
             <tr><td>MaybePromise&lt;T&gt;</td><td><code>T | Promise&lt;T&gt;</code></td><td>同步 / 异步实现统一形态（调用方 await 兼容两种）。</td></tr>
           </tbody>
         </table></div>
@@ -240,7 +241,7 @@
 
             <tr><td>registerDefaultTraceSink</td><td><code>(sink: TraceSink) → void</code></td><td>注册全局默认 sink（createApp 构造期快照合并，已建应用不受后续注册影响）。</td></tr>
             <tr><td>createOtlpExporter</td><td><code>({ endpoint, headers?, serviceName?, timeoutMs?, onExportError?, projectToolSpans? }) → { export(trace) → Promise&lt;void&gt; }</code></td><td>trace 导出到任意 OTLP/HTTP 收集器（缺省 service.name 为 'agentia'）；节点 span 展开成 attributes + events，零依赖。属性对齐 open-telemetry/semantic-conventions-genai @ 6fd0d763（2026-10-09；GenAI 约定自 v1.42 起移出语义约定主线，该仓无 tag、未版本化，故基准钉 commit）（additive：追加 <code>gen_ai.*</code> 键、保留旧键 —— 含 <code>gen_ai.usage.cache_read/cache_write.input_tokens</code> 与 <code>gen_ai.conversation.compacted</code>），score 事件译为 <code>gen_ai.evaluation.result</code>。<code>projectToolSpans: true</code>（默认关）把 tool.input/tool.output 事件对投影成 <code>execute_tool</code> child span。</td></tr>
-            <tr><td>jsonlTraceSink</td><td><code>(options: { path: string }) → TraceSink</code></td><td>JSONL 文件 sink：一行一条<strong>裸 Trace</strong> 追加落盘 —— 产物就是 <code>agentia report</code> / <code>agentia diff</code> / <code>agentia harvest</code> 的输入文件。父目录不存在时构造期递归创建；追加不覆盖；写失败抛给调用方（由 flushSinks 吞掉并落 <code>console.warn</code>）。</td></tr>
+            <tr><td>jsonlTraceSink</td><td><code>(options: { path: string; fsync?: boolean; rotate?: 'daily' }) → TraceSink</code></td><td>JSONL 文件 sink：一行一条<strong>裸 Trace</strong> 追加落盘 —— 产物就是 <code>agentia report</code> / <code>agentia diff</code> / <code>agentia harvest</code> 的输入文件。父目录不存在时构造期递归创建；追加不覆盖；<code>fsync</code> 开启每次落盘同步；<code>rotate: 'daily'</code> 按 UTC 自然日把旧内容归档到 <code>&lt;stem&gt;.&lt;YYYY-MM-DD&gt;&lt;ext&gt;</code>，当前路径不变。写失败抛给调用方（由 flushSinks 吞掉并落 <code>console.warn</code>）。</td></tr>
             <tr><td>createOpenAIClient</td><td><code>(opts?: { apiKey?; baseURL?; fetchImpl?; stream? }) → ModelClient</code></td><td>OpenAI 兼容端点（含 DeepSeek 等）适配成 ModelClient：<strong>真流式</strong>、图片块转 image_url、转发 signal。<code>stream: false</code> 退回一次性。</td></tr>
             <tr><td>createAnthropicClient</td><td><code>(opts?: { apiKey?; baseURL?; … }) → ModelClient</code></td><td>默认 ModelClient（Anthropic Messages API）。自定义只传 <code>apiKey</code> / <code>baseURL</code>（缺省走环境变量），<strong>不需要直接依赖厂商 SDK</strong>。</td></tr>
             <tr><td>AnthropicClientOptions</td><td><code>{ apiKey?; baseURL?; … }</code></td><td>createAnthropicClient 的可配置项（其余参数原样透传 SDK）。</td></tr>

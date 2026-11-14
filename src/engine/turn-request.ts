@@ -29,7 +29,12 @@ export function buildTurnRequest(opts: {
     max_tokens: maxTokens,
     ...(system ? { system } : {}),
     ...(apiTools.length ? { tools: apiTools } : {}),
-    messages,
+    // 快照而不是引用：`ctx.messages` 是**同一条活历史**，本轮结束后 loop 会继续往里
+    // push（assistant 回复、工具结果、审批事件）。直接交出引用，等于让客户端在它不知道
+    // 的情况下看到「未来」的消息 —— 任何把 params 排队/缓存/录制的实现（重试队列、
+    // 批处理、审计日志、测试替身）都会读到被后续轮次污染的数组（实测：调用时 3 条，
+    // 同一个引用事后变 4 条）。
+    messages: [...messages],
     ...(signal ? { signal } : {}),
   };
 }

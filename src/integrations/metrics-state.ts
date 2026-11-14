@@ -1,5 +1,5 @@
-import { capabilityKindOf } from '../core/trace.js';
-import type { SpanId, Trace, TraceId } from '../core/trace.js';
+import { capabilityKindOf, hasCapabilityAncestor } from '../core/trace.js';
+import type { Span, SpanId, Trace, TraceId } from '../core/trace.js';
 import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
@@ -514,6 +514,8 @@ export class MetricsState {
       this.runLabels.set(combo, acc);
     }
 
+    const spansById = new Map<SpanId, Span>();
+    for (const span of trace.spans) spansById.set(span.spanId, span);
     for (const span of trace.spans) {
       if (span.kind === 'capability') {
         const label = this.labelFor(capabilityKindOf(span), span.name);
@@ -523,8 +525,9 @@ export class MetricsState {
           acc.calls++;
           if (span.status === 'error') acc.errors++;
           if (span.endedAt !== undefined) acc.stat.add(Math.max(0, span.endedAt - span.startedAt));
-          // capability.usage = 子孙 llm.turn 聚合（tracer 写入）；工具没有这个语义
-          if (span.usage) {
+          // capability.usage = 子孙 llm.turn 聚合（tracer 写入）；嵌套时只给外层计账，
+          // 内层仍保留自己的 calls/errors/耗时。判据与 buildRunReport 共用 core/trace。
+          if (span.usage && !hasCapabilityAncestor(spansById, span)) {
             const sum =
               span.usage.inputTokens +
               span.usage.outputTokens +
