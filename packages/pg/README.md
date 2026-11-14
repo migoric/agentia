@@ -228,7 +228,11 @@ AGENTIA_PG_TEST_URL='postgresql://postgres:password@127.0.0.1:5432/postgres' \
   npm run test:live -w @migor/agentia-pg
 ```
 
-在 **PostgreSQL 18.4 + pg 8.23.1** 上连续验证 **3 轮，每轮 6／6（共 18／18）**：
+这个地址不限定本机：任意能从跑测试的机器连到的实例都行（远端主机、NAS 上的 Docker 容器），
+只要该角色能在里面 `CREATE SCHEMA` —— 每条用例自建独立 schema 并在结束时 `DROP ... CASCADE`。
+
+在 **PostgreSQL 18.4** 上连续验证 **3 轮，每轮 6／6（共 18／18）**，另在 **17.6** 上复跑同样
+3 轮结果一致（`pg` 8.23.1）：
 
 - **多连接首启（1 条）**：4 条真实 `Client` 连接 × 8 轮全新 schema 并发建表；实际触发过 `pg_class_relname_nsp_index` 唯一约束竞争，重试后全部收敛。
 - **真实驱动与数据边界（1 条）**：`node-postgres` 的 `Pool` 能逐字往返任务 JSON 里的 NUL；会话 `jsonb` 遇 NUL 明确抛出 `TypeError`。

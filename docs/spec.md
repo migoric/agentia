@@ -8292,8 +8292,10 @@ expected` 做全快照 CAS；两条都刷新 `save_seq`，不需要 schema 迁�
 **验证面**：PGlite 增加原子首提／CAS 回归，实测 52／52；框架增加双 runner、失败重试、升级前
 随机 id、claim 已提交后报错及共享旧快照恢复等用例。真实 PostgreSQL 18.4 + pg 8.23.1 连续跑
 3 轮，每轮 6／6（共 18／18）：首提执行计数 `[0,1]` 且 runId 相同，孤儿恢复计数与执行计数
-均为 `[0,1]`；advisory lock 只保留为可选互斥配方。历史条目 `ref-pg-live-concurrency` 记录的是
-修复前的重复实证，不再代表当前这两个窗口。
+均为 `[0,1]`；advisory lock 只保留为可选互斥配方。另在 **PostgreSQL 17.6**（Docker 容器、
+非本机）上复跑同样 3 轮，18／18 一致 —— 这两个窗口的结论不依赖版本 18 特有的行为。
+`AGENTIA_PG_TEST_URL` 指向任意可连实例即可，不要求与测试同机。历史条目
+`ref-pg-live-concurrency` 记录的是修复前的重复实证，不再代表当前这两个窗口。
 
 ### 2026-11-14 ② ref-follow-bounded-and-append-guard：**跟随他进程认领有界退出；会话写入点补上读时同口径的守卫**
 
