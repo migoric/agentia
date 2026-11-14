@@ -22,7 +22,10 @@ class AtomicStore implements TaskStore {
   private claimBarrier: { need: number; seen: number; gate: Promise<void> } | undefined;
   private listBarrier: { need: number; seen: number; gate: Promise<void> } | undefined;
 
+  /** 模拟真库的一次写入往返（PG / Redis 的 save 都不是同步完成的） */
+  saveDelayMs = 0;
   async save(rec: TaskRecord): Promise<void> {
+    if (this.saveDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.saveDelayMs));
     this.byTask.set(rec.taskId, cloneTaskRecord(rec));
   }
   async get(taskId: string): Promise<TaskRecord | undefined> {
@@ -444,5 +447,32 @@ describe('恢复快照 CAS：两个 runner 同时读到同一孤儿', () => {
     assert.equal(sinkCalls, 1);
     assert.equal(await a.drain({ timeoutMs: 1_000 }), true);
     assert.equal(await b.drain({ timeoutMs: 1_000 }), true);
+  });
+});
+
+describe('异步 store 的首次落库窗口：submit 全同步、save 不 await', () => {
+  it('首存永不落地时按 deadline 报超时，不得永久挂起', async () => {
+    const store = new AtomicStore();
+    // 连接池耗尽 / 网络黑洞的形态：promise 永远不 settle
+    store.save = () => new Promise<void>(() => {});
+    const runner = new AsyncRunner(countingApp({ n: 0 }), { store });
+    const rec = runner.submit('你好');
+    await assert.rejects(
+      () => runner.awaitTask(rec.taskId, { intervalMs: 5, timeoutMs: 100 }),
+      /等待超时（首次落库未完成）/,
+    );
+    await runner.drain({ timeoutMs: 200 });
+  });
+
+  it('save 有真库量级延迟时，submit 之后立刻 awaitTask 仍能等到终态', async () => {
+    const store = new AtomicStore();
+    store.saveDelayMs = 20; // 一次网络往返的量级；不修的话这里必然读到「task 不存在」
+    const calls = { n: 0 };
+    const runner = new AsyncRunner(countingApp(calls), { store });
+    const rec = runner.submit('你好');
+    const done = await runner.awaitTask(rec.taskId, { intervalMs: 5, timeoutMs: 2_000 });
+    assert.equal(done.status, 'succeeded');
+    assert.equal(calls.n, 1);
+    assert.equal(await runner.drain({ timeoutMs: 1_000 }), true);
   });
 });

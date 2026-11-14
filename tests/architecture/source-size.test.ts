@@ -29,7 +29,7 @@ import { join, relative } from 'node:path';
  *
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
- * | `transport/async.ts` | **799** | 2026-11-09：跨进程流兜底提到 runner 级单例；2026-11-14：原子首提 / 恢复接线，提交协调、等待与通知抽成 submission / task-awaiter / task-observers；同日「跟随他进程认领」的整趟（判据 + 放弃收尾）也搬进 submission，实测 799 |
+ * | `transport/async.ts` | **797** | 2026-11-09：跨进程流兜底提到 runner 级单例；2026-11-14：原子首提 / 恢复接线，提交协调、等待与通知抽成 submission / task-awaiter / task-observers；同日「跟随他进程认领」的整趟（判据 + 放弃收尾）也搬进 submission；同日首次落库登记（`trackFirstSave`）搬进 task-observers，格式化后实测 797 |
  * | `engine/turn.ts` | 607 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线；2026-11-13：压缩降级共用 `reportFailure` + 同回合同 tool_use_id 的审批决定不得复用 |
  * | `integrations/openai.ts` | 530 | 2026-11-07：部分 usage / Retry-After / 非 JSON 响应 |
  *

@@ -71,7 +71,9 @@ import { schemaDdl } from '@migor/agentia-pg';
 console.log(schemaDdl().join(';\n\n') + ';');
 ```
 
-默认建三样东西：表 `agentia_tasks`、表 `agentia_session_messages`、序列 `agentia_task_save_seq`（外加四个索引）。用 `tablePrefix` / `schema` 分命名空间：
+默认建两张表、两个序列、六个索引。其中 `agentia_task_save_seq` 与四个 `_idx` 是 `schemaDdl()`
+显式建的；`agentia_session_messages_seq_seq`（`bigserial` 自带）和两个 `_pkey` 由 PostgreSQL
+自动创建 —— 用 `\d` 核对象清单时会看到后三个，别以为多建了东西。用 `tablePrefix` / `schema` 分命名空间：
 
 ```ts
 await ensureSchema(pool, { schema: 'public', tablePrefix: 'staging_' });

@@ -271,8 +271,10 @@ class MySQLTaskStore implements TaskStore {
 执行）、再认领，这两次往返完成之前记录还没落库 ⇒ 这期间的 `GET /tasks/:id` 是 404。
 不把它做成「`poll` 返回内存里的 queued」是因为那会对外声称一个**尚未耐久**的任务确实存在
 （进程此刻崩掉，客户端手里的 id 就永远查不到）—— at-least-once 的诚实口径是「落库了才存在」。
-调用方要结果请用 `runner.awaitTask()`（或 `GET /tasks/:id` 带重试），不要拿 submit 的返回值
-当「记录已可读」。
+
+要结果请用 `runner.awaitTask()`：`submit` 把这次提交的首次落库 promise 登记下来，`awaitTask`
+先等它落地再开始轮询，所以「刚提交、还没落地」不会被误判成「任务不存在」（`GET /tasks/:id`
+没有这层协调，仍要自己带重试）。不要拿 submit 的返回值当「记录已可读」。
 
 ### 3.4 别把业务事务和 run 记录塞进一个事务
 

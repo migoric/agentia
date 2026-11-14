@@ -8342,6 +8342,40 @@ API 都只接受 user/assistant」。
 ⇒「主人在」那条挂；「记录不存在」永不放弃 ⇒「被回收」那条挂；去掉 `append` 校验 ⇒ 两条会话
 用例挂）。框架套件 1986／1986，覆盖率 97.98 行 / 92.27 分支 / 98.88 函数（阈值 95 / 89 / 95）。
 
+### 2026-11-14 ③ ref-first-save-landing：**首提的落库窗口不再被误报成「任务不存在」；模型入参改为快照**
+
+**来路**：把 `packages/pg/README.md` 的「快速开始」搬到一个真实宿主工程，对真库
+（PostgreSQL 17.6，Docker）逐字跑。同一段代码**时通时不通**：`submit()` 之后立刻
+`awaitTask()`，有时正常等到终态，有时抛 `task 不存在: task_xxx`。
+
+**① 首次落库窗口（缺陷）**。`submit` 是**全同步**的：无幂等键时它只把 `store.save(rec)` 的
+promise 挂个 `.catch` 就返回，不 await。于是对任何异步 store（PG / Redis），「刚提交、还没落
+地」与「这个 taskId 根本不存在」在 `waitForTask` 的第一次 `poll` 里**长得完全一样** ——
+没有记录的读空是常态而非异常。修法不是「等一会儿再判」（那是容差窗口，会让真不存在的 id
+也拖 750ms 才报错），而是让 `submit` 把这条 promise **登记**进 `#firstSave`，
+`awaitTask` 先 `await` 它落地再开始轮询：两个状态从根上分开。登记与清理收在
+`task-observers.ts` 的 `trackFirstSave`（`async.ts` 净 −7 行到 792）。
+
+**② 交给模型客户端的 messages 是活引用（缺陷）**。同一趟发现：`buildTurnRequest` 把
+`ctx.messages` 的**引用**交给 `client.messages.stream`，而主循环本轮结束后继续往同一条数组
+push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排队、缓存、录制或重发的实现
+（重试队列、批处理、审计日志、测试替身）都会读到被**后续轮次污染**的数组。实测：调用时
+`user,assistant,user`（3 条），同一个引用事后变成 4 条。既有测试靠 `structuredClone` 绕过
+（`tests/runtime/session.test.ts` 的 `capturingClient` 注释原话是「不能用 mockClient」），
+属于把框架的坑转嫁给每个宿主。改为交出浅拷贝：消息条数是个位到几十，拷贝成本可忽略，
+而「观测到的入参」必须是快照 —— 与 TaskSink 给快照、`awaitTask` 返回 clone、`SessionStore.load`
+返回副本同一条纪律。
+
+**代价**：`query`/`messages` 的「同一引用」不再是契约（原先 `tests/engine/turn-request.test.ts`
+有一条断言把它钉成实现细节，已改写）。
+
+**验证面**：新增 3 条用例 —— 异步 store（`save` 延迟 20ms，一次真库往返的量级）下
+`submit` 后立刻 `awaitTask` 仍能等到终态；`buildTurnRequest` 交出的数组不随活历史增长；
+`executeRun` 跑两轮后第一次请求的 `messages` 长度不变。三条变异各自咬住：
+不等首存 ⇒ 两条首存用例挂；等但不设 deadline ⇒「永不落地」那条挂（第一版就是这么把
+测试进程挂死的）；`messages` 改回引用 ⇒ 后者两条挂。框架套件 1989／1989，覆盖率 97.98 行 /
+92.29 分支 / 98.89 函数；PG 52／52（PGlite）、真库 18／18。
+
 
 ## 11. 开放项
 

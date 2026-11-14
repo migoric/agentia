@@ -44,7 +44,12 @@ import { applySuspendedOutcome, applyTerminalOutcome, readClaimed } from './run-
 import { followClaim, followStopReason, initializeSubmission } from './submission.js';
 import type { FollowDeps, SubmissionInit } from './submission.js';
 import { waitForTask } from './task-awaiter.js';
-import { notifyTaskSinks, reportPersistError, saveTaskRecord } from './task-observers.js';
+import {
+  notifyTaskSinks,
+  reportPersistError,
+  saveTaskRecord,
+  trackFirstSave,
+} from './task-observers.js';
 
 // 三个监督件（2026-09-29 抽出）的实现与类型现在各自在文件里 —— 审批（approval-supervisor.ts）、
 // 事件投递（signal-supervisor.ts）、恢复扫描（resume-scanner.ts）。下面 **re-export** 它们的
@@ -467,6 +472,8 @@ export class AsyncRunner {
    * 恢复派发没有这张表项，仍走 #executeInner 的既有去重路径。
    */
   readonly #submissions = new Map<string, Promise<SubmissionInit>>();
+  /** 首次落库尚未完成的提交（`awaitTask` 先等它，见 `trackFirstSave`） */
+  readonly #firstSave = new Map<string, Promise<void>>();
   /** 只跟随其他进程终态的执行趟：不是任务完成者，不能再发一次 TaskSink。 */
   readonly #observed = new WeakSet<TaskRecord>();
   private readonly taskSinks: TaskSink[];
@@ -663,17 +670,7 @@ export class AsyncRunner {
         () => this.#submissions.delete(rec.taskId),
       );
     } else {
-      const saved = this.store.save(rec);
-      if (isThenable(saved)) {
-        // 无幂等键路径保持原行为：初始 save 的迟到 reject 不得覆写已经成功的终态。
-        saved.catch((e) => {
-          if (rec.status !== 'queued' || rec.finishedAt !== undefined) return;
-          rec.status = 'failed';
-          rec.error = classifyError(e);
-          rec.finishedAt = Date.now();
-          void saveTaskRecord(this.store, this.onPersistError, rec, 'initial');
-        });
-      }
+      trackFirstSave(this.#firstSave, this.store, this.onPersistError, rec);
     }
     // 派发走唯一入口（闸在 #dispatch 里）—— ⚠️ 这里是**结构一致性**，不是行为依赖：
     // 本方法开头那道 `isDraining` 检查（拒绝语义：对调用方的承诺是抛错 / 503，不是静默排期）
@@ -1213,6 +1210,7 @@ export class AsyncRunner {
     return waitForTask(
       {
         submissions: this.#submissions,
+        firstSave: this.#firstSave,
         poll: (id) => this.poll(id),
         wait: (id, ms) => this.#taskWaiters.wait(id, ms),
       },
