@@ -148,6 +148,18 @@ export function buildRunReport(trace: Trace): RunReport {
   for (const s of trace.spans) byId.set(s.spanId, s);
 
   for (const span of trace.spans) {
+    // 常规工具事件在 llm.turn 上；HITL / timer 恢复段则记在父 span。按事件归属
+    // 扫描两种形状，避免批准后才执行的工具从报告里归零。
+    for (const e of span.events) {
+      if (e.name !== TOOL_OUTPUT_EVENT) continue;
+      const body = e.body as Record<string, unknown> | null;
+      if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
+      const a = acc(`tool:${body.tool}`);
+      a.calls++;
+      if (body.ok === false) a.errors++;
+      const d = body.durationMs;
+      a.durations.push(typeof d === 'number' && Number.isFinite(d) ? Math.max(0, d) : 0);
+    }
     if (span.kind === 'capability') {
       const a = acc(`${capabilityKindOf(span)}:${span.name}`);
       a.calls++;
@@ -195,18 +207,6 @@ export function buildRunReport(trace: Trace): RunReport {
       }
     }
     if (span.endedAt !== undefined) m.durations.push(Math.max(0, span.endedAt - span.startedAt));
-
-    // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）
-    for (const e of span.events) {
-      if (e.name !== TOOL_OUTPUT_EVENT) continue;
-      const body = e.body as Record<string, unknown> | null;
-      if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
-      const a = acc(`tool:${body.tool}`);
-      a.calls++;
-      if (body.ok === false) a.errors++;
-      const d = body.durationMs;
-      a.durations.push(typeof d === 'number' && Number.isFinite(d) ? Math.max(0, d) : 0);
-    }
   }
 
   const capabilityReports: CapabilityReport[] = [...capabilities.entries()].map(

@@ -83,7 +83,7 @@ export function createStreamableHttpMcpConnector(
   const post = async (
     payload: unknown,
     o: { withVersion?: boolean; signal?: AbortSignal; noSessionWait?: boolean } = {},
-  ): Promise<Response> => {
+  ): Promise<{ res: Response; sentWithSession: boolean }> => {
     if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
     // 会话自愈窗口（2026-11-07 深评）：重握手进行中时，**其它**请求先等它建好新会话，
     // 不能拿 `sessionId=null` 发出去（会被需要会话的 server 判 400/404，且 hasSessionId=false
@@ -92,8 +92,11 @@ export function createStreamableHttpMcpConnector(
     if (o.noSessionWait !== true && reinit !== null) {
       await reinit;
     }
+    // 这是**本次请求**的事实。响应回来时全局 sessionId 可能已被另一请求的自愈清空，
+    // 不能再拿那个槽位反推这次发出时有没有带会话。
+    const sentWithSession = sessionId !== null;
     const headers: Record<string, string> = { ...baseHeaders };
-    if (sessionId !== null) headers['mcp-session-id'] = sessionId;
+    if (sentWithSession) headers['mcp-session-id'] = sessionId!;
     if (o.withVersion) headers['mcp-protocol-version'] = negotiated;
     const res = await fetchImpl(url, {
       method: 'POST',
@@ -109,7 +112,7 @@ export function createStreamableHttpMcpConnector(
     // 会话 id 只在 initialize 响应里出现；后续响应不带时**不能**把它清成 null
     const sid = res.headers.get('mcp-session-id');
     if (sid !== null && sid !== '') sessionId = sid;
-    return res;
+    return { res, sentWithSession };
   };
 
   /**
@@ -150,7 +153,7 @@ export function createStreamableHttpMcpConnector(
     noSessionWait = false,
   ): Promise<unknown> => {
     const id = nextId++;
-    const res = await post(
+    const { res, sentWithSession } = await post(
       { jsonrpc: '2.0', id, method, params },
       {
         withVersion,
@@ -158,7 +161,7 @@ export function createStreamableHttpMcpConnector(
         ...(noSessionWait ? { noSessionWait: true } : {}),
       },
     );
-    if (canSelfHealSession(res.status, sessionId !== null, allowReinit)) {
+    if (canSelfHealSession(res.status, sentWithSession, allowReinit)) {
       await readMcpText(res); // 排空，别把连接晾着
       opts.onSessionExpired?.();
       await reinitialize();
@@ -192,7 +195,7 @@ export function createStreamableHttpMcpConnector(
         const v = (init as { protocolVersion?: unknown }).protocolVersion;
         if (typeof v === 'string' && v !== '') negotiated = v;
       }
-      const res = await guard(
+      const { res } = await guard(
         post(
           { jsonrpc: '2.0', method: 'notifications/initialized', params: {} },
           { withVersion: true, ...(insideReinit ? { noSessionWait: true } : {}) },

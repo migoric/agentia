@@ -120,6 +120,77 @@ describe('会话持久化接进 executeRun（C4）', () => {
     );
   });
 
+  it('空 approvals 是普通新 run 的合法缺省：照常加载历史、成功回写，且不告警', async () => {
+    const { store, inner, appends } = spyStore();
+    inner.append('s1', [user('旧问'), { role: 'assistant', content: '旧答' }]);
+    const { client, sent } = capturingClient([endTurnMsg('新答')]);
+    const cap = captureWarn();
+    try {
+      const { run } = await executeRun({
+        messages: [user('新问')],
+        client,
+        approvals: {},
+        session: { store, id: 's1' },
+      });
+      assert.equal(run.status, 'succeeded');
+    } finally {
+      cap.restore();
+    }
+    assert.deepEqual(sent[0], [user('旧问'), { role: 'assistant', content: '旧答' }, user('新问')]);
+    assert.equal(appends.length, 1);
+    assert.deepEqual(inner.load('s1'), [
+      user('旧问'),
+      { role: 'assistant', content: '旧答' },
+      user('新问'),
+      { role: 'assistant', content: '新答' },
+    ]);
+    assert.deepEqual(cap.warnings, []);
+  });
+
+  it('空 approvals + 末尾未决 tool_use 仍是续跑：不重复加载会话，也不回写孤立工具段', async () => {
+    const { store, inner, appends } = spyStore();
+    inner.append('s1', [user('旧问'), { role: 'assistant', content: '旧答' }]);
+    const resumeMessages: MessageParam[] = [
+      user('新指令'),
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu1', name: 'danger', input: {} }],
+      },
+    ];
+    const { client, sent } = capturingClient([endTurnMsg('恢复完成')]);
+    let calls = 0;
+    const cap = captureWarn();
+    try {
+      const { run } = await executeRun({
+        messages: resumeMessages,
+        client,
+        approvals: {},
+        tools: [
+          {
+            name: 'danger',
+            description: '恢复执行',
+            inputSchema: { type: 'object', properties: {} },
+            run: () => {
+              calls++;
+              return 'done';
+            },
+          },
+        ],
+        session: { store, id: 's1' },
+      });
+      assert.equal(run.status, 'succeeded');
+    } finally {
+      cap.restore();
+    }
+    assert.equal(calls, 1);
+    assert.equal(sent[0]?.length, 3, '未决工具先执行，随后带着 tool_result 请求模型');
+    assert.equal(JSON.stringify(sent[0]).includes('旧问'), false, '完整续跑历史不得再叠 session');
+    assert.equal(appends.length, 0);
+    assert.deepEqual(inner.load('s1'), [user('旧问'), { role: 'assistant', content: '旧答' }]);
+    assert.equal(cap.warnings.length, 1);
+    assert.match(cap.warnings[0]!, /续跑段/);
+  });
+
   it('交给客户端的 messages 是快照：主循环后续 push 不得穿进已发出的请求', async () => {
     const { store } = spyStore();
     const refs: MessageParam[][] = [];

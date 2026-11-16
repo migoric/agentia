@@ -42,7 +42,11 @@ export async function waitForTask(
   let waitingId = taskId;
   let observed: TaskRecord | undefined;
   if (initializing) {
-    const outcome = await initializing;
+    const outcome = await withinDeadline(
+      initializing,
+      deadline - Date.now(),
+      `task ${taskId} 等待超时（提交初始化未完成）`,
+    );
     if (outcome.action === 'done') return cloneTaskRecord(outcome.record);
     if (outcome.action === 'follow') {
       waitingId = outcome.targetId;
@@ -51,7 +55,12 @@ export async function waitForTask(
   }
   for (;;) {
     // poll 保留惰性审批超时 / 到期唤醒；事件唤醒为主，间隔只是跨进程兜底。
-    const rec = await deps.poll(waitingId);
+    // 远端 store 的读取本身也必须受 deadline 约束，否则网络黑洞会绕过整个等待超时。
+    const rec = await withinDeadline(
+      deps.poll(waitingId),
+      deadline - Date.now(),
+      `task ${taskId} 等待超时（状态读取未完成）`,
+    );
     if (!rec) {
       if (!landingUsed && landing !== undefined && waitingId === taskId) {
         landingUsed = true;
@@ -65,7 +74,11 @@ export async function waitForTask(
     if (isTerminalStatus(rec.status)) {
       if (observed && waitingId !== taskId) {
         // 旧随机 id 已终态，还要等观察趟把映射后的本次记录落库。
-        const mapped = await deps.poll(taskId);
+        const mapped = await withinDeadline(
+          deps.poll(taskId),
+          deadline - Date.now(),
+          `task ${taskId} 等待超时（映射状态读取未完成）`,
+        );
         if (mapped && isTerminalStatus(mapped.status)) return mapped;
         const left = deadline - Date.now();
         if (left <= 0) throw new Error(`task ${taskId} 等待超时（映射落库中）`);
@@ -77,6 +90,19 @@ export async function waitForTask(
     const left = deadline - Date.now();
     if (left <= 0) throw new Error(`task ${taskId} 等待超时（${rec.status}）`);
     await deps.wait(waitingId, Math.min(intervalMs, left));
+  }
+}
+
+/** 等一个值或错误，最多 `ms` 毫秒；超时不取消底层 I/O，但调用方必须能按时退出。 */
+async function withinDeadline<T>(p: MaybePromise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), Math.max(0, ms));
+  });
+  try {
+    return await Promise.race([Promise.resolve(p), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
