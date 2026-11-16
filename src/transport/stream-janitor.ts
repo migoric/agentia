@@ -28,6 +28,11 @@ export interface StreamJanitorTarget {
   onTerminal: () => void;
   /** 任务记录消失 / 后续段在别的进程：发流级 closed 并收口 */
   onClosed: () => void;
+  /**
+   * `isTerminal` 自己抛错时上报（2026-11-13 复核）：这是本进程判据坏了，
+   * 不再静默吞成「这一拍什么都没做」；调用方可打一次 warn / 记指标。
+   */
+  onError?: (error: unknown) => void;
 }
 
 export interface StreamJanitorGroupDeps {
@@ -96,7 +101,16 @@ export function createStreamJanitorGroup(deps: StreamJanitorGroupDeps): StreamJa
         safe(target.onClosed);
         continue;
       }
-      if (target.isTerminal(rec)) {
+      let terminal: boolean;
+      try {
+        terminal = target.isTerminal(rec);
+      } catch (err) {
+        // 判据本身坏了：报给调用方（打一次 warn / 计数），但保留 target 下一拍再试。
+        // 不把它塞进 safe() 的「静默吞掉」，否则「观测路径坏了」永远没人知道。
+        safe(() => target.onError?.(err));
+        continue;
+      }
+      if (terminal) {
         live.delete(target);
         safe(target.onTerminal);
         continue;
@@ -109,12 +123,28 @@ export function createStreamJanitorGroup(deps: StreamJanitorGroupDeps): StreamJa
     if (live.size === 0) targets.delete(taskId);
   };
 
+  /** 一拍里最多同时 poll 多少个任务：避免 10k 个订阅把 store 打成 10k 并发查询 */
+  const MAX_CONCURRENT_POLLS = 32;
+
   /** 扫描一拍。上一拍还没跑完（poll 慢）⇒ 跳过，不叠请求 */
   const tick = async (): Promise<void> => {
     if (closed || ticking || targets.size === 0) return;
     ticking = true;
     try {
-      await Promise.all([...targets.keys()].map((taskId) => checkOne(taskId)));
+      const taskIds = [...targets.keys()];
+      let next = 0;
+      // 有界并发：不是每个任务一个 Promise 同时飞出去。worker 自己从共享下标取下一个，
+      // 不会因为某个 store 慢而叠请求（下一拍还会被 ticking 挡住）。
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const i = next++;
+          if (i >= taskIds.length) return;
+          await checkOne(taskIds[i]!);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(MAX_CONCURRENT_POLLS, taskIds.length) }, worker),
+      );
     } catch {
       // 一拍里的意外不得外逃：`setInterval` 回调里的 rejection 就是 unhandledRejection
       // （Node ≥15 终止宿主）—— 观测路径不允许有这种出口。下一拍照常继续。

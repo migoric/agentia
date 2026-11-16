@@ -220,7 +220,25 @@ export interface Trace {
   rootSpanId: SpanId;
   spans: Span[];
   status: SpanStatus;
-  totalUsage: Usage; // run 汇总 = 各 llm.turn span 求和（不含 capability 聚合，避免重复计数）
+  totalUsage: Usage; // 各 llm.turn span 求和（不含 capability 聚合，避免重复计数）
+}
+
+/**
+ * 这个 span 是否嵌在另一个 capability 下面。报表与指标共用同一条判据：
+ * 嵌套 capability 的 usage 是外层聚合的子集，只能给外层计账；内层的 calls/errors/耗时仍各自保留。
+ * 沿 parentSpanId 上爬；`seen` 防手写 trace 的环，父引用悬空时按顶层处理（宽容读取，不击穿观测）。
+ */
+export function hasCapabilityAncestor(byId: ReadonlyMap<SpanId, Span>, span: Span): boolean {
+  let parentId = span.parentSpanId;
+  const seen = new Set<SpanId>();
+  while (parentId !== null && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) return false;
+    if (parent.kind === 'capability') return true;
+    parentId = parent.parentSpanId;
+  }
+  return false;
 }
 
 /** 跨 run 段累加账单；任一段有成本读数才保留 costEstimate，口径与 TraceRecorder.usage 一致。 */

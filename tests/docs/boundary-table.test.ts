@@ -171,6 +171,13 @@ const REGISTRY: ReadonlyArray<Entry> = [
     },
   },
   {
+    key: '确定性 taskId 不是授权',
+    choice:
+      '设计选择（不是缺口）：确定性 id 只是让同键各进程争同一主键的**标识**，' +
+      '不含签名/加密、也不参与 authorizeTask 判定 —— 一旦让「id 猜得到」等于「有权读改」，' +
+      '就等于把鉴权换成可枚举的数据库主键。任务控制面仍强制 authenticate / authorizeTask',
+  },
+  {
     key: '增量出口与 sink 是两条缝',
     gap: '「onTraceEvent 不保证送达」这半句没有用例钉住（sink 那半有）',
     candidate: 'tests/engine/trace-events.test.ts',

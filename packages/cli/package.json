@@ -1,6 +1,6 @@
 {
   "name": "@migor/cli",
-  "version": "0.10.11",
+  "version": "0.10.12",
   "description": "CLI for the Agentia framework: scaffold a project, generate a capability, and open a local trace inspector for runs.",
   "type": "module",
   "bin": {
@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc --noEmit -p tsconfig.templates.json && node scripts/copy-assets.mjs",
     "test": "node --test \"test/*.test.mjs\"",
-    "prepublishOnly": "node ../../scripts/check-release.mjs && npm run build"
+    "prepublishOnly": "node ../../scripts/check-release.mjs --package @migor/cli && npm run build"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

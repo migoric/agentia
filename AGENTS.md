@@ -325,6 +325,12 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   官网 playground 与 CLI inspector 共用同一份，避免两处渲染漂移
 │   │                        #   test/ 用 node:test，**已并入根 `npm test`** —— 这份共用的渲染器
 │   │                        #   此前没有任何门禁在跑，等于「两边都靠它、却谁都不守它」
+│   ├── pg/                  # npm 包 @migor/agentia-pg：PG 宿主适配（PgTaskStore / PgSessionStore
+│   │                        #   / ensureSchema / schemaDdl）。客户端 duck-typed（不 import pg 驱动），
+│   │                        #   @migor/agentia 为 peer，零第三方运行时依赖。test/ 的 PGlite 已并入根
+│   │                        #   npm test；test-live/ 显式跑真实 PG 多连接 / 多进程（pg 仅测试用）。
+│   │                        #   跨进程仍 at-least-once，运行与未验证项见包内 README。构建：
+│   │                        #   npm run build:pg（依赖根包 dist 已构建）。
 │   └── website/             # 官网（Astro 静态站，构建产物 dist/ 部署 Cloudflare Pages）
 │                            #   src/layouts/Base.astro 全站外壳、src/components/ 共享组件
 │                            #   src/fragments/*.html 页面正文（?raw 注入）、src/scripts/ 客户端脚本
@@ -352,9 +358,14 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
   而那些是纯内部实现细节。
 - **零运行时依赖（2026-09-17 达成；`tests/architecture/no-runtime-deps.test.ts` 强制）**：
   三个包的 `src/**`（`@migor/agentia` / `@migor/cli` / `@migor/trace-view`）运行时只能 import
-  **相对路径**与 **`node:` 内置模块**，且这三个 `package.json` 不得有非空 `dependencies`
+  **相对路径**与 **`node:` 内置模块**，且**登记的四个** `package.json` 不得有非空 `dependencies`
   （依赖只能进 devDependencies）。`packages/website` 是私有 Astro 站点、不进 npm 产物，在该测试里
   以 EXCLUDED 显式豁免。**开例外要同时改该测试的 ALLOWLIST 与本节** —— 两边不一致会失败。
+  ⚠️ `packages/pg` 只受**元数据层**约束、其 `src` 不在源码层清单里：它是框架的宿主适配扩展
+  （`@migor/agentia-pg`），必须 `import '@migor/agentia'` 取 `TaskStore` 类型与
+  `serializeTaskRecord` / `parseTaskRecord`（重写这两个会让归一逻辑分叉）。`@migor/agentia` 是
+  **peer**、不进任何人的依赖树，第三方运行时依赖仍为零（PG 客户端 duck-typed，PGlite 在
+  devDependencies）。理由与判据写在测试的 `IN_SCOPE` 注释里，别只改这里。
   源码层干净即产物层干净，依据是**全仓无打包器**（三个包分别是 `tsc` 1:1 转译 / 纯文件拷贝）；
   哪天引入打包器，必须补一条扫 `dist/**` 的守卫。
   `@anthropic-ai/sdk` 已退入 devDependencies —— 公共消息类型

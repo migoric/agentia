@@ -53,7 +53,11 @@ steps=(
   #   ① 存量清零（PR #84）；② info 级规则在 biome.jsonc 里升到 warn（--error-on-warnings
   #   **不管 info**）；③ 三处样式表用带理由的 biome-ignore-all 关掉误报型的 noDescendingSpecificity。
   "npm run typecheck && npx biome ci . --error-on-warnings"
-  "npm run build"
+  # build 之后紧跟 build:pg（折进本步，不新开步骤 —— 理由见顶部注释：步骤数写在 CI
+  # 必需检查名里）。顺序有实质依赖：`@migor/agentia-pg` 从根包的 `dist/index.js`
+  # 解析 `@migor/agentia`（peer + `file:../..`），根 dist 陈旧时它编译到的是一份
+  # 没有 `serializeTaskRecord` 的旧类型面。
+  "npm run build && npm run build:pg"
   "npm run typecheck:types"
   "npm run typecheck:tests"
   "npm run build:cli"

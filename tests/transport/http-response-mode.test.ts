@@ -4,11 +4,14 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
+  AsyncRunner,
+  InMemorySessionStore,
   createHttpHandler,
   type AgentRunResult,
   type AppCallable,
   type HttpHandler,
   type HttpHandlerOptions,
+  type TaskRecord,
 } from '../../src/index.js';
 
 function fakeResult(): AgentRunResult {
@@ -48,12 +51,15 @@ const app: AppCallable = {
   },
 };
 
-async function start(opts: HttpHandlerOptions): Promise<{
+async function start(
+  opts: HttpHandlerOptions,
+  appOverride: AppCallable = app,
+): Promise<{
   server: Server;
   handler: HttpHandler;
   base: string;
 }> {
-  const handler = createHttpHandler(app, opts);
+  const handler = createHttpHandler(appOverride, opts);
   const server = createServer(handler);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
@@ -109,6 +115,58 @@ describe('HTTP responseMode=public', () => {
       assert.equal(stream.status, 404);
     } finally {
       await close(server);
+    }
+  });
+
+  it('HITL 挂起 × sessionStore：公共响应不带 sessionInput 原始输入，库内快照仍保留', async () => {
+    const suspendingApp: AppCallable = {
+      name: 'public-suspension',
+      async run() {
+        return {
+          run: { runId: 'run-suspended', status: 'suspended' },
+          result: {
+            ...fakeResult(),
+            stopReason: 'suspended',
+            finalText: '',
+            suspendedMessages: [
+              { role: 'user', content: 'customer-secret' },
+              {
+                role: 'assistant',
+                content: [{ type: 'tool_use', id: 'tu1', name: 'danger', input: {} }],
+              },
+            ],
+            pendingApprovals: ['tu1'],
+            suspendedReason: 'approval',
+          },
+        };
+      },
+    };
+    const runner = new AsyncRunner(suspendingApp, {
+      sessionStore: new InMemorySessionStore(),
+    });
+    const { server, base } = await start({ responseMode: 'public', runner }, suspendingApp);
+    try {
+      const task = runner.submit('customer-secret', { options: { sessionId: 's1' } });
+      let stored: TaskRecord | undefined;
+      const deadline = Date.now() + 2_000;
+      while (stored?.status !== 'suspended') {
+        assert.ok(Date.now() < deadline, '任务应进入挂起态');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stored = await runner.store.get(task.taskId);
+      }
+      assert.deepEqual(stored.sessionInput, [{ role: 'user', content: 'customer-secret' }]);
+
+      const response = await fetch(`${base}/tasks/${task.taskId}`);
+      const text = await response.text();
+      assert.equal(response.status, 200);
+      assert.equal(text.includes('customer-secret'), false, '任何公共字段都不得带出原始输入');
+      assert.equal('sessionInput' in (JSON.parse(text) as Record<string, unknown>), false);
+      assert.deepEqual((await runner.store.get(task.taskId))?.sessionInput, [
+        { role: 'user', content: 'customer-secret' },
+      ]);
+    } finally {
+      await close(server);
+      await runner.drain({ timeoutMs: 100 });
     }
   });
 

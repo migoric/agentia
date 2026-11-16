@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent } from '../../src/engine/loop.js';
 import type { AgentTool } from '../../src/core/tool.js';
+import type { MessageParam, ToolResultBlockParam } from '../../src/core/message.js';
 import { endTurnMsg, mockClient, toolUseMsg } from '../helpers.js';
 
 function dangerTool(spy: { calls: number }): AgentTool {
@@ -35,6 +36,36 @@ describe('审批决定的作用域（2026-11-07 深评）', () => {
     assert.equal(spy.calls, 1, '第一次批准执行一次；第二次同名 id 不得复用旧决定');
     assert.equal(result.stopReason, 'suspended');
     assert.deepEqual(result.pendingApprovals, ['call_1']);
+  });
+
+  it('同一 assistant 回合内两个同 ID 块：第二个不得复用第一个的批准', async () => {
+    const spy = { calls: 0 };
+    const duplicated = toolUseMsg('danger', {}, 'call_1');
+    duplicated.content.push({ type: 'tool_use', id: 'call_1', name: 'danger', input: {} });
+    const { client, seen } = mockClient([duplicated, endTurnMsg('done')]);
+    const result = await runAgent({
+      messages: [{ role: 'user', content: 'go' }],
+      client,
+      tools: [dangerTool(spy)],
+      approvals: { call_1: { approved: true, requestedAt: 111 } },
+    });
+    assert.equal(spy.calls, 1, '同一批准只能执行一次，第二个同 ID 块必须 fail closed');
+    assert.equal(result.stopReason, 'end_turn');
+    const request = seen[1] as { messages: MessageParam[] };
+    const toolResults = request.messages.find(
+      (message) =>
+        message.role === 'user' &&
+        Array.isArray(message.content) &&
+        message.content.some((block) => block.type === 'tool_result'),
+    );
+    assert.ok(toolResults && Array.isArray(toolResults.content));
+    const blocks = toolResults.content.filter(
+      (block): block is ToolResultBlockParam => block.type === 'tool_result',
+    );
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0]!.is_error, false);
+    assert.equal(blocks[1]!.is_error, true);
+    assert.match(String(blocks[1]!.content), /审批.*(缺失|消费)/);
   });
 
   it('approvalEpoch 不匹配：旧挂起的决定不得批准新一次调用', async () => {

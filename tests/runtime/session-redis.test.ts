@@ -145,6 +145,20 @@ describe('RedisSessionStore：多副本共享同一段对话历史', () => {
     assert.deepEqual(expiries[0], { key: 'agentia:session:s1', seconds: 30 });
   });
 
+  it('node-redis v4 的 camelCase 命令也能用（rPush/lRange/lTrim）', async () => {
+    const { client, expiries } = fakeRedis();
+    const camel = {
+      rPush: client.rpush!,
+      lRange: client.lrange!,
+      lTrim: client.ltrim!,
+      expire: client.expire!,
+    };
+    const store = new RedisSessionStore(camel, { maxMessages: 1, ttlSeconds: 10 });
+    await store.append('s1', [user('1'), user('2')]);
+    assert.deepEqual(await store.load('s1'), [user('2')]);
+    assert.equal(expiries.at(-1)?.key, 'agentia:session:s1');
+  });
+
   it('损坏元素**响亮抛错**（带上键名与序号），不静默跳过', async () => {
     const { client, lists } = fakeRedis();
     const store = new RedisSessionStore(client);
@@ -161,6 +175,60 @@ describe('RedisSessionStore：多副本共享同一段对话历史', () => {
         return true;
       },
     );
+  });
+
+  it('合法 JSON 但不是 MessageParam（标量）也响亮抛错', async () => {
+    const { client, lists } = fakeRedis();
+    const store = new RedisSessionStore(client);
+    await store.append('s1', [user('1')]);
+    lists.get('agentia:session:s1')![0] = '"not-a-message"';
+    await assert.rejects(() => store.load('s1'), /不是消息对象/);
+  });
+
+  it('ltrim 失败时仍刷新 TTL（这一批已经落库，不能让旧 TTL 提前生效）', async () => {
+    const { client, expiries } = fakeRedis();
+    client.ltrim = async () => {
+      throw new Error('redis ltrim down');
+    };
+    const store = new RedisSessionStore(client, { maxMessages: 1, ttlSeconds: 10 });
+    await assert.rejects(() => store.append('s1', [user('x')]), /ltrim down/);
+    assert.equal(expiries.length, 1, 'TTL 必须由 finally 刷新');
+  });
+
+  // ── 写入点守卫 ────────────────────────────────────────────────────────────
+  // 这两条钉的是「类型合法 ≠ load 读得出」：`MessageParam['role']` 含 'system'
+  //（与 SDK 类型对齐），而 load 只接受 user/assistant。只在读时校验的话，
+  // 一条 system 消息就能把整段历史变成永久读不出 —— 而写入那一刻毫无信号。
+
+  it('append 拒绝 role: system —— 写进去会让整段历史永久读不出', async () => {
+    const { client, lists, pushes } = fakeRedis();
+    const store = new RedisSessionStore(client);
+    await store.append('s1', [user('旧的一轮')]);
+
+    await assert.rejects(
+      () => store.append('s1', [{ role: 'system', content: '你是助手' }]),
+      (err: Error) => {
+        assert.ok(err instanceof TypeError);
+        assert.match(err.message, /role=system/, '要点名是哪个取值');
+        assert.match(err.message, /user\/assistant/, '要给出可接受的口径');
+        return true;
+      },
+    );
+    assert.equal(pushes.length, 1, '被拒的那次一条都不许写');
+    assert.equal(lists.get('agentia:session:s1')!.length, 1);
+    assert.equal((await store.load('s1')).length, 1, '既有历史仍然读得出');
+  });
+
+  it('append 整批校验后才写：第 2 条非法不留半批', async () => {
+    const { client, lists, pushes, expiries } = fakeRedis();
+    const store = new RedisSessionStore(client, { ttlSeconds: 10 });
+    await assert.rejects(
+      () => store.append('s1', [user('1'), { role: 'system', content: 'x' }, user('3')]),
+      /第 1 项/,
+    );
+    assert.equal(pushes.length, 0, '分片之前全量校验：一条都不许落库');
+    assert.equal(lists.get('agentia:session:s1'), undefined, '连键都不该建');
+    assert.equal(expiries.length, 0, '什么都没写，不该刷 TTL');
   });
 });
 
@@ -203,7 +271,10 @@ describe('RedisSessionStore 的构造期校验（坏值不许静默失效）', (
 
   it('客户端缺 rpush / lrange ⇒ 构造期抛', () => {
     const broken = { lrange: async () => [] } as unknown as RedisSessionClient;
-    assert.throws(() => new RedisSessionStore(broken), /需要 client 提供 rpush \/ lrange/);
+    assert.throws(
+      () => new RedisSessionStore(broken),
+      /需要 client 提供 rpush\/rPush 与 lrange\/lRange/,
+    );
   });
 });
 

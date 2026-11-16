@@ -839,6 +839,125 @@ describe('StreamableHTTP：超时裁判权与响应配对（第八轮复审补�
       '建立 1 次 + 两次并发 404 + 两次带**同一个新会话**的重试',
     );
   });
+
+  it('第二个 404 错峰到重握手开始后才返回：仍共享自愈并重试，不误判成无会话', async () => {
+    let dead = false;
+    let minted = 0;
+    let releaseSecond404!: () => void;
+    let releaseReinitialize!: () => void;
+    let markReinitializeStarted!: () => void;
+    const second404Gate = new Promise<void>((resolve) => {
+      releaseSecond404 = resolve;
+    });
+    const reinitializeGate = new Promise<void>((resolve) => {
+      releaseReinitialize = resolve;
+    });
+    const reinitializeStarted = new Promise<void>((resolve) => {
+      markReinitializeStarted = resolve;
+    });
+    let markSecondExpired!: () => void;
+    const secondExpired = new Promise<void>((resolve) => {
+      markSecondExpired = resolve;
+    });
+    let expired = 0;
+    const calls: Array<{ label: unknown; session: string | null }> = [];
+
+    const fetchImpl = (async (_url: unknown, init: unknown) => {
+      const i = init as { method: string; headers: Record<string, string>; body?: string };
+      const msg =
+        i.body === undefined
+          ? null
+          : (JSON.parse(i.body) as {
+              id?: number;
+              method?: string;
+              params?: { arguments?: { label?: unknown } };
+            });
+      const session = i.headers['mcp-session-id'] ?? null;
+      const label = msg?.params?.arguments?.label;
+      if (i.method === 'DELETE') return new Response(null, { status: 204 });
+      if (msg?.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      if (msg?.method === 'initialize') {
+        minted++;
+        const current = `sess-${minted}`;
+        if (minted > 1) {
+          // 此时 reinitialize() 已同步清空全局 sessionId；第二个旧响应稍后才放行。
+          markReinitializeStarted();
+          await reinitializeGate;
+        }
+        const result = {
+          protocolVersion: '2024-11-05',
+          serverInfo: { name: 'fake', version: '1' },
+        };
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': current },
+        });
+      }
+      if (msg?.method === 'tools/call') {
+        calls.push({ label, session });
+        if (dead && session === 'sess-1') {
+          if (label === 'second') await second404Gate;
+          return new Response('session not found', { status: 404 });
+        }
+      }
+      const result = { content: [{ type: 'text', text: `ok:${String(label)}` }] };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: msg?.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+
+    const connector = createStreamableHttpMcpConnector('https://mcp.example/mcp', {
+      fetchImpl,
+      onSessionExpired: () => {
+        expired++;
+        if (expired === 2) markSecondExpired();
+      },
+    });
+    open.push(connector);
+    await connector.callTool('get-time', { label: 'establish' });
+    dead = true;
+    const first = connector.callTool('get-time', { label: 'first' });
+    const second = connector.callTool('get-time', { label: 'second' });
+    await reinitializeStarted;
+
+    releaseSecond404();
+    try {
+      // 正确行为：第二个请求先登记过期，再等待同一个 reinit；若退化成直接 404，这里立刻红。
+      await Promise.race([
+        secondExpired,
+        second.then(
+          () => {
+            throw new Error('第二个请求不应在共享重握手完成前结束');
+          },
+          (error: unknown) => {
+            throw error;
+          },
+        ),
+      ]);
+    } finally {
+      releaseReinitialize();
+    }
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(
+      (firstResult as { content: Array<{ text: string }> }).content[0]?.text,
+      'ok:first',
+    );
+    assert.equal(
+      (secondResult as { content: Array<{ text: string }> }).content[0]?.text,
+      'ok:second',
+    );
+    assert.equal(minted, 2, '初始握手一次，两个错峰请求仍只共享一次重握手');
+    assert.deepEqual(calls, [
+      { label: 'establish', session: 'sess-1' },
+      { label: 'first', session: 'sess-1' },
+      { label: 'second', session: 'sess-1' },
+      { label: 'first', session: 'sess-2' },
+      { label: 'second', session: 'sess-2' },
+    ]);
+  });
 });
 
 describe('StreamableHTTP：abandoned 透传到传输层', () => {

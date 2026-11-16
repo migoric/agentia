@@ -230,8 +230,11 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       // 含未决 tool_use 的 assistant 整段写回，留下孤立 tool_use / 连续 assistant，
       // 下一轮该会话直接 400。AsyncRunner 靠「恢复段不注入 session」规避；这条公开路径
       // 没有对应闸，这里同样不注入并**出声**（不静默丢会话）。
-      const manualResume =
-        options.approvals !== undefined || tailToolUses(options.messages).length > 0;
+      // 空审批表是普通新 run 也合法的缺省形状，不代表恢复；真正续跑时末尾的
+      // 未决 tool_use 仍会独立命中，不能为了修这个误判放松历史翻倍防护。
+      const hasApprovalDecisions =
+        options.approvals !== undefined && Object.keys(options.approvals).length > 0;
+      const manualResume = hasApprovalDecisions || tailToolUses(options.messages).length > 0;
       const sessionSkipped = session !== undefined && manualResume;
       if (sessionSkipped) {
         console.warn(

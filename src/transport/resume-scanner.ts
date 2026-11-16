@@ -21,7 +21,7 @@
  * ⚠️ `ResumePendingOptions` 随本簇迁到这里；`async.ts` 仍 **re-export** 它 ⇒
  * `src/index.ts` 的公共导出面不变。
  */
-import { isThenable } from '../store/store.js';
+import { cloneTaskRecord, isThenable } from '../store/store.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { timerDue } from './wake-policy.js';
 import { resumeSkipReason } from './resume-policy.js';
@@ -229,14 +229,18 @@ export class ResumeScanner {
     const claims: Promise<boolean>[] = [];
     let claimed = 0;
     for (const rec of pending) {
+      const expected = cloneTaskRecord(rec);
       rec.status = 'queued'; // 重新入队，由 #execute 统一推进
       rec.ownerId = this.#deps.ownerId; // 认领：此后本进程的记录不再被（自己）重派
       // 同步抛错防护（2026-10-13 ref-reject-static-methods，与 #wakeDueInner 同款）：FileTaskStore 磁盘失败在这里
       // 同步抛出 —— 不接住就逃出 resumePending（宿主启动路径直接崩）。落不了库 = 没推进：
       // 不派发、不计入返回值；warn 出来（静默留尸的话任务搁死到重启都没人知道）。
-      let saved: MaybePromise<void>;
+      let saved: MaybePromise<boolean> | MaybePromise<void>;
       try {
-        saved = this.#deps.store.save(rec);
+        // 支持 CAS 的 store 只让一个拿着同一旧快照的进程认领成功；false 是正常竞争失败。
+        saved = this.#deps.store.compareAndSave
+          ? this.#deps.store.compareAndSave(rec, expected)
+          : this.#deps.store.save(rec);
       } catch (err) {
         console.warn(
           `[agentia] 认领落库失败（task ${rec.taskId}），本次不重投:`,
@@ -248,7 +252,8 @@ export class ResumeScanner {
         // 落库失败则**不派发**：认领没落地，派发等于把上面那个重复执行的窗口重新打开
         claims.push(
           Promise.resolve(saved).then(
-            () => {
+            (ok) => {
+              if (ok === false) return false;
               this.#deps.dispatch(rec);
               return true;
             },
@@ -262,6 +267,7 @@ export class ResumeScanner {
           ),
         );
       } else {
+        if (saved === false) continue;
         // 派发走唯一入口（闸在 #dispatch 里）—— 外部深评 P2-1：认领循环以前绕过了那道闸。
         this.#deps.dispatch(rec);
         claimed++;

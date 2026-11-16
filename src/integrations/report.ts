@@ -1,4 +1,4 @@
-import { capabilityKindOf } from '../core/trace.js';
+import { capabilityKindOf, hasCapabilityAncestor } from '../core/trace.js';
 import type { Span, Trace, Usage } from '../core/trace.js';
 import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
@@ -143,30 +143,29 @@ export function buildRunReport(trace: Trace): RunReport {
   const unpriced = new Set<string>();
   const usageMissing = new Set<string>();
 
-  // 嵌套判定（沿 parentSpanId 上爬；seen 防手写 trace 的环）——与 trace-view 的
-  // summarizeTrace 同款：usage 只计顶层 capability，嵌套行的 token 是它外层祖先行那笔。
+  // usage 只计顶层 capability，嵌套行的 token 是它外层祖先行那笔；判据与指标共用 core。
   const byId = new Map<string, Span>();
   for (const s of trace.spans) byId.set(s.spanId, s);
-  const hasCapabilityAncestor = (span: Span): boolean => {
-    let p = span.parentSpanId;
-    const seen = new Set<string>();
-    while (p != null && !seen.has(p)) {
-      seen.add(p);
-      const ps = byId.get(p);
-      if (!ps) return false;
-      if (ps.kind === 'capability') return true;
-      p = ps.parentSpanId;
-    }
-    return false;
-  };
 
   for (const span of trace.spans) {
+    // 常规工具事件在 llm.turn 上；HITL / timer 恢复段则记在父 span。按事件归属
+    // 扫描两种形状，避免批准后才执行的工具从报告里归零。
+    for (const e of span.events) {
+      if (e.name !== TOOL_OUTPUT_EVENT) continue;
+      const body = e.body as Record<string, unknown> | null;
+      if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
+      const a = acc(`tool:${body.tool}`);
+      a.calls++;
+      if (body.ok === false) a.errors++;
+      const d = body.durationMs;
+      a.durations.push(typeof d === 'number' && Number.isFinite(d) ? Math.max(0, d) : 0);
+    }
     if (span.kind === 'capability') {
       const a = acc(`${capabilityKindOf(span)}:${span.name}`);
       a.calls++;
       if (span.status === 'error') a.errors++;
       if (span.endedAt !== undefined) a.durations.push(Math.max(0, span.endedAt - span.startedAt));
-      if (span.usage && !hasCapabilityAncestor(span)) {
+      if (span.usage && !hasCapabilityAncestor(byId, span)) {
         a.tokens = a.tokens ? { ...a.tokens } : emptyUsage();
         addUsage(a.tokens, span.usage);
         if (span.usage.costEstimate != null) a.costUsd = (a.costUsd ?? 0) + span.usage.costEstimate;
@@ -208,18 +207,6 @@ export function buildRunReport(trace: Trace): RunReport {
       }
     }
     if (span.endedAt !== undefined) m.durations.push(Math.max(0, span.endedAt - span.startedAt));
-
-    // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）
-    for (const e of span.events) {
-      if (e.name !== TOOL_OUTPUT_EVENT) continue;
-      const body = e.body as Record<string, unknown> | null;
-      if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
-      const a = acc(`tool:${body.tool}`);
-      a.calls++;
-      if (body.ok === false) a.errors++;
-      const d = body.durationMs;
-      a.durations.push(typeof d === 'number' && Number.isFinite(d) ? Math.max(0, d) : 0);
-    }
   }
 
   const capabilityReports: CapabilityReport[] = [...capabilities.entries()].map(

@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.10.11';
+export const AGENTIA_VERSION = '0.10.12';
 
 // core：数据模型
 export type {
@@ -154,7 +154,7 @@ export type { RunInput, RunSpec, RunInvocationOptions } from './engine/spec.js';
 export { InMemoryTaskStore } from './store/store.js';
 export type { TaskRecord, TaskStore } from './store/store.js';
 export { FileTaskStore } from './store/fsStore.js';
-export { parseTaskRecord } from './store/record.js';
+export { parseTaskRecord, serializeTaskRecord } from './store/record.js';
 export { AsyncRunner } from './transport/async.js';
 export type {
   AppCallable,

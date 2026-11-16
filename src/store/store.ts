@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { AgentRunResult } from '../engine/types.js';
 import type { SpanError, Usage } from '../core/trace.js';
 import type { MessageParam } from '../core/message.js';
@@ -28,6 +28,11 @@ export function isThenable<T>(x: MaybePromise<T>): x is Promise<T> {
 /** 生成任务 id（与具体 store 实现无关；AsyncRunner 等统一从这里取） */
 export function nextTaskId(): string {
   return `task_${randomUUID()}`;
+}
+
+/** 原子提交能力使用的确定性任务 id：同键各进程必须争同一主键，而不是各写一条随机行。 */
+export function submissionTaskId(idempotencyKey: string): string {
+  return `task_${createHash('sha256').update(idempotencyKey).digest('hex')}`;
 }
 
 export interface TaskRecord {
@@ -108,6 +113,19 @@ export interface TaskStore {
    * 「两次 save 之间的中间态」对其他读者可见，且某次 save 失败时污染已留在库里。
    */
   save(rec: TaskRecord): MaybePromise<void>;
+  /**
+   * **可选**：以 `rec.taskId` 原子认领一次幂等提交。调用方必须用 `submissionTaskId(key)`
+   * 派生 taskId；实现用主键仲裁，不能用「先查、再 save」模拟。
+   *
+   * `true` = 本调用负责执行；`false` = 同键已有活跃或成功记录，本调用只能跟随其结果。
+   * 旧记录为 failed / cancelled 时允许重置为这次 queued；succeeded 不得重跑。
+   */
+  claimSubmission?(rec: TaskRecord): MaybePromise<boolean>;
+  /**
+   * **可选**：仅当库中记录仍逐字等于 `expected` 时保存 `rec`，否则不改库并返回 `false`。
+   * `expected` 必须是变异前的完整副本；比较整个快照而不只比较 status / ownerId，避免 ABA。
+   */
+  compareAndSave?(rec: TaskRecord, expected: TaskRecord): MaybePromise<boolean>;
   /**
    * 取任务记录。返回的必须是**反序列化副本 / 快照，不是内部活引用** ——
    * engine/transport 的纪律是「先变异 rec、再 `await save` 落库」（如 resume-scanner /

@@ -1,5 +1,5 @@
-import { capabilityKindOf } from '../core/trace.js';
-import type { SpanId, Trace, TraceId } from '../core/trace.js';
+import { capabilityKindOf, hasCapabilityAncestor } from '../core/trace.js';
+import type { Span, SpanId, Trace, TraceId } from '../core/trace.js';
 import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
@@ -514,7 +514,23 @@ export class MetricsState {
       this.runLabels.set(combo, acc);
     }
 
+    const spansById = new Map<SpanId, Span>();
+    for (const span of trace.spans) spansById.set(span.spanId, span);
     for (const span of trace.spans) {
+      // 普通工具事件通常在 llm.turn 上；HITL / timer 恢复段没有新回合，事件记到
+      // run 根或 capability 父 span。统计因此按事件归属扫描，不能绑死在 llm.turn 上。
+      for (const e of span.events) {
+        if (e.name !== TOOL_OUTPUT_EVENT) continue;
+        const body = e.body as Record<string, unknown> | null;
+        if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
+        const label = this.labelFor('tool', body.tool);
+        if (label === null) continue;
+        const tacc = this.capabilities.get(label) ?? this.newCapability();
+        tacc.calls++;
+        if (body.ok === false) tacc.errors++;
+        tacc.stat.add(Math.max(0, num(body.durationMs)));
+        this.capabilities.set(label, tacc);
+      }
       if (span.kind === 'capability') {
         const label = this.labelFor(capabilityKindOf(span), span.name);
         // 时长与错误无论哪种 labelMode 都要累计；labelMode:'none' 时整块跳过
@@ -523,8 +539,9 @@ export class MetricsState {
           acc.calls++;
           if (span.status === 'error') acc.errors++;
           if (span.endedAt !== undefined) acc.stat.add(Math.max(0, span.endedAt - span.startedAt));
-          // capability.usage = 子孙 llm.turn 聚合（tracer 写入）；工具没有这个语义
-          if (span.usage) {
+          // capability.usage = 子孙 llm.turn 聚合（tracer 写入）；嵌套时只给外层计账，
+          // 内层仍保留自己的 calls/errors/耗时。判据与 buildRunReport 共用 core/trace。
+          if (span.usage && !hasCapabilityAncestor(spansById, span)) {
             const sum =
               span.usage.inputTokens +
               span.usage.outputTokens +
@@ -560,21 +577,10 @@ export class MetricsState {
         }
         if (span.endedAt !== undefined) acc.stat.add(Math.max(0, span.endedAt - span.startedAt));
         this.models.set(model, acc);
-        // 普通工具的耗时/成败在 turn 的 tool.output 事件上（E1）—— 能力指标的另一路数据源
         for (const e of span.events) {
           // 上游没报计量的回合（S2）：与 unpriced **分开数** —— 那个是「模型没定价」，
           // 这个是「上游没给读数」，排障方向不同
           if (e.name === USAGE_MISSING_EVENT) acc.usageMissingTurns++;
-          if (e.name !== TOOL_OUTPUT_EVENT) continue;
-          const body = e.body as Record<string, unknown> | null;
-          if (!body || typeof body !== 'object' || typeof body.tool !== 'string') continue;
-          const label = this.labelFor('tool', body.tool);
-          if (label === null) continue;
-          const tacc = this.capabilities.get(label) ?? this.newCapability();
-          tacc.calls++;
-          if (body.ok === false) tacc.errors++;
-          tacc.stat.add(Math.max(0, num(body.durationMs)));
-          this.capabilities.set(label, tacc);
         }
       }
     }

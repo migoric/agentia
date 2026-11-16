@@ -358,6 +358,40 @@ describe('E2 能力级指标', () => {
     assert.match(txt, /^agentia_capability_duration_ms_count\{capability="tool:fetch"\} 1$/m);
   });
 
+  it('嵌套 capability 的 usage 只计顶层，内层仍保留 calls/errors/耗时', () => {
+    const trace = richTrace();
+    const outer = trace.spans.find((s) => s.spanId === 'capability-1')!;
+    trace.spans.push({
+      ...outer,
+      spanId: 'capability-inner',
+      parentSpanId: outer.spanId,
+      name: 'writer',
+      startedAt: 1220,
+      endedAt: 1260,
+      usage: {
+        inputTokens: 4,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costEstimate: 0.001,
+      },
+      attributes: { skill: 'writer' },
+    });
+    const m = metricsSink();
+    m.export(trace);
+    const { capabilities } = m.snapshot();
+    assert.equal(capabilities['subagent:researcher']!.tokens, 150);
+    assert.equal(capabilities['subagent:researcher']!.costUsd, 0.012);
+    assert.equal(capabilities['skill:writer']!.calls, 1);
+    assert.equal(capabilities['skill:writer']!.latencyP50, 40);
+    assert.equal(
+      capabilities['skill:writer']!.tokens,
+      null,
+      '内层 usage 已包含在外层聚合里，再计一次会把同一批 token 重复入账',
+    );
+    assert.equal(capabilities['skill:writer']!.costUsd, null);
+  });
+
   it('snapshot().capabilities 给排序无关的键值视图；工具 tokens/costUsd 为 null', () => {
     const m = metricsSink();
     m.export(richTrace());

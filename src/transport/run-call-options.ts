@@ -127,15 +127,17 @@ export function buildRunCallOptions(input: RunCallOptionsInput): RunCallOptions 
 }
 
 /**
- * 异步 store 的**幂等去重**在派发处的补齐（`submit` 的同步门面无法 await，所以这里再来一次）：
- * 同键已有 `succeeded` 记录 ⇒ **采纳它的结果**，不重复执行。
+ * 同键已有 `succeeded` 记录 ⇒ **采纳它的结果**，不重复执行。初始异步提交在
+ * `AsyncRunner.submit` 的初始化链里先查后写；恢复派发则在 `#executeInner` 里调用本件。
  *
  * 适用范围（判据三条缺一不可）：存在既有记录、**不是自己**（同步 store 下查到的一般就是
  * `rec` 自身，taskId 相同 ⇒ 放行）、且状态是 `succeeded`。`queued` / `running` 一律不采纳
- * —— 重复执行本就是 at-least-once 允许的行为。
+ * —— 未实现 `claimSubmission` 的 store 在跨进程首提时，以及不走该能力的恢复派发中，
+ * 重复执行仍是 at-least-once 允许的行为。
  *
- * ⚠️ **load-bearing**：该去重依赖 `store.save` **先写记录、后写 idem 索引**的顺序
- * （见 `redisStore` 头注释）—— 索引指向自身时靠上面的 taskId 相等判断放行。
+ * ⚠️ **load-bearing（仅恢复派发）**：那条路径已经先落 queued/running，Redis 的
+ * `store.save` 仍须**先写记录、后写 idem 索引**（见 `redisStore` 头注释）——索引指向
+ * 自身时靠上面的 taskId 相等判断放行。初始异步提交不再依赖这条写入顺序。
  *
  * 返回 `true` 表示已把既有结果搬到 `rec` 上（调用方负责落库；**落库失败也不该把一次已知
  * 成功的任务翻成 failed**，那是调用方那层的口径）。

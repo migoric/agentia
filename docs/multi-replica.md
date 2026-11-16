@@ -64,14 +64,12 @@
 **现象**：记录字段半新半旧；幂等索引指向的任务 id 与记录对不上；最坏情况是「审批决定丢了」。
 
 **真因**：`RedisTaskStore.save` 是**两次 SET**（先记录、await 后幂等索引），文档写明了**未走 MULTI**。
-这不是疏忽 —— `AsyncRunner` 的延迟幂等去重**依赖**这个写入顺序（改事务会破去重）。所以它不会
-「修好」，只会一直是这样。
+这条顺序现在只服务**恢复派发**的去重可见性；初始异步提交已在首次落库前查询旧成功结果，
+不再依赖它。调整顺序或引入事务时必须复核恢复路径，但「原子化必然破坏去重」不是当前实现的边界。
 
 **兜法**：让写路径**只有一个写者**。三条路：路由收敛（拓扑 C）、按 key 分片（拓扑 D）、
-或写路径走一个专门的单点服务（见 §7 第三种实现）。
-
-⚠️ 不要试图用 Redis 事务 / `WATCH` / Lua 去「补原子性」：那会绕开上面那条依赖，症状是幂等去重
-时灵时不灵，而且只在并发下复现。
+或写路径走一个专门的单点服务（见 §7 第三种实现）。即使把两条 SET 做成原子，也只消除记录与索引
+撕裂，不会给 `list() → 改 ownerId → save() → 派发` 的认领链补上 CAS，更不会变成跨进程恰好一次。
 
 ### 3.2 同一挂起任务被两个副本各恢复一次
 
@@ -172,31 +170,61 @@ const sessions = new RedisSessionStore(redis, {
 ⚠️ 反过来说：`sessionId` 必须由身份体系给出。用客户端传上来的值等于让任意租户读别人的对话
 （同 `resolveRunOptions` 那条纪律，见 `deployment.md` §3）。
 
-### 3.9 两个写者同时扫描 ⇒ 同一个孤儿被两边各认领一次
+### 3.9 两个写者同时扫描：没有快照 CAS 的 store 会重复认领孤儿
 
-**现象**：同一个 `taskId` 跑两遍，工具副作用与模型花费翻倍；两边各写一份结果，最后落库的是
-后到的那份。
+**现象（未实现 `compareAndSave` 的 store）**：同一个 `taskId` 跑两遍，工具副作用与模型花费翻倍；
+两边各写一份结果，最后落库的是后到的那份。
 
-**真因**：认领是 `list()` → 改 `ownerId` → `save()` → 派发（`src/transport/resume-scanner.ts`），
-**这三步没有原子性**，`TaskStore` 也没有 CAS/租约接口。进程内有重入闸（`#inflightResume`），
-跨进程没有对应物。于是两个写者各自 `list()` 到同一份旧快照、都判「这条是孤儿」、都认领、都派发。
+**原因与能力分档**：认领输入仍是 `list()` 的全表快照。进程内有重入闸（`#inflightResume`）；
+跨进程时，未实现 `compareAndSave` 的 store 走 `改 ownerId → save() → 派发`，两个写者可以拿着
+同一份旧快照各自认领。实现该可选能力的 store 则把**变异前完整任务快照**作为比较条件：
+只有一个写者能保存并派发，竞争失败者返回 `false`，不派发也不计入恢复数。`PgTaskStore`
+已实现这条路径；Redis 与核心内建 store 仍走原路径。
 
 为什么不能靠 `staleAfterMs` 兜：它是**新鲜度**，不是租约 —— 而且**跨主机时判不了活**
 （`ownerId` 里的 pid 只在本机能问），恰好退回这个启发式。`src/transport/resume-scanner.ts`
-的 `ResumePendingOptions` 注释逐字写着「别再指望它单独把『重复执行』挡住」。
+的 `ResumePendingOptions` 注释逐字写着「别再指望它单独把『重复执行』挡住」。CAS 也不是租约：
+误判原 owner 已死后，旧执行者仍可能继续产生副作用。
 
-**兜法**（按可靠性排序）：
+**兜法**：
 
-1. **任何时刻只有一个写者调 `resumePending()`**。这是拓扑 C/D 的前提，也是本条唯一的根治手段。
-2. **滚动升级要「交接」而不是「滚动」**：先让旧写者 `drain()` 并从 LB 摘除、**确认进程已退出**，
-   再让新写者接流量并调一次 `resumePending()`。两个写者并存的窗口里不要都调扫描。
-3. **按 `taskId` 分片**（拓扑 D）：每个分片一个写者，分片之间不共享扫描目标。
-4. 万一重叠了：以「至少一次」的代价接受它 —— 把工具副作用做成幂等（业务侧），
-   或在 `onFinished` 的 webhook 里按 `runId` 去重。
+1. 多写者扫描要关掉「同一旧快照双重认领」这个窗口，使用实现了 `compareAndSave` 的 store
+   （现成实现是 `PgTaskStore`）。其他 store 仍须任何时刻只有一个写者调 `resumePending()`，
+   或按 `taskId` 分片，让分片之间不共享扫描目标。
+2. **混合新旧版本的滚动窗口一律按 at-least-once**：旧进程不认识原子能力。要严格避免重叠，
+   先让旧写者 `drain()` 并从 LB 摘除、**确认进程已退出**，再让新写者接流量并扫描。
+3. 即使原子认领成功，也要把工具副作用做成幂等（业务侧），或在 `onFinished` 的 webhook 里
+   按 `runId` 去重：CAS 管不到「副作用已发生、终态没落库」这类崩溃窗口。
 
-⚠️ 不要试图用 Redis 事务 / `WATCH` / Lua 给 `save` 补原子性：`AsyncRunner` 的延迟幂等去重
-**依赖** `RedisTaskStore.save` 「先记录、后幂等索引」的两次 SET 顺序（见 §3.1），
-加事务会让去重时灵时不灵，且只在并发下复现。
+⚠️ Redis 的「先记录、后幂等索引」顺序只服务恢复派发的去重可见性（见 §3.1）；改动它时
+必须跑恢复去重回归。给两条 SET 加事务不等于给认领加快照 CAS，仍不能替代单写者、分片或
+部署层互斥。
+
+### 3.10 用了 Postgres 之后：首提与孤儿恢复可原子认领，其他推进路径不变
+
+`@migor/agentia-pg` 的 `PgTaskStore` 让 §3.1 那条「两次 `save` 互相覆盖」**变温和**：
+记录与幂等键在**同一行**，`save` 是一条 UPSERT 语句 ⇒ 单语句即事务，不存在「记录写了、索引没写」
+的中间态。它还实现了两条独立能力，不需要新增表或迁移 schema：
+
+- **首次同键提交：`claimSubmission`**。各进程从幂等键派生同一个确定性 `taskId`，由任务主键的
+  单条 `INSERT ... ON CONFLICT ... RETURNING` 仲裁。活跃或成功记录让认领失败者跟随原任务，
+  不再调用 `app.run`，也不重复发 `TaskSink`；失败／取消记录可原子重置后重试。升级前已经存在的
+  随机 `taskId` 记录仍可跟随，终态会映射回本次确定性 id。
+- **孤儿恢复：`compareAndSave`**。比较完整 JSON 快照而不是只比 `status` / `ownerId`，避免 ABA；
+  同一旧快照的两个恢复者只有一个能认领并派发。PG advisory lock 因此只是可选的扫描互斥手段，
+  不再是关闭这个窗口的前提。
+
+**射程必须说清**：审批、事件投递、到期唤醒、取消并没有因此获得跨进程 CAS，仍按 §3.2～§3.4
+粘到 owner；普通 `save` 也仍是后写赢。确定性 `taskId` 只是幂等标识，**不是鉴权边界或租户隔离**，
+HTTP 控制面仍须配置 `authorizeTask`，不能靠「对方猜不到 id」授权。
+
+整体语义仍是 **at-least-once**：外部副作用后崩溃、误判 owner 已死、终态落库失败都可能让副作用
+重复发生；混合新旧版本时也保留旧窗口。真实双进程测试覆盖首提与孤儿恢复的单认领，以及可选
+advisory lock 的扫描互斥；它不是多机故障切换或分布式 exactly-once 证据。
+
+> 同一个判据也适用于会话：`PgSessionStore.append` 是一条语句（整批原子），但 `SessionStore`
+> 的 `append` 契约本来就**不管角色交替**——同一 `sessionId` 的并发 run 仍需调用侧串行化，
+> 与 Redis 版同一条边界。
 
 ## 4. 拓扑 C：单写者 + 只读副本（推荐起点）
 
@@ -281,6 +309,15 @@ const sessions = new RedisSessionStore(redis, {
 （`resumePending` 会按 `own-process` 跳过它们 —— 新进程的 ownerId 不同，所以能捡）。
 ⇒ **别指望「同一个进程里先 drain 再恢复服务」**。
 
+**跟随者也在 drain 时放手**：同键并发提交里输掉认领（`claimSubmission` 返回 `false`）的那一趟
+不执行任务，只跟着别人的记录等终态。它不是「本进程在执行的任务」——drain 一开始它就退出，
+不落库、不发 `TaskSink`。没有这条出口时，一个幽灵跟随者就能让 `drain()` 永不返回（SIGTERM 之后
+被编排层硬杀），同时把 `inFlight` 读数与 `maxConcurrentRuns` 的 503 闸一起顶住。
+另一条同样的出口是**主人进程明确已死**（同主机、`process.kill(pid, 0)` 给出 `ESRCH`）：
+跟随者据此收手，孤儿交给上面第 3 步的 `resumePending` 跑完。⚠️ 跨主机判不了活（返回
+`undefined`），那种情况**没有**这条出口 —— 所以多副本部署仍然必须真的接 `resumePending`，
+它不是可选项。
+
 ## 7. 跨副本粘性路由的三种实现
 
 三处请求**必须**落到 owner：`approve`（§3.2）、`signal`（§3.3）、`cancel`（§3.4）；
@@ -310,15 +347,22 @@ const sessions = new RedisSessionStore(redis, {
 ## 9. 多副本自检清单
 
 - [ ] 每个副本都**显式**传了 `runner`，且用的是**同一个** store（没触发 `http.ts` 的缺省内存库）
-- [ ] 写路径**只有一个写者**，或按 `taskId` 分片（没有第二条路径在写共享库）
-- [ ] `approve` / `signal` / `cancel` 三条请求**按 `taskId` 粘到 owner**
+- [ ] 除 PG 已明确关闭的首提／孤儿恢复窗口外，其余写路径只有一个写者，或按 `taskId` 分片
+- [ ] `approve` / `signal` / `cancel` 三条请求**按 `taskId` 粘到 owner**（PG 的两条原子能力不覆盖它们）
 - [ ] `stream` 的客户端实现了 `unavailable → 轮询` 降级
 - [ ] `Scheduler` 只在**一个**副本上 `start()`
-- [ ] `resumePending()` 只在**写者**上接线，且 `staleAfterMs` 的值与**为什么是这个值**写进了运维文档
-- [ ] 多轮对话型能力用的是 `RedisSessionStore`（或你自己的跨进程实现），**不是**内建的
-      `InMemorySessionStore`；`sessionId` 来自身份体系而不是请求体
+- [ ] 没有 `compareAndSave` 的 store：`resumePending()` 只在**写者**上接线；`staleAfterMs` 的值与
+      **为什么是这个值**写进了运维文档（新鲜度不是租约）
+- [ ] 多轮对话型能力用的是 `RedisSessionStore` / `PgSessionStore`（或你自己的跨进程实现），
+      **不是**内建的 `InMemorySessionStore`；`sessionId` 来自身份体系而不是请求体
+- [ ] 用 PG（`@migor/agentia-pg`）时确认过：首提与孤儿恢复已有原子认领，但其他推进路径仍需
+      owner 路由（见 §3.10）；`PgSessionStore.prune()` 已挂到 `pg_cron` 之类的定时任务上
+      （PG 没有 TTL，不挂就无界增长；它是**按会话**回收，不是按行）
+- [ ] 多 pod 都接 `resumePending()` 时，如需减少重复全表扫描，或处于新旧版本混跑窗口，
+      用 PG advisory lock 做「同一时刻只有一个在扫」的互斥；全新 PG 路径不把它当成认领前提
+      （配方与三个坑见 `packages/pg/README.md`「多 pod 时谁跑 resumePending」）
 - [ ] 同一 `sessionId` 的并发 run 已串行化（每 session 一把锁 / 一条队列），或已确认业务上不会并发
-- [ ] 确认过「任一时刻只有一个写者调 `resumePending()`」；滚动升级走**交接**，不是两个写者并存
+- [ ] 滚动升级的新旧混跑窗口仍按 at-least-once；要严格避免两个写者重叠就走**交接**
 - [ ] 故障转移演练做过：杀写者 → 起备 → 同库 → 挂起任务被捡回（`/healthz` 的 `suspended` 对得上）
 - [ ] `/metrics` 与 `/healthz` 的聚合在**采集端**做（不假设单进程读数）
 - [ ] 已确认**不会**在 `drain()` 之后试图恢复服务（单向闩，必须退出进程）

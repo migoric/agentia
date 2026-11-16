@@ -83,7 +83,14 @@ export function toHttpBody(
 /** 任务记录的公共投影：不删状态/结果，只去掉消息正文、trace 与内部归属。 */
 export function toTaskHttpBody(rec: TaskRecord, opts: { public?: boolean } = {}): TaskHttpResponse {
   if (!opts.public) return rec;
-  const { spec: _spec, ownerId: _ownerId, pendingEvents: _pendingEvents, ...rest } = rec;
+  const {
+    spec: _spec,
+    ownerId: _ownerId,
+    pendingEvents: _pendingEvents,
+    // HITL × sessionStore 的恢复快照同样是原始消息正文，不能从公共投影漏出去。
+    sessionInput: _sessionInput,
+    ...rest
+  } = rec;
   if (!rec.result) return rest;
   const { trace: _trace, suspendedMessages: _suspendedMessages, ...result } = rec.result;
   return { ...rest, result };

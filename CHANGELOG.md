@@ -1,9 +1,97 @@
 # Changelog
 
-本仓库两包（`@migor/agentia` 与 `@migor/cli`）版本同步发布。
+本仓库三包（`@migor/agentia`、`@migor/cli` 与 `@migor/agentia-pg`）版本同步发布。
 格式按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号按 SemVer
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
+
+## [0.10.12] - 2026-11-16
+
+### 新增
+
+**`@migor/agentia-pg` —— 第三个可发布包。** 把 PostgreSQL 同时接成 `TaskStore` 与
+`SessionStore`：多副本部署不必再自己写一遍「任务表 + 会话历史表」的 SQL，也不必为了
+原子性自造事务。三包同步 0.10.11 → 0.10.12（`@migor/agentia-pg` 为首版）。
+
+- `PgTaskStore`：单语句 UPSERT，`save_seq` 由序列 `nextval` 显式打标 —— 直接比
+  `xmin`/`ctid`/`updated_at` 都不行，PG 的 UPDATE 不产生单调物理序（`save_seq` 才能给出
+  last-wins 的**跨进程**先后）；`listDue` 走部分索引；`claimSubmission` 用主键仲裁同键首提；
+  `compareAndSave` 以完整旧快照做乐观锁。
+- `PgSessionStore`：单语句多值 `INSERT ... unnest()` 原子追加（不靠事务包三条语句）；
+  `maxTurns` 按**轮次**裁而不是按条数（否则会在 user/assistant 中间切断）；`prune` 按
+  **会话**回收而不是按行删（按行删会把跨 cutoff 的一轮切成半截，留下 assistant 开头的
+  历史，下一轮直接撞角色交替校验）。
+- `@migor/agentia` 是 peer 依赖，第三方运行时依赖仍为零；建表走 `ensureSchema`（幂等，
+  标识符走白名单校验后拼接）。
+- 默认套件跑 **PGlite**（真 WASM PostgreSQL 引擎，52 条）；`test-live/` 显式对真实 PG 跑
+  多连接与多进程用例（真驱动下的并发首启、NUL 往返、双进程同键首提、双进程孤儿恢复）。
+
+**`TaskStore` 两个可选能力：`claimSubmission` / `compareAndSave`。** 都是可选的 —— 未实现的
+store 保持原路径与 at-least-once 语义，框架不会拿普通 UPSERT 冒充认领：
+
+- `claimSubmission`：同键并发首次提交争同一个确定性 `taskId` 时，只有认领者执行。
+- `compareAndSave`：孤儿恢复按**完整旧快照**做 CAS，输家不派发、不覆盖赢家。
+
+**`RedisSessionStore` —— 多副本共享会话历史。** 会话不再只能跟着单个进程活着：多副本
+部署时同一会话的先后请求可以落在不同 pod 上，历史仍然连续（`InMemorySessionStore` 的
+进程内 Map 做不到这点）。客户端 duck-typed（只要 `rpush` / `lrange` / `ltrim` 那组命令），
+`@migor/agentia` 的第三方运行时依赖仍是零。
+
+- 用**列表 + RPUSH** 而不是「读整段 → 拼 → 写回」：后者两个副本同时写就是后写者吞掉前写者。
+- `maxMessages` 按**轮次**裁：按条数切会让历史以 assistant 开头，下一轮直接撞角色交替校验。
+- `append` 先整批校验再分片写（`MessageParam` 允许 `system`，而历史与 Messages API 只接受
+  user/assistant —— 写进一条会让整段历史永久读不出，详见「修复」）。
+- 同批还导出了 `serializeTaskRecord`（与 `parseTaskRecord` 成对，`@migor/agentia-pg` 用它
+  写记录；此前只有内部模块导出、包根拿不到）。
+
+### 修复
+
+- **跟随他进程认领的整趟不再无限等待**。原实现是 250ms 无限轮询，目标永远不终态就一直
+  占着 `active`：`drain()` 永不结算（SIGTERM 后被硬杀）、`inFlight` 虚高顶住 503 闸。
+  现在三条**直接证据**放手：目标主人明确已死（同主机 `process.kill(pid, 0)` 给 `ESRCH`）、
+  记录确认不存在（连续 3 次，留给只读副本复制延迟）、本进程已进入 drain。放弃时不落库、
+  不发 `TaskSink`（同确定性 id 时写 `failed` 等于覆盖真正的认领者），空流桩就地回收。
+- **异步 store 下首次落库窗口不再误报「任务不存在」**。`submit` 是全同步的，于是
+  「刚提交、还没落地」与「这个 taskId 根本不存在」在 `awaitTask` 第一次 `poll` 时完全
+  一样：同一段代码时通时不通。改为登记首存 promise，**读空时**才等它落地（受 deadline
+  约束，store 的 `save` 挂住时不会永久不返回）。
+- **`RedisSessionStore.append` 补上 `load` 同口径的守卫**。`MessageParam` 允许 `system`，
+  而会话历史与 Messages API 都只接受 user/assistant —— 写进一条 `system` 会让整段历史
+  **永久读不出**（`executeRun` 降级成「没有历史」），而写入那一刻没有任何信号。现在
+  先整批校验再分片写：第 N 条非法就一条都不落库、不建键、不刷 TTL。
+- **HITL / timer 恢复段的工具重新进 `metrics` 与 `buildRunReport`**。两处统计原先把
+  `tool.output` 的扫描绑在 `llm.turn` 分支内，但恢复段没有新回合，事件落在 run 根或
+  capability 父 span 上 ⇒ 批准后才执行的工具，调用次数 / 错误数 / 耗时全是 0。改为按
+  事件归属扫描。
+- **`executeRun` 不再把空 `approvals: {}` 当成手动续跑**。空审批表是普通新 run 的合法
+  缺省形状，旧写法让一次普通调用被当成恢复：跳过会话注入、打印「续跑段」告警、不读历史。
+  现在只有**非空**审批表才算续跑；末尾未决 `tool_use` 仍独立命中，历史翻倍防护没放松。
+- **`createStreamableHttpMcpConnector` 的会话自愈判定改用本次请求的事实**。原实现拿响应
+  回来时的全局 `sessionId` 反推「这次有没有带会话」，那个槽位可能已被另一请求的自愈清空
+  ⇒ 自己的 404 被误判成「本来就没带会话、不需要自愈」，会话失效后每次调用都失败却不再
+  重握手。
+- **`waitForTask` 的 deadline 覆盖到 I/O 本身**。原实现只约束轮询间隔，`poll` / 映射读取 /
+  提交初始化三个 `await` 都可能挂住（网络黑洞、连接池耗尽），整个等待超时被绕过。
+- **`toTaskHttpBody` 的公共投影补剥 `sessionInput`**。HITL × `sessionStore` 的恢复快照同样
+  是原始消息正文，漏出去等于把对话内容暴露给只该看任务状态的调用方。
+- **交给模型客户端的 `messages` 改为快照**。`buildTurnRequest` 原先把 `ctx.messages` 的
+  引用交出去，而主循环本轮结束后继续往同一条数组 push（assistant / 工具结果 / 审批事件）
+  ⇒ 任何把 params 排队、缓存、录制、重发的实现（重试队列、批处理、审计日志、测试替身）
+  都会读到被后续轮次污染的数组。实测调用时 3 条，同一个引用事后 4 条。
+
+### 迁移（四条行为变化，必须单列）
+
+1. **恢复段工具的读数会从 0 变成真实值**。此前批准后才执行（或 timer 唤醒后执行）的工具
+   在 `metricsSink` 与 `report` 里完全不出现，本版开始计入。如果你拿历史读数做趋势对比，
+   这个跳变来自**修掉了漏账**，不是工具调用变多了。
+2. **`buildTurnRequest` 返回的 `messages` 是浅拷贝**。依赖「拿到的是同一条活数组、自己
+   push 进去就能被下一轮看见」的实现会失效 —— 那是从未承诺过的行为，且正是本版修掉的
+   污染源。要影响下一轮请改 `ctx.messages` / 用 `sessionStore`。
+3. **`toTaskHttpBody(rec, { public: true })` 不再包含 `sessionInput`**。只读该字段做展示的
+   客户端会拿到 `undefined`；它本来就不该出现在公共投影里（含原始对话正文）。
+4. **`executeRun({ approvals: {} })` 不再被当作续跑**。如果你此前靠「传一个空审批表」来
+   强制不注入会话历史，现在要改用真实的续跑形态（非空审批表，或末尾带未决 `tool_use`）。
+   反过来，误传空表的普通调用现在会**正常读取历史** —— 这是本版修掉的行为。
 
 ## [0.10.11] - 2026-11-13
 
@@ -4689,7 +4777,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.11...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.12...HEAD
+[0.10.12]: https://github.com/migoric/agentia/releases/tag/v0.10.12
 [0.10.11]: https://github.com/migoric/agentia/releases/tag/v0.10.11
 [0.10.10]: https://github.com/migoric/agentia/releases/tag/v0.10.10
 [0.10.9]: https://github.com/migoric/agentia/releases/tag/v0.10.9
