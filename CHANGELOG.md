@@ -32,6 +32,18 @@ store 保持原路径与 at-least-once 语义，框架不会拿普通 UPSERT 冒
 - `claimSubmission`：同键并发首次提交争同一个确定性 `taskId` 时，只有认领者执行。
 - `compareAndSave`：孤儿恢复按**完整旧快照**做 CAS，输家不派发、不覆盖赢家。
 
+**`RedisSessionStore` —— 多副本共享会话历史。** 会话不再只能跟着单个进程活着：多副本
+部署时同一会话的先后请求可以落在不同 pod 上，历史仍然连续（`InMemorySessionStore` 的
+进程内 Map 做不到这点）。客户端 duck-typed（只要 `rpush` / `lrange` / `ltrim` 那组命令），
+`@migor/agentia` 的第三方运行时依赖仍是零。
+
+- 用**列表 + RPUSH** 而不是「读整段 → 拼 → 写回」：后者两个副本同时写就是后写者吞掉前写者。
+- `maxMessages` 按**轮次**裁：按条数切会让历史以 assistant 开头，下一轮直接撞角色交替校验。
+- `append` 先整批校验再分片写（`MessageParam` 允许 `system`，而历史与 Messages API 只接受
+  user/assistant —— 写进一条会让整段历史永久读不出，详见「修复」）。
+- 同批还导出了 `serializeTaskRecord`（与 `parseTaskRecord` 成对，`@migor/agentia-pg` 用它
+  写记录；此前只有内部模块导出、包根拿不到）。
+
 ### 修复
 
 - **跟随他进程认领的整趟不再无限等待**。原实现是 250ms 无限轮询，目标永远不终态就一直

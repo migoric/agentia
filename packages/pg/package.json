@@ -23,7 +23,7 @@
     "prepublishOnly": "node ../../scripts/check-release.mjs --package @migor/agentia-pg && npm run build"
   },
   "peerDependencies": {
-    "@migor/agentia": ">=0.10.11"
+    "@migor/agentia": "^0.10.12"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",

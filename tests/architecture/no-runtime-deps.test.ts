@@ -87,7 +87,7 @@ const IN_SCOPE_PACKAGES = [
  */
 const EXCLUDED: Record<string, string> = {
   website:
-    '私有 Astro 站点（AGENTS.md「官网（Astro）」：只影响官网，与框架本体和两个 npm 包无关）；' +
+    '私有 Astro 站点（AGENTS.md「官网（Astro）」：只影响官网，与框架本体和三个 npm 包无关）；' +
     '不进任何 npm 产物，故不受零运行时依赖约束',
 };
 

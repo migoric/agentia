@@ -8550,6 +8550,8 @@ push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排�
     `ensureSchema`，`@migor/agentia` 走 peer、第三方运行时依赖仍为零，默认套件跑 PGlite 真引擎；
     `TaskStore` 增加两个**可选**原子能力 `claimSubmission` / `compareAndSave`（同键首提只一个
     执行者、孤儿恢复按旧快照 CAS），未实现的 store 保持原路径与 at-least-once；
+    另新增 `RedisSessionStore`（多副本共享会话历史，客户端 duck-typed）与 `serializeTaskRecord`
+    导出（与 `parseTaskRecord` 成对，pg 包写记录用它）；
     另修「跟随他进程认领」的无限等待、异步 store 首存窗口误报「任务不存在」、
     `RedisSessionStore.append` 缺 role 守卫、恢复段工具在 metrics/report 归零等；
     ⚠️ **四条行为变化必须单列、不能写成「无破坏性变更」**：恢复段工具读数从 0 变真实值、
