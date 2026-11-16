@@ -8546,7 +8546,16 @@ push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排�
     ⚠️ **两处行为收紧必须单列、不能写成「无破坏性变更」**：`maxItems` 从「写了不生效」
     变成超长回 `is_error`、`budgetTokens: Infinity` 与小数从能跑变成构造期 TypeError ——
     迁移动作见 CHANGELOG 本版节）；
-  `AGENTIA_VERSION = '0.10.11'`。决策均见 §10。
+  → v0.10.12（**第三个可发布包 `@migor/agentia-pg`**：`PgTaskStore` / `PgSessionStore` /
+    `ensureSchema`，`@migor/agentia` 走 peer、第三方运行时依赖仍为零，默认套件跑 PGlite 真引擎；
+    `TaskStore` 增加两个**可选**原子能力 `claimSubmission` / `compareAndSave`（同键首提只一个
+    执行者、孤儿恢复按旧快照 CAS），未实现的 store 保持原路径与 at-least-once；
+    另修「跟随他进程认领」的无限等待、异步 store 首存窗口误报「任务不存在」、
+    `RedisSessionStore.append` 缺 role 守卫、恢复段工具在 metrics/report 归零等；
+    ⚠️ **四条行为变化必须单列、不能写成「无破坏性变更」**：恢复段工具读数从 0 变真实值、
+    `buildTurnRequest` 交出快照而非活引用、公共任务投影不再含 `sessionInput`、
+    空 `approvals: {}` 不再算续跑 —— 迁移动作见 CHANGELOG 本版节）；
+  `AGENTIA_VERSION = '0.10.12'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
