@@ -420,7 +420,6 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> extends RunP
   promptVersions?: Record<string, string>;
 }
 
-
 export interface AgentRunResult<T = unknown> {
   /** 本次 run 的完整调用树 + usage（traceId == runId） */
   trace: Trace;
