@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseTraceparent } from '../core/trace.js';
 import type { RunInvocationOptions } from '../engine/spec.js';
 import { TaskInputError, normalizeMessages } from '../engine/spec.js';
+import { taskNotFound } from './task-not-found.js';
 import type { TaskRecord } from '../store/store.js';
 import {
   type AsyncRunner,
@@ -212,7 +213,7 @@ async function authorizedTask(
 ): Promise<TaskRecord | undefined> {
   const task = await ctx.runner.store.get(taskId);
   if (!task) {
-    sendJson(ctx.res, 404, { error: `task 不存在: ${taskId}` });
+    sendJson(ctx.res, 404, { error: taskNotFound(taskId) });
     return undefined;
   }
   if (ctx.authorizeTask) {
@@ -582,7 +583,7 @@ async function handlePoll(taskId: string, ctx: HttpCtx): Promise<void> {
   if (!(await authorizedTask(ctx, taskId, 'poll'))) return;
   const rec = await ctx.runner.poll(taskId); // 保留 poll 的惰性超时/到期唤醒语义
   if (!rec) {
-    sendJson(ctx.res, 404, { error: `task 不存在: ${taskId}` });
+    sendJson(ctx.res, 404, { error: taskNotFound(taskId) });
     return;
   }
   sendJson(ctx.res, 200, taskBody(ctx, rec));

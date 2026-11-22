@@ -1,5 +1,5 @@
 import { sseLines } from '../core/sse.js';
-import { TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
+import { isAbortError, TIMED_OUT, TimeoutError, withTimeout } from '../core/timeout.js';
 
 /**
  * Agentia —— MCP **协议面**：桥（`mcp.ts`）与两个内置连接器（`mcp-stdio.ts` /
@@ -132,6 +132,18 @@ export async function withDeadline<T>(p: Promise<T>, timeoutMs: number, label: s
 }
 
 /** 把可能很大的值截成可读片段（错误消息要能进日志，不能是一兆的 JSON） */
+/**
+ * 「连接器已 close」的**唯一形状**。
+ *
+ * 4 处（stdio 的 throw / reject / 在途请求失败，http 的 post 守卫）此前各写一遍
+ * `new Error('MCP 连接器已 close —— 请重新创建一个')`。这不只是措辞重复：调用方想
+ * 「close 了就重建」时只能**比对字符串**。收敛到一处后，将来给它加 `code`（让它可判别）
+ * 只需改这一个函数 —— 那才是彻底的做法，但它会牵动重试分类，留作单独一次改动。
+ */
+export function mcpClosedError(): Error {
+  return new Error('MCP 连接器已 close —— 请重新创建一个');
+}
+
 export function brief(value: unknown, max = 200): string {
   let s: string;
   try {
@@ -193,7 +205,7 @@ export async function readMcpText(res: Response): Promise<string> {
     // 取消/超时不能被吞成「body 为空」：那会把 abort 改写成「SSE 里没有 id」的协议错，
     // 引擎分类从 aborted/timeout 变成 unknown（2026-11-07 深评）。其余读失败仍按
     // 「没有额外诊断信息」处理（status 已经给出第一条错误）。
-    if ((e as { name?: unknown } | null)?.name === 'AbortError') throw e;
+    if (isAbortError(e)) throw e;
     return '';
   }
 }

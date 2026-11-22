@@ -2,6 +2,7 @@
 import { isTerminalStatus } from '../core/run.js';
 import { assertTimerDelay } from '../core/timeout.js';
 import { cloneTaskRecord } from '../store/store.js';
+import { taskNotFound } from './task-not-found.js';
 import type { MaybePromise, TaskRecord } from '../store/store.js';
 import { adoptObservedOutcome } from './submission.js';
 import type { SubmissionInit } from './submission.js';
@@ -69,7 +70,7 @@ export async function waitForTask(
         }
         continue;
       }
-      throw new Error(`task 不存在: ${waitingId}`);
+      throw new Error(taskNotFound(waitingId));
     }
     if (isTerminalStatus(rec.status)) {
       if (observed && waitingId !== taskId) {
