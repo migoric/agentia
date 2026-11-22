@@ -156,7 +156,7 @@ export function applySuspendedOutcome(
 /** `applyTerminalOutcome` 的两个意图读数（都从调用点取，不在本件反推） */
 export interface TerminalOutcomeContext {
   /**
-   * 是否**人取消**。⚠️ 从调用点的 `#cancels` 取，**不从 signal 反推** —— 同一条 signal 有
+   * 是否**人取消**。⚠️ 从调用点的取消账本取（`task-cancel.ts` 的意图位），**不从 signal 反推** —— 同一条 signal 有
    * 三个来源（调用方 / `runTimeoutMs` / 取消）。
    */
   cancelled: boolean;

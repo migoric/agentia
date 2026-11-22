@@ -205,7 +205,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     );
     // 取消/超时优先于任何挂起出口（2026-11-07 深评 P1-1）：恢复段执行未决工具期间
     // signal 可能已中止；若这里仍返回 suspended，宿主会把它落成 suspended，
-    // cancel 的 #awaitCancelled 等不到终态（409），timer 挂起到点还会重跑整批工具。
+    // cancel 的宽限等待等不到终态（409），timer 挂起到点还会重跑整批工具。
     // 主循环的 deferred 出口此前有这条守卫，恢复段的两个出口与 approval 出口漏了。
     if (outcome.kind !== 'executed' && args.signal?.aborted) {
       return abortedResult(ctx.progress.iterations);
