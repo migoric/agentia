@@ -16,7 +16,7 @@ import { resolveMaxRetries, statusOfStreamError } from './adapter-options.js';
 import { textOf } from '../core/text.js';
 import type { Usage } from '../core/trace.js';
 import { sseLines } from '../core/sse.js';
-import { backoffMs, interruptibleSleep, retryAfterMsOf } from '../core/timeout.js';
+import { backoffMs, interruptibleSleep, isAbortError, retryAfterMsOf } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
 
 /**
@@ -303,7 +303,7 @@ async function postWithRetries(
       res = await fetchImpl(url, init);
     } catch (e) {
       // abort 原样向上（引擎靠 name === 'AbortError' 判）；其余是网络失败
-      if ((e as { name?: unknown })?.name === 'AbortError' || signal?.aborted) throw e;
+      if (isAbortError(e) || signal?.aborted) throw e;
       if (attempt >= maxRetries) throw e;
       continue;
     }

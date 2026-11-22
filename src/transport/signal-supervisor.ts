@@ -28,6 +28,7 @@ import type { TaskEvent } from '../core/run.js';
 import type { TaskRecord, TaskStore } from '../store/store.js';
 import type { ApprovalSupervisor } from './approval-supervisor.js';
 import { TaskWakeGate } from './task-wake-gate.js';
+import { taskNotFound } from './task-not-found.js';
 
 /**
  * `signalTask` 的失败：带 HTTP 语义的状态码（404 = 任务不存在，409 = 任务当前不在
@@ -161,7 +162,7 @@ export class SignalSupervisor {
 
   async #signalInner(taskId: string, event: TaskEvent): Promise<TaskRecord> {
     const rec = await this.#deps.store.get(taskId);
-    if (!rec) throw new TaskEventError(404, `task 不存在: ${taskId}`);
+    if (!rec) throw new TaskEventError(404, taskNotFound(taskId));
     if (rec.status !== 'suspended') {
       throw new TaskEventError(
         409,

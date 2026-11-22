@@ -1,6 +1,3 @@
-import type { SpanError } from '../core/trace.js';
-import { isTimeoutError } from '../core/timeout.js';
-
 /**
  * Agentia —— 异常分类（engine 对厂商 SDK 零运行时 import）。
  *
@@ -13,11 +10,15 @@ import { isTimeoutError } from '../core/timeout.js';
  * **压缩即失效**。所以这里只认**数据属性**（`status` 数值 / `cause` / errno `code` /
  * 内建 DOMException 的 `name`），一概不碰构造函数名。
  */
+import { isAbortError, isTimeoutError } from '../core/timeout.js';
+import type { SpanError } from '../core/trace.js';
 
-/** 是否中断异常（DOMException / 普通 Error 都可能是，靠 name 判定） */
-export function isAbortError(e: unknown): boolean {
-  return typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError';
-}
+/**
+ * `isAbortError` 的实现住在 `core/timeout.ts`（与 `abortError()` 同模块：形状与判据一起改）。
+ * 这里 re-export 是为了**公共导出面不变** —— `src/index.ts` 与既有使用者一直从这里取它，
+ * 搬实现不该变成使用者的迁移。
+ */
+export { isAbortError };
 
 /**
  * 分类器**能产出的全部类别** —— 单一真源（2026-09-29 ref-soak-error-taxonomy）。

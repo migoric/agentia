@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { MessageParam } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
+import { taskNotFound } from './task-not-found.js';
 import type { AgentRunResult } from '../engine/types.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunStatus, TaskEvent } from '../core/run.js';
@@ -794,7 +795,7 @@ export class AsyncRunner {
       return cleanup;
     }
     const rec = await this.poll(taskId);
-    if (!rec) throw new TaskStreamError(`task 不存在: ${taskId}`);
+    if (!rec) throw new TaskStreamError(taskNotFound(taskId));
     listener({ type: 'unavailable', reason: 'not-in-this-process' });
     // unavailable 之后**必须立即收口**：返回的 noop 意味着没有退订通道，不收口这条
     // 流就只剩心跳永远挂着（客户端按「读到流结束」写法永远等不到）。
@@ -910,7 +911,7 @@ export class AsyncRunner {
   }
 
   #cancel(rec: TaskRecord | undefined, taskId: string): MaybePromise<TaskRecord> {
-    if (!rec) throw new TaskCancelError(404, `task 不存在: ${taskId}`);
+    if (!rec) throw new TaskCancelError(404, taskNotFound(taskId));
     if (isTerminalTask(rec)) {
       throw new TaskCancelError(409, `task ${taskId} 已终态（${rec.status}），不能取消`);
     }
