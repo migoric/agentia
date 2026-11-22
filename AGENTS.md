@@ -81,7 +81,7 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   那个体的**体积**；同轮已治（抽 `run-outcome.ts`，见下几行）。⚠️ 它体内
 │   │                        #   剩的 5 个 `try` 逐条盘过「各有语义、抽平会改语义」⇒ **嵌套深度保持
 │   │                        #   4 级不变**：本轮降的是体量与 `try`/`catch` 个数，**不是嵌套浅了一层**。
-│   │                        #   文件行数现由 `tests/architecture/source-size.test.ts` 钉住含代码行上限（750）
+│   │                        #   文件行数现由 `tests/architecture/source-size.test.ts` 钉住含代码行上限（800）
 │   │                        #   approval-policy.ts = 审批的**纯判定**（超时判定 / 超时兜底拒绝 / 决定齐没齐）：
 │   │                        #   编排（在飞闸、重读、先落库再派发）仍留在 AsyncRunner，纪律一字未改
 │   │                        #   drain-gate.ts = 优雅停机的等待闸（停机态标志 / 排空等待 / 超时竞速）；
@@ -98,16 +98,17 @@ agentia/                     # npm 包 @migor/agentia（框架本体，单包）
 │   │                        #   按序干四件事（顺序有语义）—— rebuild → expireIfExpired → wakeDue → 认领重投；
 │   │                        #   #dispatch 仍归 AsyncRunner，以回调注入（依赖单向）；
 │   │                        #   认领 save 带同步抛错防护、三处落库失败有 warn（2026-10-13 ref-resume-save-guard）
-│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ref-cancel-mutex）：AsyncRunner 的
-│   │                        #   #cancelInflight 与三个监督件互为对侧闸（各经 cancelInflight 回调
-│   │                        #   读对方、以 inflightFor/inflightWakeFor 被对方读）；#executeInner
-│   │                        #   起跑前还有一道取消意图闸 —— 「被取消的排队任务绝不起跑」靠它合上
+│   │                        #   ⚠️ cancel × 推进路径互斥（2026-10-13 ref-cancel-mutex）：task-cancel.ts 的
+│   │                        #   并发串行表与三个监督件互为对侧闸（各经 cancelInflight 回调读对方、以
+│   │                        #   inflightFor/inflightWakeFor 被对方读）；执行侧起跑前的取消意图闸也归那本账
+│   │                        #   ——「被取消的排队任务绝不起跑」靠它合上
 │   │                        #   task-waiters.ts = 任务终态等待表（事件唤醒 + 兜底定时器）；**只覆盖本进程写终态**，
 │   │                        #   他进程写终态唤不醒 —— 那是 awaitTask 里 intervalMs 兜底轮询存在的原因（不是缺陷）
 │   │                        #   task-events.ts = 每任务的**记账事件缓冲 + 订阅表**（GET /tasks/:id/stream 的底座：
 │   │                        #   重放 / 实时 / 终态收口三件事，纯记账、不碰 store 所以单独成件）。三条约束：
 │   │                        #   序号是**流自己的**（一个任务可跨多个 run 段，每段 recorder 的 seq 从 1 重来）、
 │   │                        #   有界 + 丢最旧 + 明示（stream.truncated，不静默）、终态流只留最近 16 条
+│   │                        #   task-stream.ts = 任务流的**读出面**（三种语义 / 帧形状 / 跨进程兜底）
 │   │                        #   http-shapes.ts = HTTP 宿主的**出入站形状口径**（响应体 / 任务提交体 / 审批体 /
 │   │                        #   事件体）：纯形状判定（不合法一律回 undefined，由路由选状态码）；审批体**全有或全无**，
 │   │                        #   空 decisions 集合法 —— 「决定齐没齐」是 AsyncRunner 的判断，不是形状问题；
