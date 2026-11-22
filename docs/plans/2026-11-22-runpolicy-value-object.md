@@ -124,7 +124,34 @@ export interface RunPolicy {
 - **结论：不采用。** 它不是错的设计，是**这一刀不该切在分层上** —— 先解决「缺省值三处」，
   分层可以等某天某一层真的独立演化时再做（那时边界有事实依据，不是猜的）。
 
+## 4.5 逐字段缺省审计（落地前做的，**推翻了 §3 的一个前提**）
+
+§3 写的是「`RunPolicy` 全字段必填」。审计 33 个字段后，那个前提**站不住** —— 如实记在这里，
+因为它是这次「设计两次」最有用的一步：**写方案时以为有 30 个缺省要收，实际只有 3 个**。
+
+分类如下（每一行都读过实现，不是猜的）：
+
+| 类别 | 字段 | 缺省在哪 | 能收编吗 |
+|---|---|---|---|
+| **缺省被多处应用** | `model` / `maxTokens` / `maxIterations` | `loop.ts:461/489/490` **与** `run-config.ts:115/116/117` 各算一次（同一常量、两处应用） | ✅ **收**：这正是 A 的真价值 |
+| 缺省只在一处应用 | `toolTimeoutMs`（0=不限）/ `maxToolConcurrency`（Infinity=不限）/ `maxToolResultChars`（`false`=不截断） | 各自消费点（`withTimeout` / 并发闸 / 截断） | ⚠️ 原样携带，**不**在这里 `??` |
+| **三态不可折叠** | `maxEventChars` | `undefined` = **按事件类型分别收敛**（入参 2000 / 成功出参 2000 / 失败出参 1000，见 `tool-events.ts`）；`false` = 不截断；数字 = 统一上限 | ❌ **不能**收成「缺省值」—— 折成任何单一值都会改变语义 |
+| 「未设」本身就是答案 | `maxTotalTokens` / `maxCostUsd` / `traceContent` / `retry` / `labels` / `systemVersion` / `promptVersions` / `sessionId` | 不需要缺省：`undefined` = 该机制不上场 | ❌ 收编只会把「没这个机制」伪装成「有这个机制但取缺省」 |
+| 进程内对象 / 函数 | `tools` / `client` / `fallbacks` / `recorder` / `onText` / `onUnpricedModel` / `signal` / `contextPolicy` / `resultSchema` / `system` / `priceOverrides` / `traceContext` / `runName` | 无缺省可言（要么给，要么没有） | ❌ |
+| 续跑状态（不是策略） | `approvals` / `approvalEpoch` / `events` / `usageOffset` | 由宿主按段注入 | ❌ |
+| 必填 | `messages` | — | ❌ |
+
+**结论**：`RunPolicy` 只装**「缺省被多于一处应用」的那三个**（`model` / `maxTokens` /
+`maxIterations`），外加原样携带的标量观测面（`toolTimeoutMs` / `maxToolConcurrency` /
+`maxToolResultChars` / `maxEventChars`）**仅用于传给快照**，不在本件再算一次。
+
+为什么这不是把设计缩小了事：把 30 个字段塞进一个「全必填」值对象，会把 10 个「没有缺省」
+的字段**凭空造出**缺省（例如 `maxTotalTokens: Infinity`），那是**制造**第二套读法而不是消除它 ——
+正是 §8 反证条件①要拦的情形。
+
 ## 5. 对比
+
+
 
 | 维度 | A 扁平快照 | B 分层 |
 |---|---|---|
@@ -135,7 +162,13 @@ export interface RunPolicy {
 | 新增要学的概念 | 0（就是「解析后的选项」） | 5 个分组名 |
 | 对外兼容 | 不变 | 不变 |
 
-## 6. 落地顺序（三刀，每刀独立可发、独立可回）
+## 6. 落地记录（原计划三刀；实际做完第 1、2 刀，第 3 刀**未做**）
+
+### ✅ 第 1 刀（已完成）：解析入口 + 对拍
+
+`RunPolicy` / `resolveRunPolicy` 落在 `engine/run-config.ts`（**刻意不单开文件**：它会与
+`runConfigSnapshot` 形成 `run-config ↔ run-policy` 的类型级环，而那正是刚加的环预算要拦的
+形状 —— 设计被自己的守卫纠正了一次，如实记下）。
 
 1. **建而不接**：加 `RunPolicy` / `RunOptions` / `resolveRunPolicy`，与现有路径并存；
    加一条**对拍用例**：对同一组输入，`resolveRunPolicy(x)` 的每个字段 === 现路径的生效值。
@@ -149,13 +182,30 @@ export interface RunPolicy {
    就不可序列化，快照只记「配没配」）。所以第 1 刀的对拍管**标量策略**那一半，
    剩下那一半只能靠第 2 刀「每替换一个消费点就跑全门禁」逐点验 —— 别把这条用例
    说成「全部字段都有机器证据」，那是它做不到的。
-2. **逐文件接线**：`loop.ts` → `turn.ts` → `mcp-server.ts` → `toolkit/module.ts` →
-   `transport/run-call-options.ts`。每步只动一个文件、跑全门禁；`88` 处 `??` 里属于
-   策略的那批逐个消失。
-3. **删搬运**：删掉 `RunInvocationOptions` 里与 `RunAgentOptions` 重复的 25 个字段中
-   **只用于内部传递**的那些（保留公开的那份声明），删掉 87 行逐字段搬运；
-   `maxEventChars?:` 的**可选**声明从 **9 → 1**（只剩输入侧的 `RunOptions`；`RunPolicy` 里那处
-   是必填，不算 `?:`）。
+### ✅ 第 2 刀（已完成，范围按审计收窄）：三处应用点收成一处
+
+审计（§4.5）把「逐文件接线」缩成**三个真实应用点**，已全部接上：
+
+- `loop.ts` 的 `runAgent`：入口 `const policy = resolveRunPolicy(options)` 一次，
+  `model` 属性、`agentLoop` 的 `maxTokens/maxIterations`、以及 `runConfigSnapshot(policy, options)`
+  全部读它；
+- `loop.ts` 的 `runAgentScoped`（子循环）：同样改成 `resolveRunPolicy(opts)` ——
+  子 agent 的缺省口径与主循环是**同一条**，此前也各写一遍；
+- `run-config.ts` 的 `runConfigSnapshot`：签名改为 `(policy, options)`，不再自己
+  `?? DEFAULT_*`。
+
+配套守卫 `tests/architecture/single-source-defaults.test.ts`：数**代码**里
+`?? DEFAULT_MAX_TOKENS` / `?? DEFAULT_MAX_ITERATIONS` 的出现次数（必须各恰好一条），
+`resolveDefaultModel(` 不许出现在 `run-config.ts` 之外。两条变异都验证过会红。
+
+### ❌ 第 3 刀（**未做**）：删 87 行搬运 / `maxEventChars?:` 9 → 1
+
+没做的理由（不是时间不够）：这一刀要删的是「两个选项面之间 25 个同名字段」的重复声明，
+而第 2 刀的审计已经证明，那 25 个里有 22 个**没有缺省问题**，剩下的重复属于
+「`RunInvocationOptions` 与 `RunAgentOptions` 是不是同一件事」的**类型建模问题** ——
+它要单独一轮「设计两次」，且会动到公共导出面（`index.ts` 三处导出）。
+把它硬塞进这一刀，会把「缺省单源」这个已经闭环的成果与一个半成品的类型合并混在一起。
+**下一步**：单写一份「选项面的两个类型该不该合并」的设计，再决定动不动。
 
 **每刀的验收指标**（可 grep，不靠感觉）：
 
