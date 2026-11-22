@@ -8557,7 +8557,8 @@ push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排�
     ⚠️ **四条行为变化必须单列、不能写成「无破坏性变更」**：恢复段工具读数从 0 变真实值、
     `buildTurnRequest` 交出快照而非活引用、公共任务投影不再含 `sessionInput`、
     空 `approvals: {}` 不再算续跑 —— 迁移动作见 CHANGELOG 本版节）；
-  `AGENTIA_VERSION = '0.10.12'`。决策均见 §10。
+  → v0.10.13（**内部收口，无对外可见变更**：`async.ts` 按知识拆两块、模型与预算缺省的三个应用点收成一个、两个选项面的 25 个共同字段收成 `RunPolicyInput` 基底、四条新守卫；公共导出面零增删改 ⇒ 既有使用者不需要任何动作）；
+  `AGENTIA_VERSION = '0.10.13'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

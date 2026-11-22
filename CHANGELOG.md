@@ -5,6 +5,34 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.13] - 2026-11-22
+
+### 变更
+
+**本版无对外可见的变更** —— 公共导出面零增删改（255 个导出逐字未变）、运行时行为逐字未变、
+`AGENTIA_VERSION` 之外的公共常量未动。三包同步 0.10.12 → 0.10.13 是为把下面这批**内部收口**
+发出去（每一条都在 `docs/guards.md` 里有对应的机器守卫；证据链见 `docs/spec.md` §10 当日条）：
+
+- **`async.ts` 按知识拆两块**（798 → 629 含代码行）：任务流的读出面（三种语义 / 帧形状 /
+  跨进程兜底）→ `transport/task-stream.ts`；取消仲裁与取消账本（意图 / 已由 cancel 收尾 /
+  并发串行）→ `transport/task-cancel.ts`。对外仍是 `createAsyncRunner` 一个深接口，
+  `from './async.js'` 的既有 import 与导出面不变。
+- **三处「同一句话写在多处」收口**：`isAbortError` 下沉 `core/timeout.ts`（integrations 只许
+  依赖 core，谓词原先在 engine ⇒ 三个客户端各写一份）；`task 不存在` 收进
+  `transport/task-not-found.ts`；MCP 已 close 收进 `mcpClosedError()`；回放的事件正文上限
+  改用 `DEFAULT_EVENT_CHARS`（与引擎写事件是同一个决策）。
+- **模型与预算缺省的三个应用点收成一个**（`resolveRunPolicy`）：run 根 `model` 属性、
+  `agentLoop` 的 `maxTokens` / `maxIterations`、trace 里的 `config.*` 从此读同一份；
+  子 agent 子循环也走它。此前几处各 `?? DEFAULT_*` —— 值不会分叉，但「加校验只盖住一处」
+  的风险真实存在。
+- **两个选项面共有的 25 个字段收成 `RunPolicyInput` 基底**：`RunAgentOptions` 与
+  `RunInvocationOptions` 各自 `extends` 它（25 个字段类型逐字一致，脚本比对过）。
+  不合并成一个类型 —— 前者独有 8 个引擎装配字段、后者独有 5 个异步宿主字段，合并会让两侧
+  都接受自己消费不了的键。
+- **四条新守卫**（均已登记 `docs/guards.md`）：跨文件措辞单源、run 缺省应用点单源、
+  选项面不得重声明基底字段、`file-cycles` 新增「类型级环清单预算」（`import type` 的环
+  从此要登记，不再无界增长）。
+
 ## [0.10.12] - 2026-11-16
 
 ### 新增
@@ -4777,7 +4805,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.12...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.13...HEAD
+[0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13
 [0.10.12]: https://github.com/migoric/agentia/releases/tag/v0.10.12
 [0.10.11]: https://github.com/migoric/agentia/releases/tag/v0.10.11
 [0.10.10]: https://github.com/migoric/agentia/releases/tag/v0.10.10
