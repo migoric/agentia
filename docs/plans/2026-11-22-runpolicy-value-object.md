@@ -198,22 +198,36 @@ export interface RunPolicy {
 `?? DEFAULT_MAX_TOKENS` / `?? DEFAULT_MAX_ITERATIONS` 的出现次数（必须各恰好一条），
 `resolveDefaultModel(` 不许出现在 `run-config.ts` 之外。两条变异都验证过会红。
 
-### ❌ 第 3 刀（**未做**）：删 87 行搬运 / `maxEventChars?:` 9 → 1
+### ✅ 第 3 刀（已完成，范围同样被审计收窄）：25 个重复声明收成基底
 
-没做的理由（不是时间不够）：这一刀要删的是「两个选项面之间 25 个同名字段」的重复声明，
-而第 2 刀的审计已经证明，那 25 个里有 22 个**没有缺省问题**，剩下的重复属于
-「`RunInvocationOptions` 与 `RunAgentOptions` 是不是同一件事」的**类型建模问题** ——
-它要单独一轮「设计两次」，且会动到公共导出面（`index.ts` 三处导出）。
-把它硬塞进这一刀，会把「缺省单源」这个已经闭环的成果与一个半成品的类型合并混在一起。
-**下一步**：单写一份「选项面的两个类型该不该合并」的设计，再决定动不动。
+先做了「两个选项面该不该合并」的分析（脚本比对）：
 
-**每刀的验收指标**（可 grep，不靠感觉）：
+- 同名字段 **25 个，类型与可选性 25/25 完全一致**（0 处差异）；
+- `RunInvocationOptions` 独有 5 个（`blackboard` / `idempotencyKey` / `traceLimits` /
+  `onTraceEvent` / `rethrow`）；
+- `RunAgentOptions` 独有 8 个（`system` / `messages` / `recorder` / `runName` /
+  `resultSchema` / `onUnpricedModel` / `systemVersion` / `promptVersions`）。
 
-```bash
-grep -rn 'maxEventChars?:' src/ | wc -l    # 9 → 1（只剩输入侧那处可选声明；策略里是必填）
-grep -rnE '^\s+maxEventChars: ' src/ | wc -l  # 搬运行数下降
-npm test && npm run typecheck && npx biome ci . --error-on-warnings
-```
+⇒ **不合并**（合并会让两侧都接受自己消费不了的键，正是 `http-shapes` 那族白名单要拦的形状），
+改为抽 **`RunPolicyInput`** 基底、两边 `extends`。它**不进 `src/index.ts`**（公共导出面
+一个不变：255 个导出照旧）—— `tsconfig.types.json` 验证过声明文件仍自洽。
+
+⚠️ 这一步暴露出方案里的第二处过度概括，如实记下：**那 87 行「逐字段搬运」不是这一刀的目标**。
+它们是**逐层透传**（`loop` → `turn` → `mcp-server` → `toolkit` 各自再声明一次同一个旋钮并往下传），
+不是「两个选项面之间的重复」。所以：
+
+- 声明处：`maxEventChars?:` 从 **12 → 11**（`types.ts` 与 `spec.ts` 各一处 ⇒ 合成基底一处）；
+  剩下 10 处是逐层透传的**不同类型**（`ToolRunContext` / MCP 选项 / loop 参数 / replay …），
+  各有各的语义，不该合并。
+- 搬运行：**一行没删**（也没该删）。
+
+配套守卫 `tests/architecture/option-surface.test.ts`（已登记 `docs/guards.md`）：两个子接口
+不得重声明基底的任何键。这条必须存在 —— **tsc 对「类型兼容的重声明」不报错**，
+重复会长得悄无声息。两条变异（两边各抄回一个字段）都验过会红。
+
+**遗留（明确不做，不是忘了）**：把「逐层透传」本身收成更少的层（例如让 `turn` 直接读
+`RunPolicy` 而不是逐个参数），属于另一类改造（会动 `agentLoop` 的参数面与 9 个消费点），
+与本篇「缺省单源 + 避免重复声明」不是同一件事。
 
 ## 7. 明确不做
 
