@@ -24,6 +24,12 @@ import { scan } from './lib/source-scan.js';
  * 说明符的读取**复用 `lib/source-scan.ts` 的 `scan()`**（它逐字遮蔽注释 / 字符串 / 模板 /
  * 正则）—— 千万别换成裸正则：文档注释里写出 `from './x.js'` 会**凭空造一条边**
  * （2026-09-28 实际踩过，见 `mcp-protocol.ts` 头注）。
+ *
+ * ⚠️ **类型级环不在这条断言的射程里，但不是没人管**（2026-11-22 补）：上面只算值边 ⇒
+ * `import type` 的环可以随便长，而两个文件互相 `import type` 正是本仓最省事的写法。
+ * 它们由文件末那条「**清单预算**」断言单独看着 —— 全边图（含 `import type`）的每个
+ * 强连通分量都必须登记在 `TYPE_ONLY_CYCLES` 里并写明为什么无害；新增一对要表态、
+ * 删掉一对也要改表（表不许变成假账）。两套口径**各自都有自证**，别把其中一条删掉。
  */
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(repoRoot, 'src');
@@ -75,7 +81,7 @@ function isTypeOnlyStatement(masked: string, quoteIdx: number): boolean {
  *   ③ `import('./x.js')` —— `import('./x').T` 是**内联类型**（后随 `.`）⇒ 排除；
  *      `await import('./x')` 是运行期动态导入 ⇒ 值边。
  */
-function valueSpecs(src: string): string[] {
+function relativeSpecs(src: string, includeTypeOnly: boolean): string[] {
   const { masked, specs } = scan(src);
   const out: string[] = [];
   for (const { spec, index } of specs) {
@@ -93,10 +99,20 @@ function valueSpecs(src: string): string[] {
       out.push(spec);
       continue;
     }
-    if (isTypeOnlyStatement(masked, quoteIdx)) continue;
+    if (!includeTypeOnly && isTypeOnlyStatement(masked, quoteIdx)) continue;
     out.push(spec);
   }
   return out;
+}
+
+/** 值边（运行期真的会发生的依赖）—— 无环断言用 */
+function valueSpecs(src: string): string[] {
+  return relativeSpecs(src, false);
+}
+
+/** 全边（含 `import type`）—— 类型级环的**清单**断言用（见文件末那个 describe） */
+function allSpecs(src: string): string[] {
+  return relativeSpecs(src, true);
 }
 
 /** 相对来源 → src 内实际文件（补 .js→.ts、index.ts）；解析不到返回 null */
@@ -111,27 +127,40 @@ const files = walkTs(SRC);
 
 /** 文件 → 它的**值边**邻居（仅 src 内） */
 const valueEdges = new Map<string, Set<string>>();
+/** 文件 → 它的**全边**邻居（值边 + `import type`；仅 src 内） */
+const allEdges = new Map<string, Set<string>>();
 /** `解析不到` 的相对值边（指向 src 之外 —— 与 layering 守卫的红线一致） */
 const outside: string[] = [];
 let valueEdgeCount = 0;
 
-for (const f of files) {
-  const specs = valueSpecs(readFileSync(f, 'utf8'));
+/** 说明符 → src 内目标（解析不到的只对值边记账：类型边指向 src 外不算「层内环」的输入） */
+function targetsOf(fromAbs: string, specs: string[]): { tos: Set<string>; missing: string[] } {
   const tos = new Set<string>();
+  const missing: string[] = [];
   for (const spec of specs) {
-    const tgt = resolveTarget(f, spec);
+    const tgt = resolveTarget(fromAbs, spec);
     if (tgt === null) {
-      outside.push(`${relative(repoRoot, f)}  →  ${spec}`);
+      missing.push(spec);
       continue;
     }
-    if (tgt !== f) tos.add(tgt);
+    if (tgt !== fromAbs) tos.add(tgt);
   }
-  valueEdges.set(f, tos);
-  valueEdgeCount += tos.size;
+  return { tos, missing };
 }
 
-/** Tarjan：返回节点数 > 1 的强连通分量（= 环） */
-function cycles(): string[][] {
+for (const f of files) {
+  const src = readFileSync(f, 'utf8');
+  const all = targetsOf(f, allSpecs(src));
+  allEdges.set(f, all.tos);
+  // 只有**值边**才把「解析不到」报成红线：类型边指向 src 外（如 tests 里的类型）不构成环的输入
+  const val = targetsOf(f, valueSpecs(src));
+  for (const spec of val.missing) outside.push(`${relative(repoRoot, f)}  →  ${spec}`);
+  valueEdges.set(f, val.tos);
+  valueEdgeCount += val.tos.size;
+}
+
+/** Tarjan：返回节点数 > 1 的强连通分量（= 环）。图由调用方给 —— 值边与全边共用一份实现 */
+function cyclesOf(graph: Map<string, Set<string>>): string[][] {
   const idx = new Map<string, number>();
   const low = new Map<string, number>();
   const onStack = new Set<string>();
@@ -145,7 +174,7 @@ function cycles(): string[][] {
     counter += 1;
     stack.push(v);
     onStack.add(v);
-    for (const w of valueEdges.get(v) ?? []) {
+    for (const w of graph.get(v) ?? []) {
       if (!idx.has(w)) {
         strongConnect(w);
         low.set(v, Math.min(low.get(v) as number, low.get(w) as number));
@@ -165,11 +194,11 @@ function cycles(): string[][] {
     }
   };
 
-  for (const v of valueEdges.keys()) if (!idx.has(v)) strongConnect(v);
+  for (const v of graph.keys()) if (!idx.has(v)) strongConnect(v);
   return sccs;
 }
 
-const found = cycles();
+const found = cyclesOf(valueEdges);
 
 test('真空护栏：真扫到了 src 与足量值边（否则下面的断言全是假绿）', () => {
   assert.ok(files.length >= 90, `只扫到 ${files.length} 个 .ts 文件 —— 路径或 walk 失效`);
@@ -232,5 +261,76 @@ import { real } from './real.js';
     [...new Set(valueSpecs(sample))],
     ['./real.js'],
     '注释里的导入字面量必须被遮蔽 —— 否则文档会凭空造边',
+  );
+});
+
+/**
+ * ## 类型级环的**清单预算**（2026-11-22）
+ *
+ * 上面那条断言只算值边 —— 那是**有意**的（`import type` 运行期擦除，不构成运行期环，
+ * 报成「循环依赖」是假警）。但口径一窄就留了一条没人看着的缝：**类型级环可以随便长**。
+ * 而这正是本仓最容易长出来的一类环 —— 两个文件互相 `import type` 最省事（不用抽第三件），
+ * 单次无害，长到几十对之后「谁依赖谁」就说不清了，而那时候想把它们分开成本已经很高。
+ *
+ * 所以这里给它们一份**清单**而不是一句「允许」：每一对都要登记（文件组合 + 为什么无害），
+ * 新增一对 ⇒ 红（必须表态），删掉一对 ⇒ 也红（表要跟着改，否则表会慢慢变成假账）。
+ *
+ * ⚠️ 判据是**强连通分量的成员集合**，不是边数：同两个文件之间再加一条 `import type`
+ * 不改变成员 ⇒ 不红（那是同一对环的加厚，不是新的环）。
+ *
+ * 登记时的自查两问（现有三条都是这么过的）：① 环上每条边都是 `import type` 吗
+ * （有一条值边就该被上面那条断言抓住）？② 它是不是「同一个知识被两个文件各拿一半」——
+ * 是的话优先抽第三件，而不是登记在这里。
+ */
+const TYPE_ONLY_CYCLES: readonly (readonly string[])[] = [
+  // 引擎的 MCP 服务端：入口与两个传输实现互相只借类型（工具/会话的形状），运行期靠构造函数注入
+  ['engine/mcp-server-http.ts', 'engine/mcp-server-stdio.ts', 'engine/mcp-server.ts'],
+  // run 与 context：run 的签名需要 Context 类型，context 的工厂需要 Run 类型（同一个概念的两半）
+  ['runtime/context.ts', 'runtime/run.ts'],
+  // HTTP 宿主：路由表与端点体互借类型（Route 判定 / HttpCtx），值依赖是单向的
+  ['transport/http-endpoints.ts', 'transport/http.ts'],
+];
+
+/** 把 SCC 变成可比对的键：文件名排序后拼起来（同一条环的两种遍历顺序必须等价） */
+function fingerprintOf(comp: readonly string[]): string {
+  return comp
+    .map((p) => relative(SRC, p))
+    .sort()
+    .join(' + ');
+}
+
+test('真空护栏：全边图真的比值边图多（否则「类型级环」这条断言在拿同一张图自证）', () => {
+  const allCount = [...allEdges.values()].reduce((n, s) => n + s.size, 0);
+  assert.ok(
+    allCount > valueEdgeCount,
+    `全边 ${allCount} 条 ≤ 值边 ${valueEdgeCount} 条 —— 类型边没吃到，下面的清单断言会假绿`,
+  );
+});
+
+test('类型级环（含 import type 的全边图）只能长成登记过的那几条', () => {
+  const actual = cyclesOf(allEdges).map(fingerprintOf).sort();
+  const declared = TYPE_ONLY_CYCLES.map((c) => [...c].sort().join(' + ')).sort();
+  assert.deepEqual(
+    actual,
+    declared,
+    '类型级环的成员变了。三条路，必须显式选一条：\n' +
+      '  ① 断开 —— 把共享的那半抽到第三个文件（本仓做法，见 integrations/mcp-protocol.ts）；\n' +
+      '  ② 登记 —— 确认环上每条边都是 `import type`，加进本文件的 TYPE_ONLY_CYCLES 并写一句为什么无害；\n' +
+      '  ③ 删掉已不存在的条目 —— 表比实测多也是假账，会让人以为那里还有环。\n' +
+      `实测：${JSON.stringify(actual)}\n登记：${JSON.stringify(declared)}`,
+  );
+});
+
+test('分类器自证：同一段样本里，值边图看不见那条 `import type` 回边、全边图看得见', () => {
+  const sample = `
+import { run } from './a.js';
+import type { B } from './b.js';
+export type { C } from './c.js';
+`;
+  assert.deepEqual(relativeSpecs(sample, false), ['./a.js'], '值边不该含 import type');
+  assert.deepEqual(
+    [...new Set(relativeSpecs(sample, true))].sort(),
+    ['./a.js', './b.js', './c.js'],
+    '全边必须含 import type / export type —— 否则类型级环永远扫不出来',
   );
 });
