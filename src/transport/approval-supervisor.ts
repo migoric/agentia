@@ -21,6 +21,7 @@ import { approvalExpired, approvalsComplete, fillTimeoutDenials } from './approv
 import { summarizeSuspended } from './wake-policy.js';
 import type { SuspendedEntry, SuspendedSummary } from './wake-policy.js';
 import { isThenable } from '../store/store.js';
+import { taskNotFound } from './task-not-found.js';
 import type { MaybePromise, TaskRecord, TaskStore } from '../store/store.js';
 import { TaskWakeGate } from './task-wake-gate.js';
 
@@ -200,7 +201,7 @@ export class ApprovalSupervisor {
     opts: { decidedBy?: string },
   ): Promise<TaskRecord> {
     const rec = await this.#deps.store.get(taskId);
-    if (!rec) throw new TaskApproveError(404, `task 不存在: ${taskId}`);
+    if (!rec) throw new TaskApproveError(404, taskNotFound(taskId));
     if (rec.status !== 'suspended' || rec.suspendedReason !== 'approval') {
       throw new TaskApproveError(
         409,

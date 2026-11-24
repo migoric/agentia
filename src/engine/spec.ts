@@ -1,10 +1,7 @@
 import type { MessageParam } from '../core/message.js';
-import type { AgentTool, ApprovalDecision, ModelClient, ModelPricing } from '../core/tool.js';
 import type { BlackboardSeed } from '../core/blackboard.js';
-import type { TaskEvent } from '../core/run.js';
-import type { TraceContext, TraceRecordEvent, Usage } from '../core/trace.js';
-import type { ContextPolicy, ModelFallbackLink } from './types.js';
-import type { RetryOptions } from './retry.js';
+import type { TraceRecordEvent } from '../core/trace.js';
+import type { RunPolicyInput } from './types.js';
 import type { TraceLimits } from './tracer.js';
 
 /**
@@ -18,20 +15,16 @@ import type { TraceLimits } from './tracer.js';
  */
 
 /** 单次 run 透传给引擎/应用的可选调用参数（与 toolkit/module 的 RunAppOptions 子集对齐） */
-export interface RunInvocationOptions {
-  model?: string;
-  maxTokens?: number;
-  maxIterations?: number;
-  client?: ModelClient;
-  onText?: (delta: string) => void;
-  /** 中断信号：中止则在飞请求被取消，run 以 stopReason='aborted' 收尾 */
-  signal?: AbortSignal;
+/**
+ * 单次 run 透传给引擎/应用的可选调用参数（与 toolkit/module 的 RunAppOptions 子集对齐）。
+ *
+ * 25 个共同策略字段见 `RunPolicyInput`（与 `RunAgentOptions` **同一份声明**）；
+ * 本接口只留**异步宿主特有**的那 5 个。这样「同一句话写两处」不会再有第二个版本 ——
+ * 设计与审计见 `docs/plans/2026-11-22-runpolicy-value-object.md`。
+ */
+export interface RunInvocationOptions extends RunPolicyInput {
   /** 预置进本次 RunContext.blackboard（扩展过 Blackboard 时键有补全） */
   blackboard?: BlackboardSeed;
-  /** 上下文预算策略（compaction / context editing） */
-  contextPolicy?: ContextPolicy;
-  /** 模型请求重试策略（覆盖应用级缺省）；见 RunAgentOptions.retry */
-  retry?: RetryOptions | false;
   /** 幂等键：异步宿主的 at-least-once 去重依据 */
   idempotencyKey?: string;
   /**
@@ -60,95 +53,8 @@ export interface RunInvocationOptions {
    * 观察者注册不该互相顶掉（per-run 传了面板回调就让应用级那条失聪，是静默回退）。
    */
   onTraceEvent?: (e: TraceRecordEvent) => void;
-  /**
-   * 入站链路上下文（spec §9.2 跨进程关联）：触发本次 run 的上游 span 记成 run 根的一条
-   * `links`。宿主侧两种给法 —— HTTP 头 `traceparent`（W3C，`createHttpHandler` 自动解析）
-   * 或直接给 `{ traceId, spanId? }`。走异步宿主时它随 `spec.options` 落进 `TaskRecord`，
-   * 所以 `resumePending` 续跑的那次 run 也带得上（跨进程关联不断链）。
-   *
-   * 不改 `traceId == runId` —— run 仍是自己的新树，见 `core/trace.ts` 的 `TraceContext`。
-   */
-  traceContext?: TraceContext;
   /** 硬失败是否抛出；缺省 true（异步宿主置 false 落 failed 记录） */
   rethrow?: boolean;
-  /** 覆盖整份工具菜单（裸工具同样过应用装配的中间件链 —— 不是旁路，见 toolkit/module） */
-  tools?: AgentTool[];
-  /** 成本硬管控：整条 run 累计 token 上限；超限以 stopReason='budget_exceeded' 收尾（算失败） */
-  maxTotalTokens?: number;
-  /** 本任务此前 run 段的累计用量；由 AsyncRunner 在恢复段注入，HTTP 客户端不可自填 */
-  usageOffset?: Usage;
-  /** 成本硬管控：累计成本（美元）上限；依赖模型在价格表内，见 createBudgetGuard */
-  maxCostUsd?: number;
-  /**
-   * 模型 fallback 链（R8-P2；语义见 `RunAgentOptions.fallbacks`）。
-   * ⚠️ 序列化边界：链环里的 `client` 是进程内对象，随 `TaskRecord` 落库会丢 ——
-   * 崩溃续跑读回的是空壳，run 入口会响亮抛 TypeError（鸭子类型校验）。要跨重启仍成立
-   * 的链只写 `model`（client 由 runner/应用级配置兜住），或干脆只在应用/run 级配置。
-   */
-  fallbacks?: ModelFallbackLink[];
-  /**
-   * opt-in 记录 assistant 文本进 llm.turn span 的 `output.text`（R8-P3a；
-   * 语义与代价见 `RunAgentOptions.traceContent`）。可序列化（字符串枚举），异步任务
-   * 随 TaskRecord 落库、续跑不丢 —— 与 fallbacks 环里的 client 不同。
-   */
-  traceContent?: 'full';
-  /**
-   * 租户/业务维度归因标签（R8-P4；语义与边界见 `RunAgentOptions.labels`）。
-   * 可序列化（字符串字典），异步任务随 TaskRecord 落库、续跑不丢。
-   */
-  labels?: Record<string, string>;
-  /** 价格表覆盖/追加（$/1M tokens）；见 RunAgentOptions.priceOverrides */
-  priceOverrides?: Record<string, ModelPricing>;
-  /** 单个工具执行超时（毫秒）；超时该条 tool_result 记 is_error，不杀 run */
-  toolTimeoutMs?: number;
-  /** 同回合并行工具上限；缺省不限 */
-  maxToolConcurrency?: number;
-  /**
-   * trace 事件正文的截断上限（字符）。缺省按事件类型分别收敛（入参/成功出参 2000、
-   * 失败出参 1000）；传数字则三类统一；**`false` = 不截断**，完整工具结果进 trace，
-   * 可在 `agentia dev` 面板 / playground 里展开查看。
-   *
-   * ⚠️ `false` 会让 trace 体积随工具返回值增长，调试期开、生产期关。
-   * 截断只影响记账，回给模型的 tool_result 永远完整。见 `RunAgentOptions.maxEventChars`。
-   */
-  maxEventChars?: number | false;
-  /** 单条工具结果回模型的字符上限；缺省 / false = 不截断，0 = 截到零长度 */
-  maxToolResultChars?: number | false;
-  /**
-   * 挂起期间投递的事件（2026-09-28 ref-run-event-input，run 事件投入口）：随 `TaskRecord.pendingEvents`
-   * 落库（纯数据、可序列化，重启不丢），续跑段由引擎在**未决 tool_use 解决之后**
-   * 渲染成 user 文本消息注入消息流（为什么不是宿主直接追加到消息末尾：续跑判定
-   * 只认历史**末尾一条**，追加 user 消息会把续跑判成新对话 —— 见 engine/loop.ts）。
-   * 手工续跑「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
-   */
-  events?: TaskEvent[];
-  /**
-   * 人工审批决定（HITL）：以 tool_use_id 为键。恢复 `suspended` 任务时由
-   * 异步宿主随记录传入（纯数据、可序列化，随 `TaskRecord` 落库）；手工续跑
-   * 「assistant 结尾带 tool_use」的消息历史时也可直接给 `app.run`。
-   */
-  approvals?: Record<string, ApprovalDecision>;
-  /**
-   * 续跑段的挂起时刻（`TaskRecord.suspendedSince`）：引擎只认 `requestedAt` 与它相等的
-   * 审批决定，防止旧决定被新一次同名 tool_use 复用（2026-11-07 深评）。
-   * 异步宿主自动注入；手工续跑可省略（省略 = 不过滤，兼容旧行为）。
-   */
-  approvalEpoch?: number;
-  /**
-   * 会话引用（C4 的**可序列化**形态）：会话 id 字符串，随 `TaskRecord` 落库、
-   * 重启续跑不丢。只被**异步宿主**消费 —— `AsyncRunner` 配了 `sessionStore` 时，
-   * 执行前把它换成 `RunAppOptions.session`（store 实例 + id）注入 run；
-   * 没配 `sessionStore` 而任务带了 `sessionId` 则**响亮失败**（submit 即报
-   * TaskInputError），不静默降级成「没有会话」。
-   *
-   * 同步宿主（HTTP `POST /run` / `runSync`）不消费它：那边没有 store 可注入，
-   * 会话请走程序内的 `RunAppOptions.session`。
-   *
-   * ⚠️ 程序内直接 `app.run(messages, { sessionId })` 同样**不生效**（`AgentApp.run`
-   * 不消费它）—— 入口会 `console.warn` 一次并指出改用 `session`（2026-10-12 ref-session-id-warn；
-   * 此前是静默丢弃：run 根没有 `session.id`、历史接不上、零信号）。
-   */
-  sessionId?: string;
 }
 
 /** 一次任务的规范化入参：messages（已由 normalizeMessages 规整） */

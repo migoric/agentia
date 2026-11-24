@@ -100,11 +100,80 @@ export function validateLabels(labels: Record<string, string> | undefined): void
 }
 
 /**
+ * 本 run **生效的**模型与预算上限（设计见 `docs/plans/2026-11-22-runpolicy-value-object.md`）。
+ *
+ * ## 为什么只有三个字段
+ *
+ * 逐字段审计 `RunAgentOptions` 的 33 个字段后，只有这三个的缺省**被多个地方各应用一次**：
+ * `loop.ts` 装 `agentLoop` 与写 run 根 `model` 属性时、`runConfigSnapshot` 记快照时
+ * （`maxTokens ?? DEFAULT_MAX_TOKENS` 那类）。几处用同一个常量 ⇒ 值目前不会分叉，
+ * 真正的问题是**应用点有多个**：将来谁给其中一处加校验（比如 `maxTokens` 必须为正），
+ * 另一处不会有。本件把它们收成「解析一次、多处共读」。
+ *
+ * ## 其余 30 个字段为什么**不**收进来（审计结论，不是偷懒）
+ *
+ * - `maxEventChars` 是**三态**：`undefined` = 按事件类型分别收敛（入参 2000 / 成功出参
+ *   2000 / 失败出参 1000 —— 那是 `tool-events.ts` 的决策）、`false` = 不截断、数字 = 统一上限。
+ *   折成任何单一「缺省值」都会改变语义。
+ * - `toolTimeoutMs` / `maxToolConcurrency` / `maxToolResultChars` 的缺省**只在各自的消费点**
+ *   应用一次（0 / Infinity / false）。在这里再 `??` 一遍就是造出第二套读法。
+ * - `maxTotalTokens` / `maxCostUsd` / `traceContent` / `retry` 的「未设」本身就是答案
+ *   （该机制不上场）。写成 `Infinity` / `0` 会把「没有这个机制」伪装成「有这个机制但取缺省」。
+ * - 其余是进程内对象 / 函数 / 续跑状态 / 必填项，根本没有「缺省」可言。
+ *
+ * 一句话：**值对象不是把所有字段装进来，而是把所有「同一个决定被做两次」的地方收成一次。**
+ *
+ * ⚠️ 它**住在 run-config.ts 而不是单开 run-policy.ts**：本件要用 `DEFAULT_*` 与
+ * `resolveDefaultModel`（都在本文件），而 `runConfigSnapshot` 又要用本类型 —— 单开文件会
+ * 立刻造出 `run-config ↔ run-policy` 的类型级环（`tests/architecture/file-cycles.test.ts`
+ * 的清单预算会红，那条守卫不欢迎「为了排版而新增的环」）。
+ */
+export interface RunPolicy {
+  /** 主模型（已解析缺省：显式 → 环境变量 → 内置，见 `resolveDefaultModel`） */
+  readonly model: string;
+  /** 单次请求的 `max_tokens` */
+  readonly maxTokens: number;
+  /** 循环安全上限（防无限 tool 往返） */
+  readonly maxIterations: number;
+}
+
+/**
+ * 解析一次，之后**只读**。调用点只有一处：`runAgent` 的入口（`loop.ts`）——
+ * 解析结果同时喂给引擎装配与 `runConfigSnapshot`，于是「认下缺省值的人」与
+ * 「写进 trace 的人」是同一个。
+ *
+ * 刻意**不做校验**：坏值由既有的入口校验器抛（`assertTimerDelay` / `validateRetryOptions` /
+ * `resolveTraceLimits`，文案带 `zeroClauseOf` 的单源口径）。本件若也校验一遍，
+ * 就成了第三处判据 —— 那正是本件要消掉的形状。
+ *
+ * 参数按**结构**收（只要三个可选字段），不要求整个 `RunAgentOptions`：单测里能只给这三个，
+ * 且不给将来某个「只带预算的调用点」强加一个 33 字段的类型。
+ */
+export function resolveRunPolicy(options: {
+  // 三个都显式带 `| undefined`：`exactOptionalPropertyTypes` 下「键在场但值为 undefined」
+  // 与「键缺席」是两种类型，而调用方（`runAgentScoped` 的 opts）正是前者
+  model?: string | undefined;
+  maxTokens?: number | undefined;
+  maxIterations?: number | undefined;
+}): RunPolicy {
+  return {
+    model: resolveDefaultModel(options.model),
+    maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+    maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+  };
+}
+
+/**
  * 生效配置快照（G3）：把本 run 实际生效的旋钮整理成 run 根的 `config.*` attributes。
  * 只放标量（OTLP/日志/看板都能直接吃）；缺省值也记，这样"没配"与"配了缺省值"可区分于
  * "该项不存在"。函数型选项只记"配没配"，不记函数体。
  */
 export function runConfigSnapshot(
+  /**
+   * 已解析的策略（`resolveRunPolicy` 的产物）。**这三个键的缺省只在上游算一次** ——
+   * 本函数不再 `?? DEFAULT_*`：那样就是第二个应用点（设计文档 §4.5 的审计表）。
+   */
+  policy: RunPolicy,
   // traceLimits 不在 RunAgentOptions 上：它是 run 层（ExecuteRunOptions /
   // RunInvocationOptions）的旋钮 —— executeRun 在 run 入口用 resolveTraceLimits
   // 校验后交给 recorder（见 runtime/run.ts），再把**同一份** options 透传到本函数，
@@ -112,9 +181,9 @@ export function runConfigSnapshot(
   options: RunAgentOptions<JsonSchema> & { traceLimits?: TraceLimits },
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {
-    'config.model': resolveDefaultModel(options.model),
-    'config.maxTokens': options.maxTokens ?? DEFAULT_MAX_TOKENS,
-    'config.maxIterations': options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+    'config.model': policy.model,
+    'config.maxTokens': policy.maxTokens,
+    'config.maxIterations': policy.maxIterations,
   };
   if (options.maxTotalTokens != null) out['config.maxTotalTokens'] = options.maxTotalTokens;
   if (options.maxCostUsd != null) out['config.maxCostUsd'] = options.maxCostUsd;
@@ -144,10 +213,11 @@ export function runConfigSnapshot(
   // 重试：记生效的 maxAttempts（0 = 关闭）—— 比记 "custom/default" 更有信息量
   const retryCfg = resolveRetry(options.retry);
   out['config.retry.maxAttempts'] = retryCfg ? retryCfg.maxAttempts : 0;
-  const policy: ContextPolicy | undefined = options.contextPolicy;
-  if (policy) {
+  const ctxPolicy: ContextPolicy | undefined = options.contextPolicy;
+  if (ctxPolicy) {
     out['config.contextPolicy'] = true;
-    if (policy.budgetTokens != null) out['config.contextPolicy.budgetTokens'] = policy.budgetTokens;
+    if (ctxPolicy.budgetTokens != null)
+      out['config.contextPolicy.budgetTokens'] = ctxPolicy.budgetTokens;
   } else {
     out['config.contextPolicy'] = false;
   }

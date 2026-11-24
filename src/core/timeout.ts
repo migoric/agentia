@@ -109,6 +109,21 @@ export function abortError(message = '已被取消'): Error {
 }
 
 /**
+ * 是否「取消」错误（DOMException / 普通 Error 都可能，只认 `name`）。
+ *
+ * 与 `abortError()` 住同一模块：**形状与判据必须一起改** —— 只改一边不会编译失败，
+ * 表现是「取消被算成未知错误」，重试策略与看板一起失真，而没有任何地方会报错。
+ *
+ * 为什么从 `engine/errors.ts` 搬到这里（2026-11-22）：`integrations` 只允许依赖 `core`
+ * （分层约定，见 AGENTS.md），于是三个底座客户端（anthropic / openai / mcp-protocol）
+ * 各写了一份同样的判定 —— 分层没错，错在把**纯谓词**放在了上层。谓词下沉后三份重复
+ * 消失；`engine/errors.ts` 改为 re-export，公共导出面（`isAbortError`）不变。
+ */
+export function isAbortError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError';
+}
+
+/**
  * 是否超时错误。三条判据（任一条成立即算，**全部是鸭子类型** —— 使用者不必 import 本模块）：
  *
  * 1. 本模块的 `TimeoutError` 实例（框架自己判的超时，如 MCP 桥的兜底）；

@@ -13,6 +13,7 @@ import {
   assertTimerDelay,
   backoffMs,
   interruptibleSleep,
+  isAbortError,
   retryAfterMsOf,
 } from '../core/timeout.js';
 import type { ModelClient } from '../core/tool.js';
@@ -274,7 +275,7 @@ async function postWithRetries(
       });
     } catch (e) {
       // abort 原样向上；signal 已中止时 fetch 的 reject 必为 abort 语义
-      if ((e as { name?: unknown })?.name === 'AbortError' || signal?.aborted) throw e;
+      if (isAbortError(e) || signal?.aborted) throw e;
       // 其余 reject 是网络失败（undici 的 TypeError: fetch failed，cause 带 errno）
       if (attempt >= maxRetries) throw e;
       continue;

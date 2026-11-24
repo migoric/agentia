@@ -4,6 +4,7 @@ import {
   MCP_DEFAULT_TIMEOUT_MS,
   assertToolResultNotError,
   canSelfHealSession,
+  mcpClosedError,
   mcpHttpError,
   parseToolList,
   readMcpResult,
@@ -84,7 +85,7 @@ export function createStreamableHttpMcpConnector(
     payload: unknown,
     o: { withVersion?: boolean; signal?: AbortSignal; noSessionWait?: boolean } = {},
   ): Promise<{ res: Response; sentWithSession: boolean }> => {
-    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
+    if (closed) throw mcpClosedError();
     // 会话自愈窗口（2026-11-07 深评）：重握手进行中时，**其它**请求先等它建好新会话，
     // 不能拿 `sessionId=null` 发出去（会被需要会话的 server 判 400/404，且 hasSessionId=false
     // 让它不会再自愈）。握手自己的 initialize / initialized 用 noSessionWait 跳过等待，

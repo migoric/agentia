@@ -170,11 +170,29 @@ export interface ContextPolicy {
   forRun?(): ContextPolicy;
 }
 
-export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
-  /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
-  system?: SystemParam;
-  /** 初始消息；由调用方给 user 起始消息 */
-  messages: MessageParam[];
+/**
+ * **两个选项面的共同部分**：一次 run（或一条任务）都认的调用策略（25 个字段）。
+ *
+ * 为什么抽出它（2026-11-22，审计与设计见 `docs/plans/2026-11-22-runpolicy-value-object.md`）：
+ * `RunAgentOptions`（引擎/程序内）与 `RunInvocationOptions`（任务规格 / 宿主入参）此前
+ * **各声明了同样的 25 个字段**，类型逐字相同（脚本比对：25/25 一致，含可选性）。
+ * 两份声明不会立刻出错，但会**各自漂移** —— 谁在一边放宽一个联合类型、补一个 `| undefined`，
+ * 另一边静默落后，而症状是「同一份调用参数，走异步宿主与走程序内行为不同」。
+ *
+ * ## 为什么**不**把两个类型直接合成一个
+ *
+ * 它们不是「同一件事的粗细两版」：`RunInvocationOptions` 有 5 个只属于异步宿主的字段
+ * （`blackboard` / `idempotencyKey` / `traceLimits` / `onTraceEvent` / `rethrow`），
+ * `RunAgentOptions` 有 8 个只属于引擎装配的字段（`system` / `messages` / `recorder` /
+ * `runName` / `resultSchema` / `onUnpricedModel` / `systemVersion` / `promptVersions`）。
+ * 合成一个会让两侧都接受「自己根本消费不了」的键 —— 正是 `http-shapes` 那一族
+ * 「白名单，多一个字段即拒」要拦的形状。所以抽**基底**，不合并。
+ *
+ * ⚠️ 本接口只表达「**键与类型**相同」；**语义按层读**：`sessionId` / `events` / `approvals`
+ * 在异步宿主上是「随 `TaskRecord` 落库的可序列化引用」，在引擎里是「本段的续跑上下文」——
+ * 同一个键、两层各消费自己那一半。
+ */
+export interface RunPolicyInput {
   /** 主 agent 可调工具（v1 裸 JSON schema） */
   tools?: AgentTool[];
   model?: string;
@@ -205,6 +223,9 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * ② 模型输出从此进入「要脱敏的面」—— 出库前走脱敏配方（`docs/observability.md` §2.4）。
    * 主要消费者：trace → 训练数据导出与逐字复盘。透传给子 agent / skill 子循环
    * （与 `maxEventChars` 同一条转发纪律：同一棵调用树上口径一致）。
+   *
+   * 可序列化（字符串枚举）：异步任务随 `TaskRecord` 落库、续跑不丢 —— 与 `fallbacks`
+   * 环里的 `client` 不同（那个是进程内对象，落库会丢）。
    */
   traceContent?: 'full';
   /**
@@ -215,19 +236,22 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * TaskRecord 落库、续跑不丢）。
    * ⚠️ 进 metrics 是**另一个开关**：`metricsSink({ labelKeys })` 显式点名哪些 key 上指标
    * 标签（缺省一个都不上）—— Prometheus 标签基数爆炸是真实事故类，见该选项的注释。
+   *
+   * 可序列化（字符串字典）：异步任务随 `TaskRecord` 落库，续跑不丢。
    */
   labels?: Record<string, string>;
-  /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
-  recorder?: import('./tracer.js').TraceRecorder;
   /** 文本增量回调（终端/SSE 用） */
   onText?: (delta: string) => void;
   /** 中断信号：中止则本回合结束后以 stopReason='aborted' 收尾（不抛异常） */
   signal?: AbortSignal;
-  runName?: string;
   /**
    * 入站链路上下文（spec §9.2 跨进程关联）：触发本次 run 的上游 span 记成 run 根的
    * 一条 `links` —— 队列消费者 / HTTP 网关 / 上游服务据此把两个系统的 trace 接起来。
    * 不改 `traceId == runId`，run 仍是自己的新树（见 `core/trace.ts` 的 `TraceContext`）。
+   *
+   * 两个宿主侧入口：HTTP 的 `traceparent` 头由 `createHttpHandler` 自动解析；
+   * 走异步宿主时它随 `spec.options` 落进 `TaskRecord`，所以 `resumePending` 续跑的那次
+   * run 也带得上（跨进程关联不断链）。
    */
   traceContext?: TraceContext;
   /** 上下文预算策略：每回合发送前可编辑/压缩消息（compaction / context editing） */
@@ -240,15 +264,6 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 注意：子 agent / skill 内部的 llm 调用走各自的缺省策略，不受单次 run 的 `false` 影响。
    */
   retry?: RetryOptions | false;
-  /**
-   * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
-   * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；
-   * 模型自然收尾却始终未提交则以 stopReason='result_missing' 失败，typed 为 undefined。
-   *
-   * 泛型 S：传 `fromZod<T>(...)`（TypedSchema<T>）时，返回值 `typed` 自动是 `T | undefined`；
-   * 传裸 JsonSchema 时回落 `unknown`。
-   */
-  resultSchema?: S;
   /**
    * 成本硬管控（C1）：整条 run（**含子 agent**）累计 token 上限。每回合记账后判断
    * （主循环与各级子循环各自判断 —— 预算约束经 `ToolRunContext` 透传，各级共享同一
@@ -279,15 +294,6 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 非法单价在 run 开始时抛错（不静默算出 NaN）。
    */
   priceOverrides?: Record<string, ModelPricing>;
-  /**
-   * 遇到不在价格表内的模型时的回调（**每个循环作用域内每模型一次**，去重后调用；
-   * 主 agent 与每个子 agent 各算一个作用域）。框架同时在该 turn span 上记
-   * `usage.unpriced` 事件 —— 成本护栏的失效不再静默。
-   *
-   * 回调抛错被吞掉（观测是辅助动作，不影响 run）。**不会**改变 run 结局：
-   * 定价缺失是宿主配置问题，不该把一次成功的 run 打成失败。
-   */
-  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
   /**
    * 单个工具执行的超时（毫秒）；缺省 0 = 不限。超时**不杀 run**：
    * 该条 tool_result 记 `is_error` 回给模型（与「工具抛错不中断 run」同语义，模型可自行换路）。
@@ -324,28 +330,24 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    */
   maxToolResultChars?: number | false;
   /**
-   * 提示词版本号（D4）：写进 run 根 span 的 `system.version` attribute，
-   * trace 里据此可查「哪个版本的提示词产出的结果」。
-   *
-   * 走 `AgentApp.run` 时**不用手填** —— `system` 给 `SystemPrompt({ version })` 实例
-   * 就自动带上（见 runtime/systemPrompt.ts）。
-   */
-  systemVersion?: string;
-  /**
-   * 菜单内 @Prompt 能力的版本表（`{ 能力名: 版本 }`）：写进 run 根 span 的
-   * `prompts.versions` attribute（`name@ver` 逗号拼接），回答「质量退化是不是换了
-   * 某个 prompt 资产导致的」。走 `AgentApp.run` 时自动收集（@Prompt 的 `version` 字段）。
-   */
-  promptVersions?: Record<string, string>;
-  /**
    * 会话标识（**引擎级**旋钮）：写进 run 根 span 的 `session.id` attribute（OTLP 导出时映射
    * `gen_ai.conversation.id`），多轮对话的 run 由此可按会话聚合（thread 维度）。
    * 走 `AgentApp.run` / `executeRun` 时给了 `session` 就自动带上，不用手填。
    *
-   * ⚠️ 生效范围只到本层（`runAgent` / `executeRun`）：`AgentApp.run` **不转发**它 ——
-   * `RunAppOptions` 里那个同名字段继承自 `RunInvocationOptions.sessionId`（**异步宿主**的
-   * 可序列化会话引用，语义见 engine/spec.ts），直传给 `app.run` 会 `console.warn` 一次且
-   * 不生效（2026-10-12 ref-session-id-warn；此前是静默丢弃）。
+   * ## 同一个键、两层各消费一半（HITL / 异步宿主）
+   *
+   * - **异步宿主**（`AsyncRunner`）：这是会话的**可序列化引用**（只有 id，store 实例由
+   *   runner 持有）。配了 `sessionStore` 时，执行前把它换成 `RunAppOptions.session`
+   *   （store + id）注入 run；**没配** `sessionStore` 而任务带了它 ⇒ `submit` 当场抛
+   *   `TaskInputError`（响亮失败，不静默降级成「没有会话」）。随 `TaskRecord` 落库，
+   *   重启续跑不丢。
+   * - **引擎**（`runAgent` / `executeRun`）：写进 run 根 span 的 `session.id`；走
+   *   `AgentApp.run` 时给了 `session` 就自动带上，不用手填。
+   *
+   * ⚠️ 生效范围只到这两层：`AgentApp.run` **不转发**它 —— `RunAppOptions` 里那个同名字段
+   * 继承自本接口，直传给 `app.run` 会 `console.warn` 一次且不生效
+   * （2026-10-12 ref-session-id-warn；此前是静默丢弃）。程序内要走会话请给
+   * `RunAppOptions.session`。
    */
   sessionId?: string;
   /**
@@ -359,16 +361,63 @@ export interface RunAgentOptions<S extends JsonSchema = JsonSchema> {
    * 本轮续跑对应的**挂起时刻**（= `TaskRecord.suspendedSince`，2026-11-07 深评）。
    * 引擎只认 `requestedAt === approvalEpoch` 的决定 —— 旧挂起留下的同名 tool_use_id
    * 决定（OpenAI 兼容端点会复用 `call_1`）不能自动批准新一轮调用。
-   * 缺省 undefined = 手工续跑/兼容模式，不做 epoch 过滤（同 run 内仍只消费一次）。
+   * 异步宿主自动注入（取本次挂起的时刻）；手工续跑可省略 —— 缺省 undefined =
+   * 兼容模式，不做 epoch 过滤（同 run 内仍只消费一次）。
    */
   approvalEpoch?: number;
   /**
-   * 挂起期间投递的事件（2026-09-28 ref-run-event-input；语义见 `RunInvocationOptions.events`）：
-   * 续跑段在未决 tool_use 解决之后渲染成 user 文本消息注入消息流，并在 run 根
-   * 记 `task.event` 事件留痕（`{ injected, event_type, event_id? }` —— `injected`
-   * 的口径是「注入进本段消息流」，不等于「模型已看到」）。
+   * 挂起期间投递的事件（2026-09-28 ref-run-event-input，run 事件投入口）：随
+   * `TaskRecord.pendingEvents` 落库（纯数据、可序列化，重启不丢），续跑段在**未决 tool_use
+   * 解决之后**渲染成 user 文本消息注入消息流，并在 run 根记 `task.event` 事件留痕
+   * （`{ injected, event_type, event_id? }` —— `injected` 的口径是「注入进本段消息流」，
+   * 不等于「模型已看到」）。
+   *
+   * ⚠️ 为什么不让宿主直接把事件追加到消息末尾：续跑判定只认历史**末尾一条**，
+   * 追加 user 消息会把续跑判成新对话（见 `engine/loop.ts` 的注入点纪律）。
    */
   events?: TaskEvent[];
+}
+
+export interface RunAgentOptions<S extends JsonSchema = JsonSchema> extends RunPolicyInput {
+  /** 顶层 system（SystemPrompt 产物）。稳定内容应放在 tools 之后、第一个 breakpoint 前 */
+  system?: SystemParam;
+  /** 初始消息；由调用方给 user 起始消息 */
+  messages: MessageParam[];
+  /** 注入 recorder（run 层复用；不注入则内部新建，traceId 即 runId） */
+  recorder?: import('./tracer.js').TraceRecorder;
+  runName?: string;
+  /**
+   * 结构化结果 schema（R2）：给出后 engine 追加隐藏工具 submit_result，
+   * 模型调用它提交符合 schema 的最终结果，校验通过即结束循环并写入 AgentRunResult.typed；
+   * 模型自然收尾却始终未提交则以 stopReason='result_missing' 失败，typed 为 undefined。
+   *
+   * 泛型 S：传 `fromZod<T>(...)`（TypedSchema<T>）时，返回值 `typed` 自动是 `T | undefined`；
+   * 传裸 JsonSchema 时回落 `unknown`。
+   */
+  resultSchema?: S;
+  /**
+   * 遇到不在价格表内的模型时的回调（**每个循环作用域内每模型一次**，去重后调用；
+   * 主 agent 与每个子 agent 各算一个作用域）。框架同时在该 turn span 上记
+   * `usage.unpriced` 事件 —— 成本护栏的失效不再静默。
+   *
+   * 回调抛错被吞掉（观测是辅助动作，不影响 run）。**不会**改变 run 结局：
+   * 定价缺失是宿主配置问题，不该把一次成功的 run 打成失败。
+   */
+  onUnpricedModel?: (info: { model: string; spanId: string }) => void;
+  /**
+   * 提示词版本号（D4）：写进 run 根 span 的 `system.version` attribute，
+   * trace 里据此可查「哪个版本的提示词产出的结果」。
+   *
+   * 走 `AgentApp.run` 时**不用手填** —— `system` 给 `SystemPrompt({ version })` 实例
+   * 就自动带上（见 runtime/systemPrompt.ts）。
+   */
+  systemVersion?: string;
+  /**
+   * 菜单内 @Prompt 能力的版本表（`{ 能力名: 版本 }`）：写进 run 根 span 的
+   * `prompts.versions` attribute（`name@ver` 逗号拼接），回答「质量退化是不是换了
+   * 某个 prompt 资产导致的」。走 `AgentApp.run` 时自动收集（@Prompt 的 `version` 字段）。
+   */
+  promptVersions?: Record<string, string>;
 }
 
 export interface AgentRunResult<T = unknown> {

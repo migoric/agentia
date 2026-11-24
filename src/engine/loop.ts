@@ -18,10 +18,8 @@ import { abortedResult, failedResult, finishedResult, suspendedResult } from './
 import { tailToolUses, renderTaskEvent, textOfParam } from './resume-input.js';
 import { detectMenuDrift, menuSignature } from './menu-drift.js';
 import {
-  DEFAULT_MAX_ITERATIONS,
-  DEFAULT_MAX_TOKENS,
-  resolveDefaultModel,
   resolveModelChain,
+  resolveRunPolicy,
   runConfigSnapshot,
   validateLabels,
 } from './run-config.js';
@@ -205,7 +203,7 @@ async function agentLoop<S extends JsonSchema = JsonSchema>(
     );
     // 取消/超时优先于任何挂起出口（2026-11-07 深评 P1-1）：恢复段执行未决工具期间
     // signal 可能已中止；若这里仍返回 suspended，宿主会把它落成 suspended，
-    // cancel 的 #awaitCancelled 等不到终态（409），timer 挂起到点还会重跑整批工具。
+    // cancel 的宽限等待等不到终态（409），timer 挂起到点还会重跑整批工具。
     // 主循环的 deferred 出口此前有这条守卫，恢复段的两个出口与 approval 出口漏了。
     if (outcome.kind !== 'executed' && args.signal?.aborted) {
       return abortedResult(ctx.progress.iterations);
@@ -392,6 +390,9 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   options: RunAgentOptions<S>,
 ): Promise<AgentRunResult<SchemaType<S>>> {
   const recorder = options.recorder ?? new TraceRecorder();
+  // 模型与预算上限**解析一次**：往下同时喂给引擎装配与 `runConfigSnapshot`（trace 里的
+  // config.* 必须与真正生效的值同源；此前两处各算一遍，见 run-config.ts 的 RunPolicy 头注）
+  const policy = resolveRunPolicy(options);
   const rootName = options.runName ?? 'agent.run';
   const rootId = recorder.begin('run', rootName, null);
   // 入口段（属性记账 + 模型链 / 标签 / retry 校验）整体进 try：这一段抛错是**配置错**，
@@ -404,7 +405,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
   let model: string;
   let modelChain: ResolvedModelLink[];
   try {
-    recorder.setAttribute(rootId, 'model', resolveDefaultModel(options.model));
+    recorder.setAttribute(rootId, 'model', policy.model);
     // 提示词版本化（D4）：版本号落 run 根，便于按版本筛 trace
     if (options.systemVersion)
       recorder.setAttribute(rootId, 'system.version', options.systemVersion);
@@ -446,14 +447,14 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
     // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。
     // 只记可序列化标量；函数型选项（summarize / estimateTokens）不记内容。
-    for (const [k, v] of Object.entries(runConfigSnapshot(options)))
+    for (const [k, v] of Object.entries(runConfigSnapshot(policy, options)))
       recorder.setAttribute(rootId, k, v);
 
     // fallback 链（R8-P2）在这里解析 + 校验：坏环 / 死 client（持久化反序列化的空壳）
     // 是调用方的配置错，必须在 run 入口响亮抛 TypeError —— 上面的 catch 只给根 span
     // 收尾就原样 rethrow，不会收成「一条失败的 run」（配置错被记成运行失败是静默降级的一种）。
     client = options.client ?? createAnthropicClient();
-    model = resolveDefaultModel(options.model);
+    model = policy.model;
     modelChain = resolveModelChain({ model, client, fallbacks: options.fallbacks });
     // 归因标签（R8-P4）同一条入口校验纪律：配置错响亮抛，不收成失败的 run
     validateLabels(options.labels);
@@ -486,8 +487,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
           client,
           model,
           modelChain,
-          maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-          maxIterations: options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+          maxTokens: policy.maxTokens,
+          maxIterations: policy.maxIterations,
           system: options.system,
           messages: options.messages,
           tools: options.tools ?? [],
@@ -592,13 +593,16 @@ export async function runAgentScoped<S extends JsonSchema = JsonSchema>(opts: {
   /** 成本硬管控（C1）：累计成本（美元）上限；同 maxTotalTokens */
   maxCostUsd?: number | undefined;
 }): Promise<AgentLoopResult<SchemaType<S>>> {
+  // 同一份解析（子循环的 model / maxTokens / maxIterations 与主循环是**同一条**缺省口径；
+  // 此前这里也各写一遍 `??`，是 run-config.ts `RunPolicy` 头注里说的「应用点多处」之一）
+  const policy = resolveRunPolicy(opts);
   return agentLoop<S>({
     client: opts.client ?? createAnthropicClient(),
-    model: resolveDefaultModel(opts.model),
+    model: policy.model,
     // 不传 modelChain：子 agent 子循环**不继承**主 run 的 fallback 链（R8-P2 的有意边界 ——
     // 子循环的 model/client 由能力层显式给，跨厂商的链继承下来会让子 agent 悄悄换厂商）
-    maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-    maxIterations: opts.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+    maxTokens: policy.maxTokens,
+    maxIterations: policy.maxIterations,
     system: opts.system,
     messages: opts.messages,
     tools: opts.tools ?? [],

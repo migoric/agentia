@@ -7,6 +7,7 @@ import {
   MCP_DEFAULT_TIMEOUT_MS,
   assertToolResultNotError,
   isJsonRpcResponse,
+  mcpClosedError,
   parseToolList,
   toolsCallParams,
   unwrap,
@@ -154,7 +155,7 @@ export function createStdioMcpConnector(
   const guard: Guard = (p, label) => withDeadline(p, timeoutMs, label);
 
   const ensureProc = (): ChildProcess => {
-    if (closed) throw new Error('MCP 连接器已 close —— 请重新创建一个');
+    if (closed) throw mcpClosedError();
     if (fatal) throw fatal;
     if (proc) return proc;
 
@@ -209,7 +210,7 @@ export function createStdioMcpConnector(
   };
 
   const send = (method: string, params: unknown, abandoned?: AbortSignal): Promise<unknown> => {
-    if (closed) return Promise.reject(new Error('MCP 连接器已 close —— 请重新创建一个'));
+    if (closed) return Promise.reject(mcpClosedError());
     if (fatal) return Promise.reject(fatal);
     const id = nextId++;
     return new Promise<unknown>((resolve, reject) => {
@@ -320,7 +321,7 @@ export function createStdioMcpConnector(
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
-      fail(new Error('MCP 连接器已 close —— 请重新创建一个'));
+      fail(mcpClosedError());
       const p = proc;
       proc = null;
       if (!p) return;

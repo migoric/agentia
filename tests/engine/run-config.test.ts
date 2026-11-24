@@ -15,6 +15,7 @@ import {
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_MAX_TOKENS,
   resolveDefaultModel,
+  resolveRunPolicy,
   runConfigSnapshot,
 } from '../../src/engine/run-config.js';
 import { DEFAULT_RETRY } from '../../src/engine/retry.js';
@@ -26,7 +27,11 @@ import type { ContextPolicy, RunAgentOptions } from '../../src/engine/types.js';
 const BASE: RunAgentOptions = { messages: [{ role: 'user', content: 'go' }] };
 const snap = (
   o: Partial<RunAgentOptions> & { traceLimits?: TraceLimits } = {},
-): Record<string, string | number | boolean> => runConfigSnapshot({ ...BASE, ...o });
+): Record<string, string | number | boolean> => {
+  const options = { ...BASE, ...o };
+  // 快照现在读「已解析的策略」：先解析再喂，与生产路径（loop.ts 入口）同形
+  return runConfigSnapshot(resolveRunPolicy(options), options);
+};
 
 /** 改 AGENTIA_MODEL 跑一段、跑完恢复 —— 缺省模型解析读 process.env，别把环境漏给别的用例 */
 function withEnv(value: string | undefined, fn: () => void): void {
@@ -64,6 +69,40 @@ describe('resolveDefaultModel —— 显式 > env > 缺省', () => {
   it('env 是空串 / 纯空白 → 回落缺省（不把空模型名送进请求）', () => {
     for (const v of ['', '   '])
       withEnv(v, () => assert.equal(resolveDefaultModel(), 'claude-opus-5'));
+  });
+});
+
+describe('resolveRunPolicy —— 模型与预算上限只解析一次', () => {
+  it('缺省三件套：模型走 resolveDefaultModel，预算走 DEFAULT_*', () => {
+    withEnv(undefined, () => {
+      const p = resolveRunPolicy({});
+      assert.equal(p.model, resolveDefaultModel());
+      assert.equal(p.maxTokens, DEFAULT_MAX_TOKENS);
+      assert.equal(p.maxIterations, DEFAULT_MAX_ITERATIONS);
+    });
+  });
+
+  it('显式值原样成为生效值（0 也照收 —— 校验是入口校验器的事，不是本函数）', () => {
+    const p = resolveRunPolicy({ model: 'm-1', maxTokens: 123, maxIterations: 7 });
+    assert.deepEqual(p, { model: 'm-1', maxTokens: 123, maxIterations: 7 });
+    assert.equal(resolveRunPolicy({ maxTokens: 0 }).maxTokens, 0, '0 被悄悄换成缺省就是第二套读法');
+  });
+
+  it('env 只影响模型一项（预算与 env 无关）', () => {
+    withEnv('  env-model  ', () => {
+      const p = resolveRunPolicy({ maxTokens: 5 });
+      assert.equal(p.model, 'env-model');
+      assert.equal(p.maxTokens, 5);
+    });
+  });
+
+  it('解析结果就是快照里那三个键 —— 两处共读同一份，不再各自算', () => {
+    const o = { model: 'm-2', maxTokens: 999, maxIterations: 3 } as const;
+    const policy = resolveRunPolicy(o);
+    const snap = runConfigSnapshot(policy, { ...BASE, ...o });
+    assert.equal(snap['config.model'], policy.model);
+    assert.equal(snap['config.maxTokens'], policy.maxTokens);
+    assert.equal(snap['config.maxIterations'], policy.maxIterations);
   });
 });
 

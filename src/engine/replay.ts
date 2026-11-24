@@ -2,6 +2,8 @@ import type { ContentBlockParam, MessageParam } from '../core/message.js';
 import type { Span, SpanId, Trace } from '../core/trace.js';
 import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../core/trace.js';
 import { stringifySafe, truncateWithMark } from '../core/json.js';
+// 事件体缺省上限与引擎**写**事件时是同一个决策；本地再写一份 2000 会静默错位
+import { DEFAULT_EVENT_CHARS } from './tool-events.js';
 
 /**
  * Agentia —— trace 重放基底（spec §9.4 开放问题落地，roadmap R6）。
@@ -55,8 +57,6 @@ export interface ForkReplayOptions extends ReplayOptions {
   append?: MessageParam[];
 }
 
-const DEFAULT_MAX_EVENT_CHARS = 2000;
-
 /** tool.input / tool.output 事件体的规整形态（body 为 unknown，宽容读取） */
 interface ToolEventIO {
   tool: string;
@@ -69,7 +69,7 @@ interface ToolEventIO {
 
 export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): MessageParam[] {
   const includeToolIO = opts.includeToolIO ?? true;
-  const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
+  const maxChars = opts.maxEventChars ?? DEFAULT_EVENT_CHARS;
 
   const byId = new Map<SpanId, Span>(trace.spans.map((s) => [s.spanId, s]));
   const turns = sortTurns(trace);
@@ -86,7 +86,7 @@ export function traceToMessages(trace: Trace, opts: ReplayOptions = {}): Message
 
 export function forkMessages(trace: Trace, opts: ForkReplayOptions): MessageParam[] {
   const includeToolIO = opts.includeToolIO ?? true;
-  const maxChars = opts.maxEventChars ?? DEFAULT_MAX_EVENT_CHARS;
+  const maxChars = opts.maxEventChars ?? DEFAULT_EVENT_CHARS;
 
   const byId = new Map<SpanId, Span>(trace.spans.map((s) => [s.spanId, s]));
   const turns = sortTurns(trace);
