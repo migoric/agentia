@@ -78,6 +78,31 @@ export const USAGE_PARTIAL_EVENT = 'usage.partial';
  */
 export const CONTEXT_BUDGET_EVENT = 'context.budget';
 
+/**
+ * 模型**换环**事件名（body 为 `{ from, to, errorType }`），由 `engine/turn.ts` 写在
+ * **换到的那一环**第一个尝试的 `llm.turn` span 上 —— 不是写在失败的那个 span 上，
+ * 所以「从谁换到谁」只能读事件体，不能靠相邻 span 猜。
+ *
+ * 为什么进词汇表（2026-11-25）：此前它是 `turn.ts` 换环处的一处裸字面量，写入侧自用就够了。
+ * 但「这一轮到底降级过没有」是**包外消费者**判「两次跑分可比吗」的一等证据 —— 评测仓要
+ * 靠它把「基线降级过、候选没降级」这种不可比情况识别出来，否则通过率差异会被读成改动
+ * 效果。读者一出现，裸字面量就从「写法自由」变成「改名即静默归零」，与 `TOOL_INPUT_EVENT`
+ * 同因，收到最底层。
+ */
+export const LLM_FALLBACK_EVENT = 'llm.fallback';
+
+/**
+ * run 根 span 上「**声明过**的 fallback 链」属性名（模型名逗号拼接；没配时键缺席）。
+ *
+ * 与 `LLM_FALLBACK_EVENT` 是一对，但读法相反：那个是**实际发生**，这个是**配置声明**。
+ * 实际发生数为 0 有两种可能（没配链 / 配了但一次没触发），只有读这个属性才分得开。
+ *
+ * ⚠️ `config.*` 这一族（`engine/run-config.ts` 里 18 个属性名）**整体尚未单源**，这里只
+ * 先落第一例，理由具体：它是目前唯一被**包外**消费者按名字读的一个（包内那处是
+ * `eval/export.ts` 读 `config.traceContent`）。全族收口是独立的一次改动，不顺手夹在这里。
+ */
+export const CONFIG_FALLBACKS_ATTR = 'config.fallbacks';
+
 /** 工具 I/O 事件名的联合 —— `eval/export.ts` 的工具事件过滤器按它取参数 */
 export type ToolIoEventName = typeof TOOL_INPUT_EVENT | typeof TOOL_OUTPUT_EVENT;
 

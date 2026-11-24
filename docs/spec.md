@@ -8377,6 +8377,44 @@ push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排�
 92.29 分支 / 98.89 函数；PG 52／52（PGlite）、真库 18／18。
 
 
+### 2026-11-25 ① ref-trace-vocab-public：**trace 词汇表进公共导出面（7 个常量，行为零变化）**
+
+**来路**：下游评测仓（`agentia-harness`）要按名字过滤 trace —— `tool.input` 数工具调用、
+`usage.missing` 判「成本是否可知」、`llm.fallback` + `config.fallbacks` 判「这一轮降级过没有
+⇒ 两次跑分可不可比」。前五个名字在 `core/trace.ts` 早就是 `export const`，但**停在模块级**：
+`src/index.ts` 只导 `attachScore` / `parseTraceparent` 一类。后两个（`llm.fallback` /
+`config.fallbacks`）更原始 —— 是 `engine/turn.ts` 与 `engine/run-config.ts` 里的**裸字面量**，
+各一处，写入侧自用刚好够。
+
+**为什么必须外发，而不是「让下游抄一份」**：抄字面量不会报错，只会在上游改名那天**静默过滤
+出 0 条** —— 报表说「没有工具调用」而 trace 里明明有；说「这轮没降级」而实际降过。后者的方向
+更贵：它把「不可比」读成「可比」，于是通过率差异被当成 agent 的进退步。这与 §9 记的
+`TOOL_INPUT_EVENT` 单源化（2026-09-28 外部深评 E8）是同一个病，只是那次收在仓内三层、这次要
+跨到仓外 —— 而仓外没有 `tsc` 帮你发现，只有「读到 0 条」这种沉默的症状。
+
+**为什么整组外发（7 个）而不是只挑下游当前要的 4 个**：「哪些名字稳定」不该由消费者猜。挑着
+导，下一个要用 `USAGE_PARTIAL_EVENT` 的人还得再等一个版本，且会怀疑「没导的那个是不是不稳」。
+词汇表的性质就是整体稳定，那就整体承诺一次。
+
+**改动**：`LLM_FALLBACK_EVENT` / `CONFIG_FALLBACKS_ATTR` 落进 `core/trace.ts`（与既有五条事件名
+同处），`engine/turn.ts` 与 `engine/run-config.ts` 改为引用常量；`src/index.ts` 一次转出 7 个
+（导出面 255 → 262）；官网 `api.html` 同步登记。**那张页的「每个导出都必须出现」守卫确实红了**
+—— 它是这轮唯一一次被守卫拦下来的地方，正是它该做的事。
+
+**刻意不做**：`config.*` 这一族在 `engine/run-config.ts` 里有 **18 个**属性名，整体单源化是独立
+一次改动（每个都要审「值该不该也进属性」）。本轮只落 `config.fallbacks` —— 它是目前唯一被**包外**
+按名字读的一个（包内那处是 `eval/export.ts` 读 `config.traceContent`）。只落一个会显得孤零零，
+所以在 `core/trace.ts` 的常量注释里写明了这一点，免得后人以为「这族只收了它、剩下的忘了」。
+
+**验证面**：架构守卫 `tool-event-names` 从「两个工具事件名」扩到「四个名字」，遍历文件下限与
+射程钉随之更新（8 → 9 个文件）；四条变异各自咬住 —— ① `turn.ts` 换回 `'llm.fallback'` ⇒ 唯一性
+红；② `run-config.ts` 换回 `'config.fallbacks'` ⇒ 唯一性红；③ `CONFIG_FALLBACKS_ATTR` 的值少一个
+`s` ⇒ 值契约 + 条数两条红（**这条最关键**：没有值断言时，改名只会让字面量条数变少、守卫反而
+变绿）；④ `core/trace.ts` 多写一处字面量 ⇒「恰好 4 处」红。四处都在改前断言命中数为 1，还原后
+逐文件核对。门禁：框架套件 2027／2027，覆盖率 97.68 行 / 91.72 分支 / 97.54 函数（棘轮未动）；
+CLI 297、trace-view 117、PG 52 全绿；`biome ci` 605 文件零告警；`verify-all` 8 步（官网那步要求
+Node ≥ 22.23.4，本地 Node 22.22.2 跑不了，已用 24 补跑通过 —— CI 用的是 24）。
+
 ## 11. 开放项
 
 

@@ -1,13 +1,21 @@
 /*
- * 架构守卫 —— 工具 I/O 事件名（`tool.input` / `tool.output`）的**跨层单源**（外部深评 E8）。
+ * 架构守卫 —— trace **词汇表**（`tool.input` / `tool.output` / `llm.fallback` /
+ * `config.fallbacks`）的**跨层单源**（外部深评 E8；2026-11-25 从两个工具事件名扩到四个）。
  *
  * ## 不守会怎样
  *
- * 这两个名字跨 **engine → eval → integrations** 三层被手写（原状 12 处取值）。改名的代价不是
- * 「改三遍」那么轻：漏一处不是少记一条事件，而是**静默归零** —— 事件在引擎里叫 A、报表按 B
- * 过滤 ⇒ `integrations/report.ts` / `metrics-state.ts` 那两处过滤恒空，**报表说「没有工具调用」
- * 而 trace 里明明有**。同一类的先例本仓记过好几次（`limits.ts` 头注的「计数会过期」、
- * `AGENTS.md` 的分层约定），共同点是：**没有任何东西会在退化时变红**。
+ * 这些名字跨 **engine → eval → integrations** 三层被手写（工具那两个原状 12 处取值）。改名的
+ * 代价不是「改三遍」那么轻：漏一处不是少记一条事件，而是**静默归零** —— 事件在引擎里叫 A、
+ * 报表按 B 过滤 ⇒ `integrations/report.ts` / `metrics-state.ts` 那两处过滤恒空，**报表说
+ * 「没有工具调用」而 trace 里明明有**。同一类的先例本仓记过好几次（`limits.ts` 头注的
+ * 「计数会过期」、`AGENTS.md` 的分层约定），共同点是：**没有任何东西会在退化时变红**。
+ *
+ * ## 为什么 2026-11-25 要把后两个也收进来
+ *
+ * `llm.fallback` 与 `config.fallbacks` 原本是 `engine/` 里的**裸字面量**（各一处，写入侧自用）。
+ * 一旦出现**包外**读者 —— 评测仓正是靠这对名字判「这一轮降级过没有、于是两次跑分可比吗」——
+ * 它们就与工具事件名同性质：改名即静默归零，而且归零的方向是「误判为可比」，比漏记更贵。
+ * 收进来的同时把字面量换成常量，本守卫就从「两个名字」变成「四个名字」。
  *
  * ## 单源为什么落在 `core/trace.ts`
  *
@@ -15,8 +23,11 @@
  * 只许依赖 `core`（`tests/architecture/layering.test.ts`），拿不到 engine 的导出，那样
  * integrations 侧只能再手写一份，等于把「单源」补成「两处」。所以名字（core）与载荷构造器
  * （engine）**分开**：名字是最底层词汇表，谁都能引。本守卫把这个结论也钉住 ——
- * 常量必须能从 `core/trace.ts` 取到、且值就是那两个字符串（它是**对外契约**：
- * 看板 / OTLP 消费方 / 报表都按这个名字过滤，改值等于改协议）。
+ * 常量必须能从 `core/trace.ts` 取到、且值就是这几个字符串（它是**对外契约**：
+ * 看板 / OTLP 消费方 / 报表 / 评测仓都按这个名字过滤，改值等于改协议）。
+ *
+ * ⚠️ `config.fallbacks` 的**前缀**陷阱：`run-config.ts` 里还有 `config.maxCostUsd` 一族
+ * （18 个属性名）尚未单源。本守卫只钉这一个**精确**字符串，不假装那一族已经收口。
  *
  * ## 为什么**不**复用 `lib/source-scan.ts`
  *
@@ -35,7 +46,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { TOOL_INPUT_EVENT, TOOL_OUTPUT_EVENT } from '../../src/core/trace.js';
+import {
+  CONFIG_FALLBACKS_ATTR,
+  LLM_FALLBACK_EVENT,
+  TOOL_INPUT_EVENT,
+  TOOL_OUTPUT_EVENT,
+} from '../../src/core/trace.js';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 const SRC = join(ROOT, 'src');
@@ -52,7 +68,7 @@ const ALLOWLIST: ReadonlyArray<{ file: string; count: number; why: string }> = [
   },
 ];
 
-const NEEDLES = ["'tool.input'", "'tool.output'"];
+const NEEDLES = ["'tool.input'", "'tool.output'", "'llm.fallback'", "'config.fallbacks'"];
 
 /**
  * 最小遮蔽器：把**注释**与**模板字符串的字面量段**替换成等长空格（保留换行），
@@ -191,10 +207,14 @@ function countLiterals(file: string): number {
   return n;
 }
 
-describe('工具 I/O 事件名的跨层单源（E8）', () => {
-  it('常量值就是那两个字符串（对外契约：看板 / OTLP / 报表都按名字过滤）', () => {
+describe('trace 词汇表的跨层单源（E8）', () => {
+  it('常量值就是那几个字符串（对外契约：看板 / OTLP / 报表 / 评测仓都按名字过滤）', () => {
     assert.equal(TOOL_INPUT_EVENT, 'tool.input');
     assert.equal(TOOL_OUTPUT_EVENT, 'tool.output');
+    // 2026-11-25 新增的两条：包外读者（评测仓）靠这对名字判「这轮降级过没有 ⇒ 两次跑分可比吗」。
+    // 值改一个字符，读取侧就是**静默读到 0 次降级** —— 方向恰好是「误判为可比」，比漏记更贵
+    assert.equal(LLM_FALLBACK_EVENT, 'llm.fallback');
+    assert.equal(CONFIG_FALLBACKS_ATTR, 'config.fallbacks');
   });
 
   it('遮蔽器自证：代码里的看见、注释与模板里的看不见（含阳性对照）', () => {
@@ -226,6 +246,7 @@ describe('工具 I/O 事件名的跨层单源（E8）', () => {
     // 射程钉：**曾经**带这两个字面量的文件必须在走查范围里（否则「扫了但没扫到该扫的」）
     for (const must of [
       'src/engine/turn.ts',
+      'src/engine/run-config.ts',
       'src/engine/mcp-server.ts',
       'src/engine/replay.ts',
       'src/eval/export.ts',
@@ -259,8 +280,12 @@ describe('工具 I/O 事件名的跨层单源（E8）', () => {
     );
   });
 
-  it('单源确实是**常量**（不是又一处字面量集中在别的地方）：core/trace.ts 导出两条且各恰好一处', () => {
+  it('单源确实是**常量**（不是又一处字面量集中在别的地方）：core/trace.ts 每个名字恰好一处', () => {
     const n = countLiterals(join(SRC, 'core', 'trace.ts'));
-    assert.equal(n, 2, `core/trace.ts 应恰好两处（两个常量的定义各一处），实测 ${n} 处`);
+    assert.equal(
+      n,
+      NEEDLES.length,
+      `core/trace.ts 应恰好 ${NEEDLES.length} 处（每个常量的定义各一处），实测 ${n} 处`,
+    );
   });
 });

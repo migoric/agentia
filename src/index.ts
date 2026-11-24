@@ -18,7 +18,22 @@ export type {
   Usage,
   Score,
 } from './core/trace.js';
-export { attachScore, parseTraceparent } from './core/trace.js';
+// core：trace 的**名字契约**。这组常量此前停在模块级（写它的人自己用就够），
+// 但「按名字过滤 trace」是包外消费者的日常动作 —— 评测、报表、审计都要读
+// `tool.input` / `usage.missing` / `llm.fallback` 来决定「这次跑分算不算数」。
+// 不给名字，外面只能抄字面量；上游改名那天，抄的那份**静默读到 0 条**（不是报错）。
+// 所以整组外发，而不是挑几个当前有人要的 —— 「哪些稳定」不该由消费者猜。
+export {
+  attachScore,
+  CONFIG_FALLBACKS_ATTR,
+  CONTEXT_BUDGET_EVENT,
+  LLM_FALLBACK_EVENT,
+  parseTraceparent,
+  TOOL_INPUT_EVENT,
+  TOOL_OUTPUT_EVENT,
+  USAGE_MISSING_EVENT,
+  USAGE_PARTIAL_EVENT,
+} from './core/trace.js';
 export type {
   AgentTool,
   ApprovalDecision,
