@@ -13,6 +13,7 @@ import { RunContext, withRunContext } from './context.js';
 import type { MemoryStore } from './memory.js';
 import type { SessionStore } from './session.js';
 import { flushTraceSinks } from '../core/trace-sink.js';
+import { sessionReplyContent } from '../core/session-reply.js';
 
 /**
  * Run —— 一次运行的生命周期容器（spec §2/§6.1）。
@@ -142,7 +143,9 @@ export interface ExecuteRunOptions<S extends JsonSchema = JsonSchema> extends Ru
    * 会话持久化（C4）：run 开始把 `store.load(id)` 拼在**传入 messages 之前**，
    * 收尾把「本轮消息 + 回复」`append` 回去。与 `memory`（键值黑板）正交 —— 见 SessionStore。
    *
-   * 只记**对话轮次**：本轮传入的 messages + 最终回复（`finalText`）。
+   * 只记**对话轮次**：本轮传入的 messages + 这一轮的回复。回复的取值口径见
+   * `core/session-reply.ts`（**不是**简单的 `finalText`：结构化收尾那回合常常没有散文，
+   * 正文在 `typed` 里 —— 只读 finalText 会让历史记成「本次无文本输出」）。
    * run 内部的 tool_use / tool_result 往返**不进会话历史**（它们属于这次 run 的内部过程；
    * 要重建完整过程用 trace 重放 `traceToMessages`）—— 这样历史保持干净、可长期累积。
    */
@@ -293,7 +296,10 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
       // 注意判据是 run 的终态而非「有没有抛异常」—— stopReason 为 error / max_tokens /
       // budget_exceeded / aborted 的 run 同样是「没跑完」，不该进对话历史。
       if (session && !sessionSkipped && run.status === 'succeeded') {
-        await appendSession(session, options.messages, result.finalText);
+        // 正文口径走 `core/session-reply.ts` 的**单一函数**（不是 `result.finalText`）：
+        // 结构化收尾那一回合常常没有散文，只读 finalText 会把已产出的 `typed.report`
+        // 记成「（本次无文本输出）」⇒ 下一轮直接失忆。见该件头注。
+        await appendSession(session, options.messages, sessionReplyContent(result));
       }
       // 冲刷前把「run 之后才算得出的结论」挂上 trace（见 beforeFlush 的注释）。
       // 位置很关键：必须在 flushSinks **之前**，否则 sink 看不到它。
@@ -321,9 +327,6 @@ export async function executeRun<S extends JsonSchema = JsonSchema>(
     }
   });
 }
-
-/** 没有文本输出时写进会话的占位（保住「历史以 assistant 结尾」这个不变量，见 appendSession） */
-const EMPTY_REPLY_MARK = '（本次无文本输出）';
 
 /**
  * 读会话历史，拼在传入 messages 之前。失败当「无历史」继续 ——
@@ -357,10 +360,14 @@ async function loadSession(
  * 但**不再零信号**：吞之前落一条 `console.warn`（2026-10-16 ref-session-failure-loud，
  * 同 `loadSession` 那条理由 —— 写失败 = 这一轮白聊，下一个 run 看不到它）。
  *
+ * `content` 由 `core/session-reply.ts` 的 `sessionReplyContent()` 产出（**恒非空**）：
+ * 取值口径住在那里，本函数不判空、也不自己决定「没有文本时写什么」——
+ * 判据与占位符各有唯一一处，才不会有一个回写点漏改（HITL 恢复段是另一个回写点）。
+ *
  * 三条不变量（都是为了下一轮还能把这个历史发出去）：
  * 1. **只有成功路径回写** —— 失败时若只存下用户的提问，历史就会以 user 结尾，
  *    下一轮再传入 user 消息即变成「连续两条 user」，撞 API 的角色交替校验；
- * 2. 历史**以 assistant 结尾**：没有文本输出时补一条占位（`end_turn` 下极罕见）；
+ * 2. 历史**以 assistant 结尾**：没有文本输出时补一条占位（`sessionReplyContent` 兜底）；
  * 3. 只存**对话轮次**（用户输入 + 最终回复），run 内部的 tool 往返不进历史
  *    —— 要完整过程请用 trace 重放 `traceToMessages`。
  *
@@ -371,14 +378,11 @@ async function loadSession(
 async function appendSession(
   session: { store: SessionStore; id: string } | undefined,
   incoming: MessageParam[],
-  finalText: string,
+  content: string,
 ): Promise<void> {
   if (!session) return;
   try {
-    await session.store.append(session.id, [
-      ...incoming,
-      { role: 'assistant', content: finalText || EMPTY_REPLY_MARK },
-    ]);
+    await session.store.append(session.id, [...incoming, { role: 'assistant', content }]);
   } catch (e) {
     console.warn(
       '[agentia] 会话历史回写失败，本轮对话不会被记住：' +

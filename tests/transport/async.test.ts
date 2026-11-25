@@ -893,6 +893,57 @@ describe('HITL × sessionStore：恢复段不重拼历史、不毒化会话', ()
     }
     assert.equal(history[history.length - 1]?.role, 'assistant', '历史必须以 assistant 结尾');
   });
+
+  it('恢复段也走 typed 口径：提交回合没散文时，会话正文是 typed.report 而不是占位符（0.10.15）', async () => {
+    // 这条是 run.ts 那处的**兄弟**：恢复段刻意不把 session 交给 run 层，回写由 runner 自己补
+    // ⇒ 同一个判断写了两份。0.10.15 之前两处都只读 finalText，于是结构化结果在两条路径上一起丢。
+    const report = '## 恢复段报告\n\n系统：arms-front';
+    const { client } = mockClient([
+      toolUseMsg('danger', {}, 'tu1'),
+      toolUseMsg('submit_result', { report }, 'tu2'),
+    ]);
+    const tools: AgentTool[] = [
+      {
+        name: 'danger',
+        description: '危险操作',
+        inputSchema: OBJ,
+        approval: 'required',
+        run: () => 'done',
+      },
+    ];
+    const app: AppCallable = {
+      name: 'hitl-typed-session',
+      run: (messages, opts) =>
+        executeRun({
+          messages,
+          client,
+          tools,
+          ...opts,
+          resultSchema: {
+            type: 'object',
+            properties: { report: { type: 'string' } },
+            required: ['report'],
+            additionalProperties: false,
+          },
+        }),
+    };
+    const sessionStore = new InMemorySessionStore();
+    const runner = new AsyncRunner(app, { sessionStore });
+    const t = runner.submit('巡检', { options: { sessionId: 's1' } });
+    await waitFor(
+      () => (runner.poll(t.taskId) as TaskRecord | undefined)?.status === 'suspended',
+      '任务应挂起等审批',
+    );
+    await runner.approve(t.taskId, { tu1: { approved: true } });
+    const done = await runner.awaitTask(t.taskId);
+
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.result?.finalText, '', '前提：这一回合模型只提交了结构化结果');
+    assert.deepEqual(sessionStore.load('s1'), [
+      { role: 'user', content: '巡检' },
+      { role: 'assistant', content: report },
+    ]);
+  });
 });
 
 describe('HITL 续跑时的菜单漂移（R8 候选 3 / spec §10 2026-09-27 ref-menu-drift-signals）', () => {
