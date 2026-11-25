@@ -8651,7 +8651,15 @@ CLI 297、trace-view 117、PG 52 全绿；官网 `api.html` 导出面 262 → 26
     空 `approvals: {}` 不再算续跑 —— 迁移动作见 CHANGELOG 本版节）；
   → v0.10.13（**内部收口，无对外可见变更**：`async.ts` 按知识拆两块、模型与预算缺省的三个应用点收成一个、两个选项面的 25 个共同字段收成 `RunPolicyInput` 基底、四条新守卫；公共导出面零增删改 ⇒ 既有使用者不需要任何动作）；
   → v0.10.14（**纯新增导出，无破坏性变更**：trace 词汇表 7 个常量进公共导出面 —— 三组事件名（`tool.input` / `tool.output` 等）与 `config.fallbacks` 根属性名，公共导出面 255 → 262；既有的 255 个导出逐字未变、运行时行为逐字未变 ⇒ 既有使用者不需要任何动作。动机是包外消费者已存在：抄字面量在上游改名时**不报错、只静默过滤出 0 条**，失败方向是误判为可比 / 误判为没花钱）；
-  `AGENTIA_VERSION = '0.10.14'`。决策均见 §10。
+  → v0.10.15（**修复 + 纯新增导出，无破坏性 API 变更**：会话正文不再只看 `finalText` ——
+    结构化收尾那回合常常没有散文，只读它会把已产出的 `typed.report` 记成「（本次无文本输出）」
+    ⇒ 多轮直接失忆。两条回写路径（普通 run / HITL 恢复段）改调同一个函数，占位文案与取值
+    都单源化；公共导出面 262 → 269（新增 `sessionReplyText` / `sessionReplyContent` /
+    `clipSessionReply` / `EMPTY_REPLY_MARK` / `SESSION_REPLY_MAX_CHARS` / `SESSION_REPLY_KEYS` /
+    `SessionReplySource`）。⚠️ **行为变更必须说清**：`resultSchema` 场景下会话历史里的
+    assistant 正文会**变长**（占位符 → 结构化结果本身），占位符文案一个字没改；
+    `finalText`、`typed`、trace、落库路径均未动 ⇒ 既有使用者不需要改代码）；
+  `AGENTIA_VERSION = '0.10.15'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

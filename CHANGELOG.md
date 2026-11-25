@@ -5,6 +5,47 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.15] - 2026-11-25
+
+### 修复
+
+**`appendSession` 在 `resultSchema` 场景丢弃结构化结果，导致会话失忆。**
+声明了 `resultSchema`、靠 hidden `submit_result` 收尾的 agent，那一回合模型常常**不留散文**
+⇒ `AgentRunResult.finalText === ''`，而完整答案在 `typed` 里。此前两条会话回写路径都只读
+`finalText`，于是：run 成功、报告落在 `typed.report`、也回给了调用方，**会话历史里这一轮的
+assistant 正文却是 `（本次无文本输出）`** —— 下一轮追问「上一轮做了什么」得到「该轮未产出结论，
+本工单的前提不成立」。报告产出了、也交付了，只有会话记成什么都没说。
+
+- 新增 `core/session-reply.ts`（纯函数，包入口已导出）：`sessionReplyText` /
+  `sessionReplyContent` / `clipSessionReply`，以及 `EMPTY_REPLY_MARK` /
+  `SESSION_REPLY_MAX_CHARS` / `SESSION_REPLY_KEYS`。取值口径：`finalText`（trim 后非空，
+  **不 JSON 化**）→ `typed` 白名单键
+  （`report → reply → text → content → summary → answer`，值 trim、**保内部换行**）→
+  `JSON.stringify(typed)` 兜底（`{}` / `[]` 视为空）→ 占位符。
+- **两条**回写路径（普通 run 与 HITL 恢复段）现在调**同一个函数**：这个 bug 的形状就是
+  「同一个语义写了两份拷贝」（两处各写一份判断、各写一份占位文案），所以修的时候顺手去拷贝。
+- 超长按 8000 字符截断并带 `…[truncated]`，**只影响会话历史**：`typed`、trace、落库路径
+  一个字不动。
+
+⚠️ **这是行为变更（不是破坏性变更）**：`resultSchema` 场景下，会话历史里 assistant 的正文
+会比以前**变长** —— 从占位符变成结构化结果本身（可能是 markdown 报告，或兜底时的 JSON）。
+按占位符文案识别「这一轮没说话」的下游逻辑仍然有效（**文案一个字没改**），但遇到结构化 run
+时它不会再命中 —— 那本来就是「这一轮有话说」。
+
+**无破坏性 API 变更，无迁移动作** —— 公共导出面 262 → 269（纯新增 6 个值 + 1 个类型），
+既有导出逐字未变；`finalText` 的语义**刻意不变**（它参与评测断言与 trace，把 `typed` 塞进去
+等于「模型说了它没说的话」）。
+
+### 新增
+
+- `sessionReplyText(result) → string | undefined`：从 run 结果取「给人看的那段话」。
+- `sessionReplyContent(result) → string`：取值 → 截断 → 空则占位，恒非空（回写点唯一该调的）。
+- `clipSessionReply(text) → string`：超 `SESSION_REPLY_MAX_CHARS` 截断并加标记。
+- `EMPTY_REPLY_MARK` / `SESSION_REPLY_MAX_CHARS` / `SESSION_REPLY_KEYS` / `SessionReplySource`。
+
+导出的理由是**去重**：宿主侧已有同逻辑副本与硬编码的占位符文案，不导出就会有三份拷贝，
+上游改口径时那些副本不会响。
+
 ## [0.10.14] - 2026-11-25
 
 ### 新增
@@ -4832,7 +4873,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.14...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.15...HEAD
+[0.10.15]: https://github.com/migoric/agentia/releases/tag/v0.10.15
 [0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14
 [0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13
 [0.10.12]: https://github.com/migoric/agentia/releases/tag/v0.10.12
