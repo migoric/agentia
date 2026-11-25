@@ -5,6 +5,33 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.14] - 2026-11-25
+
+### 新增
+
+**trace 词汇表进公共导出面**（7 个常量，行为零变化）：`TOOL_INPUT_EVENT` / `TOOL_OUTPUT_EVENT` /
+`USAGE_MISSING_EVENT` / `USAGE_PARTIAL_EVENT` / `CONTEXT_BUDGET_EVENT` / `LLM_FALLBACK_EVENT` /
+`CONFIG_FALLBACKS_ATTR`。前五个此前是 `core/trace.ts` 的模块级 `export const`（写它的人自己
+用得上就够），后两个根本还是裸字面量（`engine/turn.ts` 与 `engine/run-config.ts` 各一处）。
+
+发出去的理由是**消费者已经出现了**：按名字过滤 trace 是包外动作 —— 评测链路靠 `tool.input`
+数工具调用、靠 `usage.missing` 判成本是否可知、靠 `llm.fallback` + `config.fallbacks` 判
+「这一轮降级过没有 ⇒ 两次跑分可不可比」。不给名字，外面只能抄字面量；上游改名那天，抄的那份
+**不报错，只静默过滤出 0 条** —— 而方向恰好是「误判为可比」「误判为没花钱」。所以整组外发，
+而不是挑当前有人要的那几个：「哪些名字稳定」不该由消费者猜。
+
+- `LLM_FALLBACK_EVENT` / `CONFIG_FALLBACKS_ATTR` 同时把 `engine/` 的两处裸字面量换成常量；
+  架构守卫 `tool-event-names` 从「两个工具事件名」扩到「四个名字」（值契约 + 全仓唯一 +
+  `core/trace.ts` 恰好 4 处）。
+- 官网 `api.html` 同步登记（导出数 255 → 262）。
+
+⚠️ 这 7 个是**对外契约**：值改一个字符就是改协议。语义细节见 `core/trace.ts` 各处注释 ——
+尤其 `config.fallbacks`（**配置声明**）与 `llm.fallback`（**实际发生**）是两条不同证据，
+别当成一件事：属性在场而事件数为 0 是「配了链但一次没触发」，两者都缺席才是「没配」。
+
+**无破坏性变更，无迁移动作** —— 纯新增导出，既有导出逐字未变（255 个仍是原来那 255 个），
+运行时行为逐字未变。
+
 ## [0.10.13] - 2026-11-22
 
 ### 变更
@@ -4805,7 +4832,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.13...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.14...HEAD
+[0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14
 [0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13
 [0.10.12]: https://github.com/migoric/agentia/releases/tag/v0.10.12
 [0.10.11]: https://github.com/migoric/agentia/releases/tag/v0.10.11

@@ -34,6 +34,7 @@ import type { SpanError, SpanId, Usage } from '../core/trace.js';
 import {
   addUsage,
   CONTEXT_BUDGET_EVENT,
+  LLM_FALLBACK_EVENT,
   TOOL_INPUT_EVENT,
   TOOL_OUTPUT_EVENT,
   USAGE_PARTIAL_EVENT,
@@ -418,7 +419,7 @@ export async function streamTurn<S extends JsonSchema>(ctx: LoopContext<S>): Pro
     for (let attempt = 1; ; attempt++) {
       turnId = args.recorder.begin('llm.turn', link.model, args.parentSpanId);
       if (fallbackFrom !== null) {
-        args.recorder.event(turnId, 'llm.fallback', {
+        args.recorder.event(turnId, LLM_FALLBACK_EVENT, {
           from: fallbackFrom.from,
           to: link.model,
           errorType: fallbackFrom.errorType,

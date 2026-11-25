@@ -30,7 +30,7 @@ import { join, relative } from 'node:path';
  * | 文件 | 代码行 | 备注 |
  * |---|---:|---|
  * | `transport/async.ts` | **629** | 2026-11-09：跨进程流兜底提到 runner 级单例；2026-11-14：原子首提 / 恢复接线，提交协调、等待与通知抽成 submission / task-awaiter / task-observers；2026-11-22 上午：`task 不存在` 措辞收进 `task-not-found.ts`（797 → 798）。**2026-11-22 下午按知识拆两块**：任务流的读出面 → `task-stream.ts`（帧形状 / 三种语义 / 跨进程兜底），取消仲裁与取消账本 → `task-cancel.ts`（意图 / 已由 cancel 收尾 / 并发串行）；798 → 629，两个新件分别 108 / 149 |
- * | `engine/turn.ts` | 607 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线；2026-11-13：压缩降级共用 `reportFailure` + 同回合同 tool_use_id 的审批决定不得复用 |
+ * | `engine/turn.ts` | 608 | 2026-11-07：审批 epoch / 失败尝试 usage / 坏值防线；2026-11-13：压缩降级共用 `reportFailure` + 同回合同 tool_use_id 的审批决定不得复用；2026-11-25：换环事件名收进 `core` 词汇表（`LLM_FALLBACK_EVENT`），+1 行 import |
  * | `integrations/openai.ts` | 530 | 2026-11-07：部分 usage / Retry-After / 非 JSON 响应 |
  *
  * 2026-11-07 深度评修复把 `async.ts` 从 683 推到 749（唤醒互斥 / 取消意图 / 跨进程流收口），

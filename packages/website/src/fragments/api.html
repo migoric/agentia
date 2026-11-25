@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>255</b> 个导出</span>
+          <span class="api-chip"><b>262</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -78,6 +78,10 @@
             <tr><td>TraceRecordEvent</td><td><code>{ type: 'span.begin' | 'span.end' | 'span.event' | 'span.attribute' | 'span.link'; seq; … }</code></td><td><strong>增量记账出口</strong>的事件形状（<code>onTraceEvent</code> 的回调参数）：run <strong>进行中</strong>逐笔给，给「等不了收尾」的消费者（进度面板 / SSE / 异步任务流）。与 <code>TraceSink</code> 是<strong>两条缝</strong>，不是替代 —— sink 收尾拿整棵、本回调运行期逐笔给且<strong>不保证送达</strong>。载荷是<strong>增量 + 此刻的拷贝</strong>；按 <code>seq</code> 升序折回必须逐字等于收尾时的 trace。</td></tr>
             <tr><td>Score</td><td><code>{ name; value; source?; comment? }</code></td><td>质量评分（R7 质量闭环）：LLM-judge / 人工标注 / eval 结论挂到 trace 上；约定 value 为 0–1（布尔结论用 0/1），source 记评分来源（eval 名 / 'human' / judge 模型 id）。</td></tr>
             <tr><td>attachScore</td><td><code>(trace: Trace, score: Score) → void</code></td><td>把评分挂到 trace 根 span（一条 <code>score</code> 事件，body 即 Score）；评分通常来自 run 之外，故走事件而非 span 字段。出口映射：OTLP 译为 <code>gen_ai.evaluation.result</code>，metricsSink 聚合为 <code>agentia_score</code> 指标族。</td></tr>
+            <tr><td>TOOL_INPUT_EVENT / TOOL_OUTPUT_EVENT</td><td><code>'tool.input'</code> / <code>'tool.output'</code></td><td><strong>trace 词汇表</strong>：工具调用的事件名。<strong>按名字过滤 trace 时用常量、别写字面量</strong> —— 上游改名那天，手写的那份不会报错，只会<strong>静默过滤出 0 条</strong>（报表说「没有工具调用」而 trace 里明明有）。这两个名字也是 OTLP / 看板 / 评测链路的过滤依据。</td></tr>
+            <tr><td>USAGE_MISSING_EVENT / USAGE_PARTIAL_EVENT</td><td><code>'usage.missing'</code> / <code>'usage.partial'</code></td><td>成本账的两条<strong>不可知</strong>信号：<code>usage.missing</code> = 该回合上游响应<strong>没带</strong> token 计量（那几个 <code>0</code> 是替身值不是读数，直接当 0 会让 <code>maxCostUsd</code> 静默失效）；<code>usage.partial</code> = 尝试失败但已报过 input tokens（不计会系统性少算）。</td></tr>
+            <tr><td>CONTEXT_BUDGET_EVENT</td><td><code>'context.budget'</code></td><td>上下文策略在本回合开始前<strong>真的压缩了</strong>历史，body 为 <code>{ from, to, model }</code>。压缩发生时本回合的 <code>llm.turn</code> span 还不存在，故事件记在回合的<strong>父</strong> span 上；OTLP 映射为 <code>gen_ai.conversation.compacted</code>。</td></tr>
+            <tr><td>LLM_FALLBACK_EVENT / CONFIG_FALLBACKS_ATTR</td><td><code>'llm.fallback'</code> / <code>'config.fallbacks'</code></td><td><strong>模型降级的一对证据，读法相反</strong>：<code>llm.fallback</code> body 为 <code>{ from, to, errorType }</code>，写在<strong>换到的那一环</strong>第一个 <code>llm.turn</code> span 上（不是写在失败的那个 span 上 —— 所以「从谁换到谁」只能读事件体，不能靠相邻 span 猜）；<code>config.fallbacks</code> 是 run 根属性，记<strong>声明过</strong>的备用模型链（逗号拼接，没配时键缺席）。前者是<strong>实际发生</strong>、后者是<strong>配置声明</strong>：实际发生为 0 有两种可能（没配链 / 配了但一次没触发），只有读第二个才分得开 —— 判「两次跑分可不可比」要的正是这个区分。</td></tr>
             <tr><td>validateJsonSchema</td><td><code>(schema: JsonSchema, input: unknown) → string | null</code></td><td>JSON Schema 子集校验（fromZod 接入时先走 zod），返回首条错误消息或 null。</td></tr>
             <tr><td>combineSignals</td><td><code>(...signals: (AbortSignal | undefined)[]) → AbortSignal</code></td><td>合成多个中断源（调用方 / 超时 / 断连），任一触发即中止（Node 18 无 <code>AbortSignal.any</code>）。</td></tr>
             <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明时键为 <code>string</code>、值为 <code>unknown</code>。</td></tr>

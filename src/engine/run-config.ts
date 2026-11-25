@@ -1,3 +1,4 @@
+import { CONFIG_FALLBACKS_ATTR } from '../core/trace.js';
 import type { JsonSchema, ModelClient } from '../core/tool.js';
 import { resolveRetry } from './retry.js';
 import type { ContextPolicy, ModelFallbackLink, RunAgentOptions } from './types.js';
@@ -226,7 +227,7 @@ export function runConfigSnapshot(
   if (overridden.length > 0) out['config.priceOverrides'] = overridden.sort().join(',');
   // fallback 链（R8-P2）：只记备用模型名（client 是对象，不可序列化；主模型在 config.model）
   if (options.fallbacks && options.fallbacks.length > 0) {
-    out['config.fallbacks'] = options.fallbacks.map((l) => l.model).join(',');
+    out[CONFIG_FALLBACKS_ATTR] = options.fallbacks.map((l) => l.model).join(',');
   }
   // assistant 文本记录（R8-P3a）：只在显式开启时记（缺省不记 = 没有这个键）
   if (options.traceContent === 'full') out['config.traceContent'] = 'full';
