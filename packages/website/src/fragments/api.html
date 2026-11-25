@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>262</b> 个导出</span>
+          <span class="api-chip"><b>269</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -196,6 +196,8 @@
             <tr><td>SystemPromptOptions / SystemSection</td><td><code>{ version? }</code> / <code>{ name; text; stable? }</code></td><td>构造选项与段落；stable=false 不进可缓存前缀。</td></tr>
             <tr><td>SessionStore / InMemorySessionStore</td><td><code>interface：load(id) / append(id, messages)</code></td><td>跨 run 的<strong>对话历史</strong>（append-only），与 MemoryStore（键值黑板）正交，可同时用；只有跑成功的轮次才回写。⚠️ 进程内实现 —— <strong>多副本各一份</strong>，换一台 pod 就是「第一次见面」（不报错）。</td></tr>
             <tr><td>RedisSessionStore / RedisSessionClient / RedisSessionStoreOptions</td><td><code>new RedisSessionStore(client, { prefix?, ttlSeconds?, maxMessages? })</code>；client 需提供 ioredis 的 <code>rpush / lrange</code> 或 node-redis v4 的 <code>rPush / lRange</code>（+ <code>ltrim/lTrim</code>、<code>expire</code>）</td><td>同一接口的<strong>多副本共享</strong>实现（duck-typed 客户端，零依赖）：列表语义（单次 RPUSH 原子追加，两个副本同时写不丢轮次）；单批超过 512 条时分片发送（分片之间不是跨命令事务，失败会带位置说明可能留下半批；V8 实参上限会抛 <code>RangeError</code>）；<code>ttlSeconds</code> 语义是「最后一次 append 之后 N 秒」，<code>maxMessages</code> 只留最后 N 条（按条数切、不知轮次边界）。坏元素<strong>响亮抛错</strong>。⚠️ 它<strong>不解决</strong>同一 session 的并发顺序 —— append-only 不保证角色交替，要串行化得自己排队。</td></tr>
+            <tr><td>sessionReplyText / sessionReplyContent / clipSessionReply / SessionReplySource</td><td><code>(result: { finalText?; typed? }) → string | undefined</code>；<code>sessionReplyContent(result) → string</code>（恒非空）；<code>clipSessionReply(text) → string</code></td><td>一轮 run 写进会话的 <strong>assistant 正文</strong>口径（<code>finalText</code> 为空时取 <code>typed</code> 的正文键）。为何需要：声明了 <code>resultSchema</code> 的 run 靠 hidden <code>submit_result</code> 收尾，那一回合常常<strong>不带散文</strong> ⇒ <code>finalText === ''</code>，只读它会把已经产出的报告记成「本次无文本输出」（<strong>会话失忆</strong>，且不报错）。取值顺序：<code>finalText</code> → <code>typed</code> 命中白名单键 → <code>JSON.stringify(typed)</code> 兜底 → 占位符。<code>typed</code> 只读，截断只影响会话。</td></tr>
+            <tr><td>EMPTY_REPLY_MARK / SESSION_REPLY_MAX_CHARS / SESSION_REPLY_KEYS</td><td><code>string</code>（占位文案）/ <code>number</code>（单条上限 8000）/ <code>readonly string[]</code>（<code>report → reply → text → content → summary → answer</code>）</td><td>占位文案是<strong>对外可识别</strong>的（宿主按字符串认出「这一轮没说话」），改字要单独标注；键序即优先级，报告类 schema 用 <code>report</code>（与子 agent 交回形态 <code>{ report, result }</code> 同名），对话类用 <code>reply</code>。</td></tr>
             <tr><td>normalizeMessages</td><td><code>(input: RunInput | unknown) → MessageParam[]</code></td><td>任意任务入参（string / messages / { prompt | text | messages }）规范成 messages；空数组抛错。</td></tr>
             <tr><td>RunInput</td><td><code>string | MessageParam[] | { prompt?; text?; messages? }</code></td><td>transport 层接受的原始入参形态。</td></tr>
             <tr><td>RunSpec</td><td><code>{ messages; options?; source? }</code></td><td>一次任务的规范化入参；source 标记触发来源（sync / async / schedule:&lt;id&gt;）。</td></tr>

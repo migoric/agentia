@@ -3,6 +3,8 @@ import { hostname } from 'node:os';
 import type { MessageParam } from '../core/message.js';
 import type { ModelClient } from '../core/tool.js';
 import type { AgentRunResult } from '../engine/types.js';
+import { sessionReplyContent } from '../core/session-reply.js';
+import type { SessionReplySource } from '../core/session-reply.js';
 import { classifyError } from '../engine/errors.js';
 import type { RunStatus, TaskEvent } from '../core/run.js';
 import { normalizeMessages, TaskInputError } from '../engine/spec.js';
@@ -1203,8 +1205,9 @@ export class AsyncRunner {
               this.#approvals.unmarkSuspended(rec.taskId);
               if (settled) {
                 // HITL 恢复段 + 会话：本段没把 session 交给 run 层（见上面 callOpts 注释），
-                // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession 一致。
-                await this.#appendResumedSession(rec, out.result.finalText);
+                // 会话回写由 runner 自己补 —— 口径与 run.ts 的 appendSession **共用同一个函数**
+                // （`core/session-reply.ts`），不是「两处各写一遍同样的判断」。
+                await this.#appendResumedSession(rec, out.result);
               }
             }
           } finally {
@@ -1288,18 +1291,21 @@ export class AsyncRunner {
    * 只写「本轮用户输入 + 最终回复」（run 内部 tool 往返不进历史）、历史以 assistant
    * 结尾（无文本补占位）。回写失败吞掉 —— 辅助动作不得击穿任务（同 memory 回写防护）。
    *
+   * 正文取值与占位符**都走 `core/session-reply.ts`**：这两处（本件与 run.ts）曾各自只读
+   * `finalText`、各自写一份占位字面量 —— 同一件事两份拷贝，于是结构化结果在两条路径上
+   * 一起丢（2026-11-25）。收 `result` 本体而不是 `finalText`，是为了让 `typed` 也在手边。
+   *
    * 本进程优先读内存快路；重启后读 TaskRecord.sessionInput。只有旧版本留下的挂起记录
    * 才可能两边都没有，那时跳过，不凭猜测写。
    */
-  async #appendResumedSession(rec: TaskRecord, finalText: string): Promise<void> {
+  async #appendResumedSession(rec: TaskRecord, result: SessionReplySource): Promise<void> {
     const sessionId = rec.spec.options?.sessionId;
     const input = this.sessionInputs.get(rec.taskId) ?? rec.sessionInput;
     if (sessionId === undefined || this.sessionStore === undefined || input === undefined) return;
     try {
       await this.sessionStore.append(sessionId, [
         ...input,
-        // 占位文案与 runtime/run.ts 的 EMPTY_REPLY_MARK 保持同文（同一条会话不变量）
-        { role: 'assistant', content: finalText || '（本次无文本输出）' },
+        { role: 'assistant', content: sessionReplyContent(result) },
       ]);
     } catch {
       /* 辅助动作失败不影响任务 */

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { executeRun, InMemorySessionStore } from '../../src/index.js';
 import type { Message, MessageParam, SessionStore } from '../../src/index.js';
-import { endTurnMsg } from '../helpers.js';
+import { endTurnMsg, toolUseMsg } from '../helpers.js';
 
 const user = (text: string): MessageParam => ({ role: 'user', content: text });
 
@@ -261,6 +261,35 @@ describe('会话持久化接进 executeRun（C4）', () => {
     assert.equal(appends[0].messages.length, 2);
     assert.equal(appends[0].messages[1].role, 'assistant');
     assert.ok(String((appends[0].messages[1] as { content: string }).content).length > 0);
+  });
+
+  it('resultSchema 收尾且提交回合没散文 ⇒ 会话正文取 typed 的正文键（0.10.15）', async () => {
+    // 回归用例的来历：结构化收尾那一回合常常不带文本，`finalText === ''`，
+    // 而答案在 `typed` 里。只读 finalText 会让历史记成「（本次无文本输出）」——
+    // 业务侧真机表现是下一轮追问「上一轮巡检哪个系统」得到「该轮未产出结论」。
+    const { store, appends } = spyStore();
+    const report = '## 巡检报告\n\n- 系统：arms-front\n- 周期：2026-11-24 00:00 — 2026-11-25 00:00';
+    const { client } = capturingClient([toolUseMsg('submit_result', { report }, 'tu1')]);
+    const { result } = await executeRun({
+      messages: [user('巡检一下')],
+      client,
+      session: { store, id: 's1' },
+      resultSchema: {
+        type: 'object',
+        properties: { report: { type: 'string' } },
+        required: ['report'],
+        additionalProperties: false,
+      },
+    });
+
+    assert.equal(result.finalText, '', '前提：这一回合模型只调了 submit_result，没有说话');
+    assert.deepEqual(result.typed, { report });
+    assert.deepEqual(
+      appends[0].messages[1],
+      { role: 'assistant', content: report },
+      '会话正文必须是报告本身 —— 报告产出了、落库了、也回给调用方了，不能只把会话记成「没说话」',
+    );
+    assert.deepEqual(store.load('s1'), [user('巡检一下'), { role: 'assistant', content: report }]);
   });
 
   it('历史读/写都挂了 → 照样跑完（辅助动作不击穿 run），但**两次都要出声**', async () => {

@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.10.14';
+export const AGENTIA_VERSION = '0.10.15';
 
 // core：数据模型
 export type {
@@ -223,6 +223,18 @@ export type {
   RedisSessionStoreOptions,
   SessionStore,
 } from './runtime/session.js';
+// 会话正文的口径（2026-11-25 ref-session-reply-typed）：`finalText` 为空时取 `typed` 的正文键。
+// 外发的理由是「一份口径只有一个实现」—— 宿主侧已存在同逻辑副本（取正文 + 识别占位符文案），
+// 不导出的话每换一个宿主就再抄一遍，上游改口径时那些副本不会响。
+export {
+  EMPTY_REPLY_MARK,
+  SESSION_REPLY_KEYS,
+  SESSION_REPLY_MAX_CHARS,
+  clipSessionReply,
+  sessionReplyContent,
+  sessionReplyText,
+} from './core/session-reply.js';
+export type { SessionReplySource } from './core/session-reply.js';
 export { RedisTaskStore } from './store/redisStore.js';
 export type { RedisLike, RedisSetOptions, RedisTaskStoreOptions } from './store/redisStore.js';
 export type { MaybePromise } from './store/store.js';

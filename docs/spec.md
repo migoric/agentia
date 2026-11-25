@@ -8415,6 +8415,60 @@ push（assistant / 工具结果 / 审批事件）—— 任何把 `params` 排�
 CLI 297、trace-view 117、PG 52 全绿；`biome ci` 605 文件零告警；`verify-all` 8 步（官网那步要求
 Node ≥ 22.23.4，本地 Node 22.22.2 跑不了，已用 24 补跑通过 —— CI 用的是 24）。
 
+### 2026-11-25 ② ref-session-reply-typed：**会话正文不再只看 `finalText`（结构化结果不再整段丢失）**
+
+**来路**：业务侧真机复现（巡检类 agent，声明了 `resultSchema`、靠 `submit_result` 收尾）。
+单轮跑完：run 成功、`stopReason=end_turn`、`save_seq=178` 次增量落库、**`typed.report` 里
+1369 字完整报告**、报告也回给了调用方 —— 但会话历史里这一轮的 assistant 正文是
+`（本次无文本输出）`。下一轮同会话追问「上一轮巡检的是哪个系统、什么周期」，模型据历史回答
+「该轮助手回复为『（本次无文本输出）』……该轮未产出结论，本工单的前提不成立」。**报告产出了、
+落库了、也交付了，只有会话记成「什么都没说」**，多轮记忆直接断。
+
+**根因不是笔误，是「两个概念被当成一个」**：`AgentRunResult.finalText` 是「**模型说的话**」
+（`engine/types.ts` 的注释自己写着「提交结构化结果的回合若带文本则取之，**可空**」），
+而「这一轮对外的回复」是另一个概念。`submit_result` 那一回合模型常常不留散文 ⇒
+`finalText === ''`。这个缺陷在 0.10.12 → 0.10.14 之间**逐字未变**（两版 `dist/runtime/run.js`
+diff 为空）。
+
+**两处同一个错，这才是重点**：`runtime/run.ts` 的 `appendSession` 与 `transport/async.ts` 的
+`#appendResumedSession`（HITL 恢复段刻意不把 session 交给 run 层，回写由 runner 自己补）各写了
+一份判断，且**各写了一份占位文案**（一处常量、一处裸字面量，注释里还写着「与 run.ts 的
+EMPTY_REPLY_MARK 保持同文」）。同文是拷贝的自陈。于是修复必须同时是**去拷贝**：
+取值与占位收进 `core/session-reply.ts`，两条路径都只调 `sessionReplyContent(result)`。
+
+**为什么住在 `core` 而不是 `runtime/session.ts`**：分层守卫里 `transport` 只许依赖
+`core` / `engine` / `store`，**不许依赖 `runtime`**。两个回写点分属两层，口径只能落在公共下游；
+本件是纯函数（无 IO、无 trace、不读配置），与 `core/text.ts` 同性质。
+
+**口径**（与业务侧 `extractResultText` 逐条对齐，改动请两边一起改）：
+① `finalText.trim()` 非空 → 用它，**不 JSON 化、不改标点**；② 否则 `typed` 按
+`report → reply → text → content → summary → answer` 取第一个非空字符串（值 trim、**保内部
+换行** —— 报告是 markdown）；③ 全落空 → `JSON.stringify(typed)` 兜底（`{}` / `[]` 序列化后只
+2 个字符，用 `length > 2` 把空壳挡在占位符之前）；④ 根类型是字符串 → 原样返回（`JSON.stringify('报告')`
+会把引号写进历史，那是噪音不是保真）；⑤ 两样都空 → 占位符。
+键序里 `report` 在前的依据在仓内：`runAgentScoped` 交回子 agent 结果的形态就是
+`{ report, result }`；`reply` 次之给对话型 schema。
+
+**刻意保留的三条**：① 占位符文案**一个字不改**（下游按字符串识别它，且它是「历史以 assistant
+结尾」的来源）；② 超长截断（8000，含标记）**只影响会话历史**，`typed` 与 trace / 落库路径
+一个字不动 —— 截断是「这条消息要不要全长」，不是「结果是否完整」；③ `finalText` 的语义不变
+（不为了让会话非空而在引擎层造假，那会污染评测断言与 trace）。
+
+**为什么不顺手把 `finalText` 填上**：它参与评测断言、进 trace、进 HTTP 响应。把 `typed` 塞进
+`finalText` 等于「模型说了它没说的话」，比会话缺一段更贵。
+
+**验证面**：新增 17 条用例 —— `tests/core/session-reply.test.ts` 14 条（散文优先 / 白名单命中 /
+trim / 键序 / 白名单全空走 JSON / 数组根 / 字符串根不 JSON 化 / 空壳与 `undefined` / 循环引用
+不抛 / 占位 / 截断三条含「`typed` 未被改动」）；`tests/runtime/session.test.ts` 1 条（真跑
+`resultSchema` + `submit_result`，断言历史正文是 `typed.report`）；`tests/transport/async.test.ts`
+1 条（HITL 挂起 → 批准 → 恢复段同样取 `typed.report`）；`tests/architecture/single-source-messages.test.ts`
+1 条（占位文案只许在 `core/session-reply.ts` 一处）。
+变异三处均咬住并已还原：① 普通 run 退回 `result.finalText || 字面量` ⇒ 运行时那条会话用例红；
+② 恢复段退回只传 `finalText` ⇒ transport 那条红（**两处各红一条，正是「两份拷贝」的形状**）；
+③ 回写点写回字面量 ⇒ 单源守卫红并点名 `src/transport/async.ts`。
+门禁：框架套件 2044／2044（+17），覆盖率 98.10 行 / 92.49 分支 / 98.92 函数（新件 100/100/100）；
+CLI 297、trace-view 117、PG 52 全绿；官网 `api.html` 导出面 262 → 269 并登记两行。
+
 ## 11. 开放项
 
 
@@ -8597,7 +8651,15 @@ Node ≥ 22.23.4，本地 Node 22.22.2 跑不了，已用 24 补跑通过 ——
     空 `approvals: {}` 不再算续跑 —— 迁移动作见 CHANGELOG 本版节）；
   → v0.10.13（**内部收口，无对外可见变更**：`async.ts` 按知识拆两块、模型与预算缺省的三个应用点收成一个、两个选项面的 25 个共同字段收成 `RunPolicyInput` 基底、四条新守卫；公共导出面零增删改 ⇒ 既有使用者不需要任何动作）；
   → v0.10.14（**纯新增导出，无破坏性变更**：trace 词汇表 7 个常量进公共导出面 —— 三组事件名（`tool.input` / `tool.output` 等）与 `config.fallbacks` 根属性名，公共导出面 255 → 262；既有的 255 个导出逐字未变、运行时行为逐字未变 ⇒ 既有使用者不需要任何动作。动机是包外消费者已存在：抄字面量在上游改名时**不报错、只静默过滤出 0 条**，失败方向是误判为可比 / 误判为没花钱）；
-  `AGENTIA_VERSION = '0.10.14'`。决策均见 §10。
+  → v0.10.15（**修复 + 纯新增导出，无破坏性 API 变更**：会话正文不再只看 `finalText` ——
+    结构化收尾那回合常常没有散文，只读它会把已产出的 `typed.report` 记成「（本次无文本输出）」
+    ⇒ 多轮直接失忆。两条回写路径（普通 run / HITL 恢复段）改调同一个函数，占位文案与取值
+    都单源化；公共导出面 262 → 269（新增 `sessionReplyText` / `sessionReplyContent` /
+    `clipSessionReply` / `EMPTY_REPLY_MARK` / `SESSION_REPLY_MAX_CHARS` / `SESSION_REPLY_KEYS` /
+    `SessionReplySource`）。⚠️ **行为变更必须说清**：`resultSchema` 场景下会话历史里的
+    assistant 正文会**变长**（占位符 → 结构化结果本身），占位符文案一个字没改；
+    `finalText`、`typed`、trace、落库路径均未动 ⇒ 既有使用者不需要改代码）；
+  `AGENTIA_VERSION = '0.10.15'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

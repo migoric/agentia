@@ -1,6 +1,6 @@
 {
   "name": "@migor/agentia-pg",
-  "version": "0.10.14",
+  "version": "0.10.15",
   "description": "PostgreSQL 宿主适配：Agentia 的 TaskStore / SessionStore 落到普通 PG 表，附幂等建表与可导出 SQL",
   "type": "module",
   "main": "dist/index.js",

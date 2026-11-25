@@ -1379,6 +1379,7 @@ span 本身（`attributes.subagent`），后者**只是事件**（`approval.requ
 | `InMemoryMemoryStore` | 跨 run 的**键值黑板**记忆（`{ store, keys }` 配 `executeRun`） |
 | `InMemorySessionStore` | 跨 run 的**对话历史**（`{ store, id }` 配 `executeRun` / `app.run`）；与前者正交，可同时用；**进程内**，多副本各一份 |
 | `RedisSessionStore` | 同一接口的**多副本共享**实现（duck-typed 客户端，零依赖）：列表语义（ioredis 的 `rpush`/`lrange`/`ltrim`，node-redis v4 的 `rPush`/`lRange`/`lTrim` 都接受），`prefix` 分命名空间、`ttlSeconds` 按「最后一次 append 后 N 秒」回收、`maxMessages` 按条数裁。**不解决**同 session 并发顺序（要自己排队）；多分片不是跨命令事务，半批失败会带位置报错 |
+| `sessionReplyText` / `sessionReplyContent` / `clipSessionReply` / `EMPTY_REPLY_MARK` | 会话正文的取值口径（回写点唯一该调的）：`finalText` 为空时取 `typed` 的正文键（`report → reply → text → content → summary → answer`），再退 `JSON.stringify(typed)`，两样都空才是占位符 `（本次无文本输出）`。为什么要它：声明了 `resultSchema` 的 run 靠 `submit_result` 收尾，那一回合常常**不带散文** ⇒ `finalText === ''`，只读它会把已产出的报告记成「什么都没说」（多轮失忆）。`clipSessionReply` 按 8000 字符截断，只影响会话历史 |
 | `PgSessionStore`（`@migor/agentia-pg`） | 同接口的 **Postgres** 共享实现（独立包，不进核心）：整批一条 `INSERT ... unnest($n::text[])`（单语句原子）、`maxTurns` 按**轮次**裁（以 user 消息为界，不会裁成以 assistant 开头）、PG 无 TTL 故回收靠显式 `prune()` + `pg_cron`（**以会话为单位**——按行删会切在轮次中间，让历史以 assistant 开头）。jsonb 存不下 `\u0000`，`append` 会把那句 PG 报错换成指得出位置的 `TypeError` |
 | `traceToMessages` | 把 trace 还原成 messages（重放基底） |
 | `forkMessages` | 分叉重放：在主循环第 `atTurn` 回合之前截断重放历史、拼上 `append` 新消息喂回 `app.run`（「从第 N 回合换个问法重跑」的基底，**不是续跑**） |
@@ -2021,7 +2022,7 @@ const callable = {
 | 缓存写的缺省乘数只对 **5 分钟** 档正确 | 官方是 5m 写 1.25×、**1h 写 2×**、读 0.1×。而 `Usage` 是四项**聚合**的，分不出这一回合的缓存写走的是哪个 TTL（SDK 的 `Usage.cache_creation` 有拆分，框架没把它带上）⇒ 你在块上用了 `cache_control: { ttl: '1h' }` 就必须在 `priceOverrides` 里写 `cacheWrite: 2`，否则成本**低估 37.5%**、`maxCostUsd` 会迟触发。框架自己的调用点都不设 ttl，所以不改也对 |
 | 图片块的 token 只能估、且按**上界**估 | 块里没有宽高（`source` 只有 base64 的 `data` 或 `url`），而官方图片计费按**尺寸**（28×28 像素 = 1 visual token），与文件字节数**无关** —— 一张 200KB 纯色 PNG 和一张 200KB 细节图的成本能差两个数量级。框架取「长边缩到 1568px」的**上界 3136 token/块**：宁可高估（`maxTotalTokens` 提前拦）也不低估（护栏迟触发）。渲染 / 摘要侧则只给 `[image …]` 占位，**不展开 base64** |
 | 工具超时**不强制取消**工具 | `AgentTool.run` 没有 signal 参数，超时首先是「不等了」；副作用可能已发生。想真停：监听 `ToolRunContext.abandoned`（引擎放弃等待时 abort 它）自行收尾。框架自带的 @SubAgent / @Skill 已这么做 —— 超时即中止子循环（在飞请求被掐、不再后台烧 token），capability span 立刻以 error 收尾 |
-| 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」，run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
+| 会话只存对话轮次 | `SessionStore` 存「用户输入 + 最终回复」（回复的取值见 `sessionReplyContent`：结构化收尾那回合正文在 `typed` 里，不是 `finalText`），run 内部的 tool 往返**不进历史**（要完整过程用 `traceToMessages`）；且只有**跑成功**的轮次才回写 |
 | 同 session 并发 run 要自行串行化 | `SessionStore` 是 **append-only**：并发写不互相覆盖、不丢数据，但**不保证角色交替** —— 两个并发 run 共用同一 sessionId 时，各自追加的轮次可能交错成「连续两条 user」，下一轮 load 出来撞角色交替校验（400）。同一 session 的并发 run 请调用方自行串行化（每 session 一把锁 / 一条队列） |
 | OpenAI 适配器听端点的话 | 请求发 `stream:true`，但**按响应形态解析**：端点回 JSON 就退回一次性（没有打字机效果），回 `event-stream` 才逐 token |
 | OpenAI 流式的上游故障按失败处理 | 三种形态都**抛错**按失败处理：流中 `error` 分片（上游把故障塞进 200 的流；按 `type`/`code` 反推 status，限流能被引擎重试认出）；**未收到 `[DONE]` 也无 `finish_reason`**（流被上游/代理截断 —— 哪怕已吐出半句、有累积文本，也按不完整响应抛错，不报 `end_turn`）；正常终止却无任何文本与工具调用（与非流式空 `choices` 同一守卫）。**例外**：`finish_reason=content_filter` 的空流是合法 refusal，不抛 —— 与非流式路径同一个响应同一个结论 |
