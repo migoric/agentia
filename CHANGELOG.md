@@ -5,7 +5,7 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
-## [Unreleased]
+## [0.10.14] - 2026-11-25
 
 ### 新增
 
@@ -28,6 +28,9 @@
 ⚠️ 这 7 个是**对外契约**：值改一个字符就是改协议。语义细节见 `core/trace.ts` 各处注释 ——
 尤其 `config.fallbacks`（**配置声明**）与 `llm.fallback`（**实际发生**）是两条不同证据，
 别当成一件事：属性在场而事件数为 0 是「配了链但一次没触发」，两者都缺席才是「没配」。
+
+**无破坏性变更，无迁移动作** —— 纯新增导出，既有导出逐字未变（255 个仍是原来那 255 个），
+运行时行为逐字未变。
 
 ## [0.10.13] - 2026-11-22
 
@@ -4829,7 +4832,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.13...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.14...HEAD
+[0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14
 [0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13
 [0.10.12]: https://github.com/migoric/agentia/releases/tag/v0.10.12
 [0.10.11]: https://github.com/migoric/agentia/releases/tag/v0.10.11
