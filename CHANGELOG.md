@@ -5,6 +5,28 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [Unreleased]
+
+## [0.10.16] - 2026-11-28
+
+### 新增
+
+**trace 词汇表扩到七个名字：菜单签名与 `@Prompt` 资产版本表进公共导出面。**
+`tools.menuHash` / `tools.names` / `prompts.versions` 此前是 `engine/loop.ts` 里的裸字面量
+（写入侧自用，包内没人按名字读）。但评测仓现在要靠这对读数判「两份跑分可不可比」——
+「换了模型」只解释了一半的不可比，另一半是**菜单变了**（多一个工具 / 某个 schema 收紧）与
+**措辞变了**（资产换版本）。读取侧抄字面量的话，上游改名那天**不报错**，只会读到
+`undefined` —— 方向恰好是「误判为可比」，与 `llm.fallback` / `config.fallbacks` 同因，
+处理方式沿用同一条先例（名字收进 `core/trace.ts`，写侧改引常量）。
+
+- 新增 `MENU_HASH_ATTR` / `MENU_NAMES_ATTR` / `PROMPTS_VERSIONS_ATTR` 三个常量，进公共导出面；
+- `engine/loop.ts` 三处 `setAttribute` 改引常量，**写出的字符串逐字不变**；
+- `tests/architecture/tool-event-names.test.ts` 的字面量扫描从 4 条扩到 7 条（值断言 + 全
+  `src` 扫描 + 单源处数断言），官网 API 页同步两行、导出计数 272。
+
+**无行为变化**：trace 内容、公共 API 形状（只增不减）、既有读数全部不变。与评测仓的联动
+方案见 `docs/plans/2026-11-27-rsi-and-capability-library.md`。
+
 ## [0.10.15] - 2026-11-25
 
 ### 修复
@@ -4873,7 +4895,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.15...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.16...HEAD
+[0.10.16]: https://github.com/migoric/agentia/releases/tag/v0.10.16
 [0.10.15]: https://github.com/migoric/agentia/releases/tag/v0.10.15
 [0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14
 [0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13

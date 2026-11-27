@@ -1,6 +1,7 @@
 /*
  * 架构守卫 —— trace **词汇表**（`tool.input` / `tool.output` / `llm.fallback` /
- * `config.fallbacks`）的**跨层单源**（外部深评 E8；2026-11-25 从两个工具事件名扩到四个）。
+ * `config.fallbacks` / `tools.menuHash` / `tools.names` / `prompts.versions`）的**跨层单源**
+ * （外部深评 E8；2026-11-25 从两个工具事件名扩到四个；2026-11-27 再扩到七个）。
  *
  * ## 不守会怎样
  *
@@ -49,6 +50,9 @@ import { join } from 'node:path';
 import {
   CONFIG_FALLBACKS_ATTR,
   LLM_FALLBACK_EVENT,
+  MENU_HASH_ATTR,
+  MENU_NAMES_ATTR,
+  PROMPTS_VERSIONS_ATTR,
   TOOL_INPUT_EVENT,
   TOOL_OUTPUT_EVENT,
 } from '../../src/core/trace.js';
@@ -68,7 +72,17 @@ const ALLOWLIST: ReadonlyArray<{ file: string; count: number; why: string }> = [
   },
 ];
 
-const NEEDLES = ["'tool.input'", "'tool.output'", "'llm.fallback'", "'config.fallbacks'"];
+const NEEDLES = [
+  "'tool.input'",
+  "'tool.output'",
+  "'llm.fallback'",
+  "'config.fallbacks'",
+  // 2026-11-27：菜单签名与 prompt 版本表 —— 同一类「包外读者出现 ⇒ 名字必须单源」。
+  // 它们此前是 `engine/loop.ts` 的三处裸字面量（写入侧自用，包内没人按名字读）。
+  "'tools.menuHash'",
+  "'tools.names'",
+  "'prompts.versions'",
+];
 
 /**
  * 最小遮蔽器：把**注释**与**模板字符串的字面量段**替换成等长空格（保留换行），
@@ -215,6 +229,12 @@ describe('trace 词汇表的跨层单源（E8）', () => {
     // 值改一个字符，读取侧就是**静默读到 0 次降级** —— 方向恰好是「误判为可比」，比漏记更贵
     assert.equal(LLM_FALLBACK_EVENT, 'llm.fallback');
     assert.equal(CONFIG_FALLBACKS_ATTR, 'config.fallbacks');
+    // 2026-11-27 新增的三条：评测仓靠这一组判「两份跑分可不可比」的另一半 ——
+    // 模型相同、用例集相同，但**菜单或提示词资产变了**，通过率差异照样不是 agent 的进退步。
+    // 值改一个字符，读取侧就是静默读到 `undefined`（误判为可比）。
+    assert.equal(MENU_HASH_ATTR, 'tools.menuHash');
+    assert.equal(MENU_NAMES_ATTR, 'tools.names');
+    assert.equal(PROMPTS_VERSIONS_ATTR, 'prompts.versions');
   });
 
   it('遮蔽器自证：代码里的看见、注释与模板里的看不见（含阳性对照）', () => {
@@ -239,7 +259,7 @@ describe('trace 词汇表的跨层单源（E8）', () => {
     assert.equal((masked.match(/'tool\.output'/g) ?? []).length, 0, '注释与模板里的两处必须看不见');
   });
 
-  it('全 src 只有单源文件允许出现这两个字面量（白名单按文件+条数，不许静默变大）', () => {
+  it('全 src 只有单源文件允许出现这些字面量（白名单按文件+条数，不许静默变大）', () => {
     const files = walk(SRC);
     // 防真空：走查范围塌成空会假绿
     assert.ok(files.length > 60, `走查范围异常：只扫到 ${files.length} 个 .ts（应 ≥ 60）`);
@@ -276,7 +296,7 @@ describe('trace 词汇表的跨层单源（E8）', () => {
     assert.deepEqual(
       violations,
       [],
-      `工具 I/O 事件名必须在 core/trace.ts 单源；下面的文件又手写了字面量：\n${violations.join('\n')}`,
+      `trace 词汇表必须在 core/trace.ts 单源；下面的文件又手写了字面量：\n${violations.join('\n')}`,
     );
   });
 

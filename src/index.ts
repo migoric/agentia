@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.10.15';
+export const AGENTIA_VERSION = '0.10.16';
 
 // core：数据模型
 export type {
@@ -28,7 +28,10 @@ export {
   CONFIG_FALLBACKS_ATTR,
   CONTEXT_BUDGET_EVENT,
   LLM_FALLBACK_EVENT,
+  MENU_HASH_ATTR,
+  MENU_NAMES_ATTR,
   parseTraceparent,
+  PROMPTS_VERSIONS_ATTR,
   TOOL_INPUT_EVENT,
   TOOL_OUTPUT_EVENT,
   USAGE_MISSING_EVENT,

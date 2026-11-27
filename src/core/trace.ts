@@ -103,6 +103,37 @@ export const LLM_FALLBACK_EVENT = 'llm.fallback';
  */
 export const CONFIG_FALLBACKS_ATTR = 'config.fallbacks';
 
+/**
+ * run 根 span 上「**菜单签名**」的两个属性名（R8 候选 3；写入点 `engine/loop.ts`，摘要算法
+ * 在 `engine/menu-drift.ts`）。
+ *
+ * - `MENU_HASH_ATTR`：排序后的 `名字\0规范 schema` 的 sha1 前 12 位 —— 摘要**覆盖输入 schema**，
+ *   所以「工具还在、签名变了」也能被比出来；
+ * - `MENU_NAMES_ATTR`：给人读的名字清单（有界 + 省略标记），回答「变的是哪一个」。
+ *
+ * 为什么也进词汇表（2026-11-27）：与 `CONFIG_FALLBACKS_ATTR` 同因 —— **出现了包外读者**。
+ * 评测仓判「两份跑分能不能比」时，「换了模型」只解释了一半的不可比，另一半是**菜单变了**：
+ * 同一个 prompt 之下工具多了一个（或某个 schema 收紧）通过率就变了，那不是 agent 的进退步。
+ * 读取侧要是抄字面量，上游改名那天**不报错**，只会读到 `undefined` —— 方向恰好是
+ * 「误判为可比」，比漏记更贵（同 `LLM_FALLBACK_EVENT` 那条的理由）。
+ *
+ * ⚠️ 与 `config.*` 那一族的分界：这一族（`tools.*`）**只有这两个**，且都是 run 根属性；
+ * `config.*` 的 18 个仍整体未单源，别把这条当成「全族已收口」的证据。
+ */
+export const MENU_HASH_ATTR = 'tools.menuHash';
+/** 见 `MENU_HASH_ATTR` —— 同一份签名的「给人读」那一半 */
+export const MENU_NAMES_ATTR = 'tools.names';
+
+/**
+ * run 根 span 上「`@Prompt` 资产版本表」的属性名（`name@ver` 逗号拼接、按名排序；菜单里
+ * 没有任何带版本的 prompt 资产时**键缺席**，不是空串）。
+ *
+ * 进词汇表的理由与 `MENU_HASH_ATTR` 是同一件事的两半：包外消费者（评测仓的闭环）要回答
+ * 「这次跑分变差，是**措辞**改了还是**工具**改了」—— 措辞看这个，工具看菜单签名。
+ * 只记一半的话，剩下那一半永远只能靠猜，而猜错的方向是把「换了资产」读成「模型抖动」。
+ */
+export const PROMPTS_VERSIONS_ATTR = 'prompts.versions';
+
 /** 工具 I/O 事件名的联合 —— `eval/export.ts` 的工具事件过滤器按它取参数 */
 export type ToolIoEventName = typeof TOOL_INPUT_EVENT | typeof TOOL_OUTPUT_EVENT;
 
