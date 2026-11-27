@@ -8659,7 +8659,12 @@ CLI 297、trace-view 117、PG 52 全绿；官网 `api.html` 导出面 262 → 26
     `SessionReplySource`）。⚠️ **行为变更必须说清**：`resultSchema` 场景下会话历史里的
     assistant 正文会**变长**（占位符 → 结构化结果本身），占位符文案一个字没改；
     `finalText`、`typed`、trace、落库路径均未动 ⇒ 既有使用者不需要改代码）；
-  `AGENTIA_VERSION = '0.10.15'`。决策均见 §10。
+  → v0.10.16（trace 词汇表扩到七个名字：`tools.menuHash` / `tools.names` / `prompts.versions`
+    收进 `core/trace.ts` 并进公共导出面（269 → 272），写侧改引常量、**写出的字符串逐字不变**。
+    **无行为变化、无破坏性变更** —— 本版只为评测仓能按名字判「两份跑分可不可比」：此前那三个
+    名字是 `engine/loop.ts` 的裸字面量，读取侧抄字面量会在上游改名那天**静默读到 `undefined`**，
+    方向恰好是「误判为可比」）；
+  `AGENTIA_VERSION = '0.10.16'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。

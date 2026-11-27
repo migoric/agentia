@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.10.16] - 2026-11-28
+
 ### 新增
 
 **trace 词汇表扩到七个名字：菜单签名与 `@Prompt` 资产版本表进公共导出面。**
@@ -4893,7 +4895,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.15...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.16...HEAD
+[0.10.16]: https://github.com/migoric/agentia/releases/tag/v0.10.16
 [0.10.15]: https://github.com/migoric/agentia/releases/tag/v0.10.15
 [0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14
 [0.10.13]: https://github.com/migoric/agentia/releases/tag/v0.10.13
