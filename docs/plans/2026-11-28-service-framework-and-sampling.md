@@ -748,7 +748,58 @@ S1–S10 已按 §9 的顺序做完，判据逐条跑过。下面只记**结论�
   （`isWorthAccepting` 里「路由掉了就不采纳」）都已落地并有测试，但**还没有一个
   service-backed runner 去填 `routedTo`** —— 今天的 harness 直接跑 agent，不经过 A2A。
   所以真实报告里这个读数会缺席（缺席 = 不做判断，不会误判）。
-- **判据 13/15/16/17/20** 属 harness 的 web/worker 面，不在本轮范围。
+- **判据 13/15/16/17/20** 属 harness 的 web/worker 面 —— 15/16/17/20 已在第二轮补上（见 §15）；13（评测租户）仍未做。
 - **`tasks/get` 的 `contextId` 仍是占位**（`unknown#<agentId>`）：引擎的 `TaskRecord`
   不存这个协议概念。修法已写在 `docs/decisions.md`（在 `intent_session` 加反向索引）。
 - **`message/stream` 是 250ms 轮询**，不是逐字增量。要逐字就接引擎的 increment 事件出口。
+
+
+---
+
+## 15. harness 只读面与常驻 worker（S8 / S9，2026-11-28 第二轮）
+
+§14.4 把判据 15/16/17/20 记成「不在本轮范围」。这不是排期问题：D9 的边界必须**两侧
+都落地**才有意义 —— 「写权限留在进程里」的前提，是「读」真的有一个通道，否则人还是只能
+敲 CLI，而 CLI 看不到「谁在跑、跑到哪了」。
+
+### 15.1 落地清单
+
+| 文件 | 职责 | 关键约束 |
+|---|---|---|
+| `src/server/routes.ts` | 14 条路由的**单一来源**；`openApiDocument()` 由它生成 | 文档、实现、鉴权共用一份；改一处即三处同步 |
+| `src/server/web.ts` | 只读分发 + 鉴权 + 写口 405 | 只处理 `owner: 'read'`；**不拦 `POST /v1/run`** |
+| `src/server/read/{reports,rsi,workspace}.ts` | 纯读：报告、轮次、账本、worker、概览 | 缺目录返回空，**绝不 mkdir** |
+| `src/server/page.ts` | 看板单页（内联、零外链） | 数据一律 `textContent`，不用 `innerHTML` |
+| `src/rsi/worker-lock.ts` | 单实例锁：pid + 心跳 + 陈旧回收 | 判定只有一处，看板与 worker 共用 |
+| `src/rsi/watch.ts` | 调度：串行、节流、四条停手条件 | 不碰资产与评测；`runRound` 注入以便零成本测试 |
+| `src/cli/commands/rsi-watch.ts` | `--watch` 接线 | 只翻译 flag；一轮 = `runRounds({rounds:1})` |
+
+### 15.2 判据执行结果
+
+| 判据 | 怎么验的 | 结果 |
+|---|---|---|
+| 15 web 无写口 | `POST/PUT/DELETE` 打 6 条路径（含 `/rsi/rounds`、`/evals`、`/assets`） | 404/405（405 带 `allow: GET`）；**工作区三处目录 mtimeNs 逐一不变** |
+| 16 worker 串行 | 注入假 `runRound` 连跑 3 轮，比对时间窗 | 无重叠，轮次严格递增 |
+| 17 中断后可续（机制） | 半截锁文件、陈旧 pid 锁、正常收尾各一次 | 陈旧锁**自动回收**并改名留存；正常结束删锁；第二个实例 `gate_blocked` |
+| 20 路由表与文档一致 | `openapi.paths` ↔ `ROUTES` **双向**枚举；再逐条 GET 实际请求 | 14/14 相等，每条 GET 均 200 |
+
+harness 测试从 389 → **406**（新增 `tests/web.test.ts` 9 条、`tests/watch.test.ts` 8 条），
+`npm run check` 全绿。
+
+### 15.3 CLI 级实测（不是只跑单测）
+
+- `harness serve --port 8791`：9 个端点逐个 200；`POST /api/reports` 405、`POST /evals` 404；
+  首页 HTML 内联脚本 `node --check` 通过；`assets` 与 `assetsOnDisk` 一致、`assetDrift:false`。
+- `harness rsi --watch --max-rounds 1 --every 0`（指向本地假 Anthropic 端点）：
+  真跑一轮（基线 eval，成本 $0.0019）→ 「没有失败样本」停止 → **锁文件在跑时存在、结束后删除**
+  → 轮次记录落盘且被看板 `/api/rsi/cycles` 读出。
+- **并发验证**：第一个 worker 持锁期间启动第二个 → 退出码 2，报
+  `rsi.gate_blocked …（pid 70002@Mac，心跳 0s 前）`。
+
+### 15.4 仍未做（别当成做了）
+
+- **判据 13（评测租户）**：service 侧还没有 `tenant=eval-*` 的独立配额 / TaskStore 分区 /
+  「不写线上 metrics」的机制。这是两仓联调点，不是 harness 单侧能补的。
+- **判据 17 的整链**：没有真机复现「写资产到一半 `SIGKILL`」。机制由三件事各自有测试
+  （资产原子写、journal 末行可修、陈旧锁可回收），但「三步同时发生」的组合没有演练。
+- **看板只做了人工冒烟**：HTML/JS 语法、API 数据都验过，但渲染结果没有做视觉回归。
