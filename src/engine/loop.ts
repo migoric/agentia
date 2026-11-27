@@ -10,7 +10,7 @@ import type {
   SchemaType,
 } from '../core/tool.js';
 import type { SpanError, SpanId, Usage } from '../core/trace.js';
-import { addUsage } from '../core/trace.js';
+import { addUsage, MENU_HASH_ATTR, MENU_NAMES_ATTR, PROMPTS_VERSIONS_ATTR } from '../core/trace.js';
 import type { TaskEvent } from '../core/run.js';
 import { withCurrentSpan } from './span-scope.js';
 import type { AgentLoopResult } from './loop-result.js';
@@ -415,7 +415,7 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([n, v]) => `${n}@${v}`)
         .join(',');
-      if (joined) recorder.setAttribute(rootId, 'prompts.versions', joined);
+      if (joined) recorder.setAttribute(rootId, PROMPTS_VERSIONS_ATTR, joined);
     }
     // 会话标识（R7 thread 维度）：多轮 run 按 session 聚合；OTLP 侧映射 gen_ai.conversation.id
     if (options.sessionId) recorder.setAttribute(rootId, 'session.id', options.sessionId);
@@ -441,8 +441,8 @@ export async function runAgent<S extends JsonSchema = JsonSchema>(
     // （不开 run 根、不设根属性），所以不会把子菜单覆写到根上。
     if (options.tools && options.tools.length > 0) {
       const { names, hash } = menuSignature(options.tools);
-      recorder.setAttribute(rootId, 'tools.names', names);
-      recorder.setAttribute(rootId, 'tools.menuHash', hash);
+      recorder.setAttribute(rootId, MENU_NAMES_ATTR, names);
+      recorder.setAttribute(rootId, MENU_HASH_ATTR, hash);
     }
     // 生效配置快照（G3）：本 run 真正用着的旋钮写进 run 根 —— 事后能回答
     // 「这条 run 的 maxCostUsd 设了没 / 重试几次」，换参数前后的对比才有据可查。

@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>269</b> 个导出</span>
+          <span class="api-chip"><b>272</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -82,6 +82,8 @@
             <tr><td>USAGE_MISSING_EVENT / USAGE_PARTIAL_EVENT</td><td><code>'usage.missing'</code> / <code>'usage.partial'</code></td><td>成本账的两条<strong>不可知</strong>信号：<code>usage.missing</code> = 该回合上游响应<strong>没带</strong> token 计量（那几个 <code>0</code> 是替身值不是读数，直接当 0 会让 <code>maxCostUsd</code> 静默失效）；<code>usage.partial</code> = 尝试失败但已报过 input tokens（不计会系统性少算）。</td></tr>
             <tr><td>CONTEXT_BUDGET_EVENT</td><td><code>'context.budget'</code></td><td>上下文策略在本回合开始前<strong>真的压缩了</strong>历史，body 为 <code>{ from, to, model }</code>。压缩发生时本回合的 <code>llm.turn</code> span 还不存在，故事件记在回合的<strong>父</strong> span 上；OTLP 映射为 <code>gen_ai.conversation.compacted</code>。</td></tr>
             <tr><td>LLM_FALLBACK_EVENT / CONFIG_FALLBACKS_ATTR</td><td><code>'llm.fallback'</code> / <code>'config.fallbacks'</code></td><td><strong>模型降级的一对证据，读法相反</strong>：<code>llm.fallback</code> body 为 <code>{ from, to, errorType }</code>，写在<strong>换到的那一环</strong>第一个 <code>llm.turn</code> span 上（不是写在失败的那个 span 上 —— 所以「从谁换到谁」只能读事件体，不能靠相邻 span 猜）；<code>config.fallbacks</code> 是 run 根属性，记<strong>声明过</strong>的备用模型链（逗号拼接，没配时键缺席）。前者是<strong>实际发生</strong>、后者是<strong>配置声明</strong>：实际发生为 0 有两种可能（没配链 / 配了但一次没触发），只有读第二个才分得开 —— 判「两次跑分可不可比」要的正是这个区分。</td></tr>
+            <tr><td>MENU_HASH_ATTR / MENU_NAMES_ATTR</td><td><code>'tools.menuHash'</code> / <code>'tools.names'</code></td><td><strong>菜单签名</strong>（run 根属性，写入点 <code>engine/loop.ts</code>，摘要算法在 <code>engine/menu-drift.ts</code>）：摘要 = 排序后的「名字 + 规范 schema」的 sha1 前 12 位 —— <strong>覆盖输入 schema</strong>，所以「工具还在、签名变了」也判得出来；names 是给人读的名字清单（有界 + 省略标记），回答「变的是哪一个」。判「两份跑分可不可比」除了模型还要看它：同一个 prompt 之下工具多了一个，通过率的变化就不是 agent 的进退步。改名即读取侧静默拿到 <code>undefined</code>（方向是误判为可比），故按常量读、别写字面量。</td></tr>
+            <tr><td>PROMPTS_VERSIONS_ATTR</td><td><code>'prompts.versions'</code></td><td><strong>@Prompt 资产版本表</strong>（run 根属性，<code>name@ver</code> 逗号拼接、按名排序；菜单里没有带版本的 prompt 资产时<strong>键缺席</strong>而不是空串）。与菜单签名是一对：<strong>措辞改了看它，工具改了看上一个</strong> —— 只记一半的话，另一半永远只能靠猜，而猜错的方向是把「换了资产」读成「模型抖动」。</td></tr>
             <tr><td>validateJsonSchema</td><td><code>(schema: JsonSchema, input: unknown) → string | null</code></td><td>JSON Schema 子集校验（fromZod 接入时先走 zod），返回首条错误消息或 null。</td></tr>
             <tr><td>combineSignals</td><td><code>(...signals: (AbortSignal | undefined)[]) → AbortSignal</code></td><td>合成多个中断源（调用方 / 超时 / 断连），任一触发即中止（Node 18 无 <code>AbortSignal.any</code>）。</td></tr>
             <tr><td>Blackboard / BlackboardKey / BlackboardValue / BlackboardSeed</td><td><code>interface Blackboard {}</code> 等</td><td>黑板类型链路：声明合并 <code>Blackboard</code> 后，<code>RunContext.get/set</code> 与 <code>run({ blackboard })</code> 种子获得键补全 + 拼写检查 + 值类型；不声明时键为 <code>string</code>、值为 <code>unknown</code>。</td></tr>
