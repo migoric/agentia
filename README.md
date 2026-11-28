@@ -43,7 +43,7 @@ npm run dev -- "你的问题"               # = tsx src/main.ts，跑一次并�
 - 工程内命令：`npx agentia g tool fetch-weather` / `npx agentia doctor` / `npx agentia --version`；
   想全局装：`npm i -g @migor/cli`。
 
-> **版本**：`0.10.16`（`@migor/agentia`、`@migor/cli` 与 `@migor/agentia-pg` 均已发布到 npm）。
+> **版本**：`0.10.17`（`@migor/agentia`、`@migor/cli` 与 `@migor/agentia-pg` 均已发布到 npm）。
 
 ## 快速开始
 

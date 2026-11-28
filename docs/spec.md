@@ -8664,7 +8664,11 @@ CLI 297、trace-view 117、PG 52 全绿；官网 `api.html` 导出面 262 → 26
     **无行为变化、无破坏性变更** —— 本版只为评测仓能按名字判「两份跑分可不可比」：此前那三个
     名字是 `engine/loop.ts` 的裸字面量，读取侧抄字面量会在上游改名那天**静默读到 `undefined`**，
     方向恰好是「误判为可比」）；
-  `AGENTIA_VERSION = '0.10.16'`。决策均见 §10。
+  → v0.10.17（新增 `runSummary(trace)` 纯函数 + `RunSummary` 类型进公共导出面（272 → 274）：
+    从 trace 派生峰值上下文、压缩次数、工具调用数、迭代数四项行为摘要，供评测仓 RSI 做
+    四维归因；`usage.missing` 的 turn 不算峰值、「没报」= `undefined` 而非 `0`，只数根
+    span 的直接 turn 为迭代。**无破坏性变更** —— additive 导出，trace 与既有行为不变）；
+  `AGENTIA_VERSION = '0.10.17'`。决策均见 §10。
 - DI 的 property-injection 便利写法（标准装饰器下可行）待定。
 - 模型缺省 `claude-opus-5`（`AGENTIA_MODEL` env 可覆盖）；两个内置客户端（Anthropic / OpenAI 兼容）默认走流式。
 - CLI 剩余：注册表与扫描混用时的冲突提示策略（`dev` 已落地并内建 inspector 面板；`add` 已落地，见 §10 R5）。
