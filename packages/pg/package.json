@@ -26,7 +26,7 @@
     "@migor/agentia": "^0.10.12"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite": "^0.6.0",
     "@migor/agentia": "file:../..",
     "pg": "^8.23.1"
   },
