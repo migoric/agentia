@@ -1,4 +1,4 @@
-export const AGENTIA_VERSION = '0.10.16';
+export const AGENTIA_VERSION = '0.10.17';
 
 // core：数据模型
 export type {
@@ -281,12 +281,18 @@ export type {
   ExemplarSnapshot,
 } from './integrations/metrics.js';
 // integrations：调优报告（G1）—— 纯函数，从 trace 派生「哪个能力慢/贵/爱失败」
-export { buildRunReport, mergeRunReports, renderRunReport } from './integrations/report.js';
+export {
+  buildRunReport,
+  mergeRunReports,
+  renderRunReport,
+  runSummary,
+} from './integrations/report.js';
 export type {
   DurationReport,
   ModelReport,
   RunReport,
   CapabilityReport,
+  RunSummary,
 } from './integrations/report.js';
 
 // eval：把 mockClient 提升为一等能力（D2）—— 叶子消费模块，只依赖公共面

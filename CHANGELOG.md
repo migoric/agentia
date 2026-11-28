@@ -5,6 +5,26 @@
 （0.x 阶段：minor 可含破坏性变更，每个破坏性变更都在对应版本的「迁移」小节里写明）。
 决策的完整证据链在 `docs/spec.md` §10（带时间线的决策日志）。
 
+## [0.10.17] - 2026-11-28
+
+### 新增
+
+**`runSummary(trace)` —— 从 trace 派生行为摘要，供评测仓的 RSI 做四维归因。**
+RSI 要区分「上下文撑爆 / 绕圈 / 工具选错 / 结果不对」，需要一份纯函数把 trace 压成
+可读数：峰值上下文 token、压缩次数、工具调用数、迭代数。这四项此前散落在 trace 的
+event 与 usage 里，读取侧只能各抄一遍事件名 —— 上游改名的那天**不报错**，只会读到
+`undefined`，方向恰好是「误判为没有发生」，与 `llm.fallback` / `config.fallbacks`
+同因。现在收进一处，给评测仓一个稳定入口。
+
+- 新增 `RunSummary` 类型与 `runSummary(trace)` 纯函数，进公共导出面（additive）；
+- 峰值上下文取各 `llm.turn` 的 input + cacheRead + cacheCreation 最大值；带
+  `usage.missing` 事件的 turn 跳过 —— 「没报 usage」是 `undefined`，不是 `0`；
+- 只数根 span 的直接子 turn 作为迭代，嵌套能力/技能 turn 不计；
+- 官网 API 页同步两行（导出计数 272 → 274）。
+
+**无破坏性变更**：既有导出、trace 内容与行为都不变，只是多一个纯函数。评测仓用它
+把失败样本从「只知结论错」细分成按运行行为归类的签名（见 hb RSI 的 L1）。
+
 ## [Unreleased]
 
 ## [0.10.16] - 2026-11-28
@@ -4895,7 +4915,8 @@ toolkit 142 / runtime 55 / engine 403 / container 10 / store 55 —— 全绿。
 首个公开发布：`@migor/agentia` + `@migor/cli`（scope `@migor/*`），两包版本同步。
 框架本体单包；CLI 独立成包（workspaces）。
 
-[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.16...HEAD
+[Unreleased]: https://github.com/migoric/agentia/compare/v0.10.17...HEAD
+[0.10.17]: https://github.com/migoric/agentia/releases/tag/v0.10.17
 [0.10.16]: https://github.com/migoric/agentia/releases/tag/v0.10.16
 [0.10.15]: https://github.com/migoric/agentia/releases/tag/v0.10.15
 [0.10.14]: https://github.com/migoric/agentia/releases/tag/v0.10.14

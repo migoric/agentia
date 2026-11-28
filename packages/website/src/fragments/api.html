@@ -26,7 +26,7 @@
           它不是另装的第三方追踪 SDK。
         </p>
         <div class="api-chips">
-          <span class="api-chip"><b>272</b> 个导出</span>
+          <span class="api-chip"><b>274</b> 个导出</span>
           <span class="api-chip"><b>9</b> 个层次</span>
           <span class="api-chip"><b>0</b> 个运行时依赖</span>
           <span class="api-chip"><b>4</b> 类能力</span>
@@ -288,9 +288,11 @@
             <tr><td>MetricsSnapshot / CapabilityMetrics / ModelMetrics / RunLabelMetrics / ExemplarSnapshot</td><td><code>{ runs; failed; latencyP50; latencyP95; tokens; costUsd; capabilities; models; scores; runLabels; droppedCapabilities; droppedModels; droppedScores; droppedLabelValues; droppedLabelCombos; exemplars }</code></td><td><code>capabilities</code> 按能力 label 给 calls/errors/分位/tokens/costUsd（工具没有 token 语义，为 null）；<code>models</code> 按模型给 turns/tokens/costUsd/<strong>unpricedTurns</strong>/<strong>usageMissingTurns</strong>/分位；<code>scores</code> 按评分维度（键 <code>name@source</code>）给最近一次值 / 条数 / 合计（来自 <code>attachScore</code> 的 score 事件）；<code>runLabels</code>（R8-P4）按归因标签 combo（键 <code>k=v</code> 逗号连）给 runs/failed/tokens/costUsd —— 只有 <code>labelKeys</code> 点名的键才有。<code>dropped*</code> 是被折叠进 <code>__other__</code> 的不同键数（各自最多记账 1024 个，满了以后是下界；<code>droppedLabelValues</code> 按 labelKey 分键计，<code>droppedLabelCombos</code> 是组合数上限折掉的那批）。<code>exemplars</code>（ExemplarSnapshot）是指标 ↔ trace 互跳：<code>failed</code> = 最近一次失败 run、<code>slowest</code> = 迄今最慢 run 的 traceId/spanId（OpenMetrics 与 OTLP 出口会挂上）。</td></tr>
             <tr><td>DEFAULT_BUCKETS</td><td><code>readonly number[]</code></td><td>时长直方图的缺省桶边界（毫秒）：25 / 50 / 100 / 250 / 500 / 1k / 2.5k / 5k / 10k / 30k。可用 <code>buckets</code> 覆盖（须严格升序）。</td></tr>
             <tr><td>buildRunReport</td><td><code>(trace: Trace) → RunReport</code></td><td><strong>调优报告</strong>（纯函数）：能力按总耗时降序排行（calls / errors / total / max / tokens / cost）、模型归因、未定价模型清单 —— 回答「该拧哪个旋钮」。单条 run 样本少，故以 total / max 为主，不给分位。</td></tr>
+            <tr><td>runSummary</td><td><code>(trace: Trace) → RunSummary</code></td><td><strong>行为摘要</strong>（纯函数）：从一条 trace 派生归因四读数 —— 峰值上下文 token（<code>undefined</code> = 没有 turn 报 usage，不是 0）、<code>compactions</code>（<code>context.budget</code> 事件数）、<code>toolCalls</code>（<code>tool.output</code> 事件数）、<code>iterations</code>（直属 run 根的 llm.turn 数）。给 RSI 归因层分「上下文撑爆 / 绕圈 / 工具选错」用 —— 单看断言文本分不出来。</td></tr>
             <tr><td>mergeRunReports</td><td><code>(reports: RunReport[]) → RunReport</code></td><td>跨 run 汇总（分位只在多条 run 上才有统计意义）：calls/errors/耗时累加，能力按新的总耗时重排，未定价模型取并集。</td></tr>
             <tr><td>renderRunReport</td><td><code>(report: RunReport) → string</code></td><td>人类可读的纯文本表（CLI / 日志用）；未定价模型在 cost 列显式标出。<code>agentia report &lt;trace.jsonl&gt;</code> 就是它的薄壳。</td></tr>
             <tr><td>RunReport / CapabilityReport</td><td><code>{ traceId; status; durationMs; totalUsage; models; capabilities; unpricedModels; usageMissingModels; runs }</code></td><td>报告结构；<code>CapabilityReport</code> 含 <code>durations</code>（原始样本，merge 靠它重算跨 run 分位）。</td></tr>
+            <tr><td>RunSummary</td><td><code>{ traceId; peakContextTokens; compactions; toolCalls; iterations }</code></td><td>行为摘要结构；<code>peakContextTokens</code> 可为 <code>undefined</code>（usage 没报，三态里的「不知道」）。</td></tr>
             <tr><td>ModelReport / DurationReport</td><td><code>{ model; turns; tokens; tokensTotal; costUsd; unpricedTurns; usageMissingTurns; durationMs; durations }</code> / <code>{ total; max; p50; p95 }</code></td><td>模型归因与时长汇总（单 run 的 p50/p95 仅供参考）。</td></tr>
           </tbody>
         </table></div>

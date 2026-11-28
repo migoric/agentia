@@ -1,6 +1,6 @@
 import { capabilityKindOf, hasCapabilityAncestor } from '../core/trace.js';
 import type { Span, Trace, Usage } from '../core/trace.js';
-import { TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
+import { CONTEXT_BUDGET_EVENT, TOOL_OUTPUT_EVENT, USAGE_MISSING_EVENT } from '../core/trace.js';
 import { percentile } from '../core/stats.js';
 
 /**
@@ -243,6 +243,72 @@ export function buildRunReport(trace: Trace): RunReport {
     usageMissingModels: [...usageMissing].sort(),
     runs: 1,
   };
+}
+
+/**
+ * 一条 run 的**行为摘要** —— 归因四读数，给 RSI 的归因层用。
+ *
+ * 与 `buildRunReport` 的分工：那份回答「哪个能力慢/贵/爱失败」（排行），
+ * 这份回答「这条 run 是怎么跑的」（峰值上下文 / 压缩次数 / 工具调用数 / 迭代数）。
+ * 后者是「上下文撑爆 / 工具选错 / 绕圈」三种失败的判别依据 —— 单看断言失败文本
+ * 分不出来，而它们的修法完全不同。
+ *
+ * 纯函数、只读 trace、不联网。四个读数口径（别改口径，harness 侧按它归因）：
+ * - `peakContextTokens`：每个 `llm.turn` 的 **input + cacheRead + cacheCreation**
+ *   的最大值（**不含 output** —— output 是生成，不是送进上下文的东西）。
+ *   `undefined` = 没有任何 turn 报 usage（**没记**，不是 0）—— 与 `menuHashes`
+ *   的「缺席=不知道 / []=确认没有」同纪律；usage.missing 的 turn 不参与，故
+ *   全 missing 时这里是 undefined，而不是一个骗人的 0。
+ * - `compactions`：`context.budget` 事件数。事件记在**回合父 span**上（可能是
+ *   run 根或 capability），所以扫全部 span，不只看 llm.turn。
+ * - `toolCalls`：`tool.output` 事件数，与 `buildRunReport` 同口径（两种归属都扫）。
+ * - `iterations`：**直属 run 根**的 `llm.turn` 数 —— 主循环亲自调模型的轮数。
+ *   嵌在 capability 里的 turn 不算：那是子 agent 的迭代，不是主循环的。
+ *   若所有 turn 都派给了子 agent，这里是 0（有意义的真值，不是缺失）。
+ *
+ * ⚠️ 这些是**计数与估算**，不是精确账单：`context.budget` 的 from/to 是消息条数
+ * 不是 token；峰值上下文是 input 侧估的（真实请求还含 system / tools schema）。
+ * 口径细节见 engine/policy.ts 与 docs/usage-guide.md §7。
+ */
+export interface RunSummary {
+  readonly traceId: string;
+  readonly peakContextTokens: number | undefined;
+  readonly compactions: number;
+  readonly toolCalls: number;
+  readonly iterations: number;
+}
+
+/** 从一条 Trace 派生行为摘要（纯函数，无副作用） */
+export function runSummary(trace: Trace): RunSummary {
+  let peakContextTokens: number | undefined;
+  let compactions = 0;
+  let toolCalls = 0;
+  let iterations = 0;
+
+  for (const span of trace.spans) {
+    let usageMissing = false;
+    for (const e of span.events) {
+      if (e.name === CONTEXT_BUDGET_EVENT) compactions++;
+      else if (e.name === TOOL_OUTPUT_EVENT) {
+        const body = e.body as Record<string, unknown> | null;
+        // 与 buildRunReport 同口径：只数带 tool 名的真事件，不数畸形 body
+        if (body && typeof body === 'object' && typeof body.tool === 'string') toolCalls++;
+      } else if (e.name === USAGE_MISSING_EVENT) usageMissing = true;
+    }
+    if (span.kind !== 'llm.turn') continue;
+
+    if (span.parentSpanId === trace.rootSpanId) iterations++;
+    // usage.missing 的 turn 带的是全 0 usage（S2：上游没回报，不是真的免费）——
+    // 把它算进峰值会得到「骗人的 0」，与三态承诺相悖。跳过，全 missing 时保持 undefined。
+    if (span.usage && !usageMissing) {
+      // input + cacheRead + cacheCreation（不含 output）—— 送进上下文的量
+      const ctx =
+        span.usage.inputTokens + span.usage.cacheReadTokens + span.usage.cacheCreationTokens;
+      peakContextTokens = peakContextTokens === undefined ? ctx : Math.max(peakContextTokens, ctx);
+    }
+  }
+
+  return { traceId: trace.traceId, peakContextTokens, compactions, toolCalls, iterations };
 }
 
 /**
