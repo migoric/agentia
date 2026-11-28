@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRunReport, mergeRunReports, renderRunReport } from '../../src/index.js';
+import { buildRunReport, mergeRunReports, renderRunReport, runSummary } from '../../src/index.js';
 import type { Span, Trace } from '../../src/index.js';
 
 /**
@@ -185,6 +185,118 @@ describe('G1 buildRunReport', () => {
     assert.equal(inner.costUsd, null);
     const sum = r.capabilities.reduce((acc, c) => acc + (c.tokensTotal ?? 0), 0);
     assert.equal(sum, 15, '各行 tokensTotal 可加总、且不双计');
+  });
+});
+
+describe('runSummary：归因四读数', () => {
+  it('峰值上下文取 input+cacheR+cacheW 的最大值（不含 output），计数各归各位', () => {
+    const trace = traceWith([
+      span({
+        spanId: 'turn-1',
+        kind: 'llm.turn',
+        name: 'm',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 200,
+          cacheCreationTokens: 20,
+        },
+        events: [
+          { time: 1, name: 'tool.output', body: { tool: 'search', ok: true } },
+          { time: 2, name: 'tool.output', body: { tool: 'fetch', ok: true } },
+        ],
+      }),
+      span({
+        spanId: 'turn-2',
+        kind: 'llm.turn',
+        name: 'm',
+        usage: {
+          inputTokens: 150,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+      }),
+      // compaction 事件记在父 span（run 根）上，不只在 llm.turn
+      span({
+        spanId: 'compaction-holder',
+        kind: 'run',
+        name: 'aux',
+        events: [
+          { time: 3, name: 'context.budget', body: { from: 12, to: 4, model: 'm' } },
+          { time: 4, name: 'context.budget', body: { from: 10, to: 3, model: 'm' } },
+        ],
+      }),
+    ]);
+    const s = runSummary(trace);
+    assert.equal(s.traceId, 't-1');
+    assert.equal(s.peakContextTokens, 320, 'turn-1: 100+200+20=320 > turn-2 的 150；不含 output');
+    assert.equal(s.compactions, 2, '扫全部 span 的 context.budget（含父 span）');
+    assert.equal(s.toolCalls, 2, '两个 tool.output 都数（畸形 body 不算，见下例）');
+    assert.equal(s.iterations, 2, '两个 llm.turn 都直属根');
+  });
+
+  it('usage.missing 的 turn 不参与峰值：全 missing → undefined（不是骗人的 0）', () => {
+    const trace = traceWith([
+      span({
+        spanId: 'turn-missing',
+        kind: 'llm.turn',
+        name: 'm',
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        events: [{ time: 1, name: 'usage.missing', body: {} }],
+      }),
+    ]);
+    const s = runSummary(trace);
+    assert.equal(
+      s.peakContextTokens,
+      undefined,
+      'usage 读不出就是不知道，三态与 menuHashes 同纪律',
+    );
+    assert.equal(s.iterations, 1);
+  });
+
+  it('嵌套在 capability 里的 turn 不算 iterations；畸形 tool.output 不算 toolCalls', () => {
+    const trace = traceWith([
+      span({
+        spanId: 'cap-1',
+        kind: 'capability',
+        name: 'writer',
+        attributes: { skill: 'writer' },
+      }),
+      span({
+        spanId: 'sub-turn',
+        kind: 'llm.turn',
+        name: 'm',
+        parentSpanId: 'cap-1',
+        usage: { inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      }),
+      span({
+        spanId: 'root-turn',
+        kind: 'llm.turn',
+        name: 'm',
+        usage: { inputTokens: 3, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        events: [
+          { time: 1, name: 'tool.output', body: { tool: 'ok', ok: true } },
+          { time: 2, name: 'tool.output', body: { ok: true } },
+          { time: 3, name: 'tool.output', body: null },
+        ],
+      }),
+    ]);
+    const s = runSummary(trace);
+    assert.equal(s.iterations, 1, '只有直属根的 root-turn 算主循环迭代；sub-turn 是子 agent 的');
+    assert.equal(s.peakContextTokens, 5, '峰值仍取所有 turn 的最大值（含嵌套）');
+    assert.equal(s.toolCalls, 1, '只有带 tool 名的真事件算，畸形 body 不算');
+  });
+
+  it('空 trace（只有根）→ 全 0，peak 为 undefined，不抛错', () => {
+    const s = runSummary(traceWith([]));
+    assert.deepEqual(s, {
+      traceId: 't-1',
+      peakContextTokens: undefined,
+      compactions: 0,
+      toolCalls: 0,
+      iterations: 0,
+    });
   });
 });
 
