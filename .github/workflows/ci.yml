@@ -8,6 +8,14 @@ name: CI
 on:
   push:
     branches: [main]
+    # 纯文档改动不跑。7 个 job 里没有一个读 `docs/` 或顶层 `*.md`（官网源在
+    # `packages/website`），而一次 ADR 推送就是一次全量 8 步 + 两个 MCP e2e + 镜像构建。
+    #
+    # **只对 push 生效**：`pull_request` 上加 paths-ignore 会让「只改文档的 PR」
+    # 一个 check run 都不产生，而分支保护在等 required checks —— 那就成了永远合不进去的 PR。
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
   workflow_dispatch:
 
